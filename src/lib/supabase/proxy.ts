@@ -21,6 +21,10 @@ const PUBLIC_API_PREFIXES = [
   "/api/agent/clip-cut-result",
   "/api/agent/clip-upload-url",
   "/api/agent/clip-upload-complete",
+  // 1.1: Vercel Cron endpoint — tự check Authorization: Bearer $CRON_SECRET
+  // trong route. Không có session cookie, phải bypass proxy nếu không sẽ
+  // bị 401 trước khi route được gọi.
+  "/api/cron",
 ];
 
 export async function updateSession(request: NextRequest) {
