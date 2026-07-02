@@ -33,6 +33,22 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# Local-only MCP server config — contains Supabase personal access token.
+.mcp.json
+
+# Claude Code local state (session locks, personal settings).
+.claude/
+
+# Local warehouse-agent queue spillover (offline scan retry buffer).
+warehouse-agent/data/pending-scans.jsonl
+
+# Local warehouse-agent recording output — MP4 segments from real cameras.
+# Sensitive footage; must never be pushed to git.
+warehouse-agent/recordings/
+
+# Scratch/temp slice files accidentally created in repo root.
+*.tmp_slice*
+
 # vercel
 .vercel
 

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "cameras": {
+    "5ce23718-0737-43bb-a1dc-7646e87c0a89": {
+      "camera_id": "5ce23718-0737-43bb-a1dc-7646e87c0a89",
+      "session_id": "49d123c2-a64d-4ab1-b24b-8fd5c500c652",
+      "desired_since": "2026-07-01T04:41:37.519Z"
+    },
+    "8873451b-eadb-43d5-af89-326ecc919358": {
+      "camera_id": "8873451b-eadb-43d5-af89-326ecc919358",
+      "session_id": "5cddab4e-cfc7-4b18-959f-bcf612e2dedd",
+      "desired_since": "2026-07-01T09:06:00.355Z"
+    }
+  }
+}
