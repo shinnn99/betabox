@@ -308,10 +308,13 @@ export interface ClipRow {
   generated_by: string | null;
   generated_at: string | null;
   created_at: string;
+  // Lát 3c: bucket upload state
+  bucket_path: string | null;
+  bucket_uploaded_at: string | null;
 }
 
 const CLIP_COLUMNS =
-  "id, organization_id, packing_event_id, waybill_code, camera_id, clip_path, clip_name, clip_started_at, clip_ended_at, clip_size_bytes, duration_seconds, source_files, status, error_message, cut_mode, generation_params, generated_by, generated_at, created_at";
+  "id, organization_id, packing_event_id, waybill_code, camera_id, clip_path, clip_name, clip_started_at, clip_ended_at, clip_size_bytes, duration_seconds, source_files, status, error_message, cut_mode, generation_params, generated_by, generated_at, created_at, bucket_path, bucket_uploaded_at";
 
 export async function getClipById(
   organizationId: string,

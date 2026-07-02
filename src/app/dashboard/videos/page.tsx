@@ -805,6 +805,9 @@ function PlayerModal({
 }) {
   const clip = scan.clip!;
   const scannedAt = new Date(scan.scanned_at);
+  const [loadError, setLoadError] = useState(false);
+  // scan.id = packing_event_id (xem service.ts line 554 packing_event_id: event.id)
+  const watchPageUrl = `/dashboard/orders/${scan.id}/watch`;
 
   return (
     <div
@@ -821,14 +824,33 @@ function PlayerModal({
         >
           <X className="h-4 w-4" />
         </button>
-        <video
-          src={`/api/order-proof/clips/${clip.id}`}
-          controls
-          autoPlay
-          playsInline
-          preload="metadata"
-          className="w-full aspect-video bg-black"
-        />
+        {loadError ? (
+          <div className="w-full aspect-video bg-slate-900 flex flex-col items-center justify-center gap-3 p-6 text-center">
+            <div className="text-white text-sm font-medium">
+              Clip chưa đồng bộ lên cloud
+            </div>
+            <div className="text-slate-300 text-xs max-w-md">
+              Video này chỉ có trên ổ máy kho, chưa upload lên bucket. Mở trang xem clip
+              riêng để hệ tự cắt+upload lại (mất 10-30s).
+            </div>
+            <a
+              href={watchPageUrl}
+              className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold"
+            >
+              Mở trang xem clip
+            </a>
+          </div>
+        ) : (
+          <video
+            src={`/api/order-proof/clips/${clip.id}`}
+            controls
+            autoPlay
+            playsInline
+            preload="metadata"
+            onError={() => setLoadError(true)}
+            className="w-full aspect-video bg-black"
+          />
+        )}
         {clip.transcoded_for_browser && (
           <div className="px-4 pt-2 text-[11px] text-slate-500">
             Đã chuyển mã sang H.264 để xem được trên trình duyệt.

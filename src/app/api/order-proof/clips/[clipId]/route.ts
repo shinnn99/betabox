@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { stat, open } from "node:fs/promises";
+import { createAdminClient } from "@/lib/supabase/admin";
 import {
   isError,
   requirePermission,
@@ -8,12 +9,14 @@ import {
   clipRowIsSafe,
   getClipById,
 } from "@/lib/order-proof/service";
+import { BUCKET_NAME, SIGNED_URL_TTL_SECONDS } from "@/lib/watch/config";
 
 interface RouteContext {
   params: Promise<{ clipId: string }>;
 }
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 // Parses "bytes=START-END" / suffix "-N" / open-ended "N-". Returns
 // null if absent or malformed so the handler falls back to a full body.
@@ -62,6 +65,28 @@ export async function GET(req: Request, { params }: RouteContext) {
       { status: 425 },
     );
   }
+
+  // Lát 3c bridge: nếu clip có bucket_path (đã upload cloud), redirect
+  // sang signed URL bucket. Server production Vercel không đọc được
+  // clip_path=D:\... của agent local. Với clip cũ chỉ có clip_path local
+  // + không bucket, trả 410 kèm hướng dẫn dùng page /watch mới để
+  // reconcile (page /watch tự enqueue cut+upload nếu chưa có bucket).
+  if (row.bucket_path) {
+    const admin = createAdminClient();
+    const { data: signed, error: signedErr } = await admin.storage
+      .from(BUCKET_NAME)
+      .createSignedUrl(row.bucket_path, SIGNED_URL_TTL_SECONDS);
+    if (signed?.signedUrl) {
+      // 307 redirect để browser <video> follow tới signed URL bucket.
+      return NextResponse.redirect(signed.signedUrl, 307);
+    }
+    // Bucket path có nhưng signed URL fail: fallback tiếp tục tới ổ
+    // local (chỉ work khi server cùng máy agent). Không throw ngay.
+    console.warn(
+      `[clip GET] bucket_path=${row.bucket_path} signed URL failed: ${signedErr?.message}`,
+    );
+  }
+
   if (!clipRowIsSafe(row)) {
     return NextResponse.json({ error: "invalid_path" }, { status: 400 });
   }
@@ -72,7 +97,12 @@ export async function GET(req: Request, { params }: RouteContext) {
     size = st.size;
   } catch {
     return NextResponse.json(
-      { error: "file_missing", message: "File clip không còn trên đĩa." },
+      {
+        error: "file_missing",
+        message:
+          "Clip chưa đồng bộ lên cloud. Mở trang xem clip riêng (route /dashboard/orders/[pe_id]/watch) để cắt+upload lại.",
+        packing_event_id: row.packing_event_id,
+      },
       { status: 410 },
     );
   }
