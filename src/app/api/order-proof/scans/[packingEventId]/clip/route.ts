@@ -1,3 +1,20 @@
+/**
+ * @deprecated 2026-07-03 (Lát 3d list migration)
+ *
+ * Endpoint này chạy stack cũ: backend Vercel tự spawn ffmpeg + đọc file
+ * từ `clip_path` là ổ agent local. Trên Vercel serverless KHÔNG có ffmpeg
+ * và KHÔNG đọc được ổ agent — chạy thật ở prod sẽ fail hàng loạt.
+ *
+ * UI `/dashboard/videos` đã ngừng gọi endpoint này từ 2026-07-03 (chuyển
+ * mọi hành động cắt/upload qua `/api/order-proof/[pe_id]/watch` — luồng
+ * agent-pattern 3c/3d, một cửa).
+ *
+ * Giữ code (không xóa ngay) để tránh vỡ ngầm nếu còn caller script/
+ * backfill nào chưa grep ra. Xóa sau khi verify prod 1-2 tuần im lặng
+ * với grep DƯƠNG 0 caller ở cả `src/`, `warehouse-agent/`, `scripts/`.
+ *
+ * Nếu bạn định thêm caller mới cho endpoint này — DỪNG. Dùng `/watch`.
+ */
 import { NextResponse } from "next/server";
 import {
   isError,

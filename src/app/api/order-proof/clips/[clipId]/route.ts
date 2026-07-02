@@ -1,3 +1,19 @@
+/**
+ * @deprecated 2026-07-03 (Lát 3d list migration)
+ *
+ * Endpoint stream clip cũ: đọc `clip_path` là ổ agent local (chết trên
+ * Vercel), có bridge 307 sang bucket signed URL nếu `bucket_path` có.
+ *
+ * UI `/dashboard/videos` đã ngừng gọi endpoint này từ 2026-07-03 —
+ * PlayerModal đọc `signed_url` từ `/api/order-proof/[pe_id]/watch`
+ * response (một cửa, không hai chỗ trả URL clip).
+ *
+ * Giữ code (không xóa ngay) — có thể còn deep-link cũ trong lịch sử
+ * browser/email. Xóa sau 1-2 tuần verify prod im lặng với grep DƯƠNG
+ * 0 caller ở `src/`, `warehouse-agent/`, `scripts/`.
+ *
+ * Nếu bạn định thêm caller mới — DỪNG. Dùng `/watch`.
+ */
 import { NextResponse } from "next/server";
 import { stat, open } from "node:fs/promises";
 import { createAdminClient } from "@/lib/supabase/admin";

@@ -21,6 +21,8 @@ import {
   getActiveSession,
   syncCameraFiles,
 } from "@/lib/camera/recording-service";
+import { readAgentLiveness } from "@/lib/watch/agent-liveness";
+import { BUCKET_TTL_HOURS } from "@/lib/watch/config";
 
 // ---------- Scan history ----------
 
@@ -37,6 +39,11 @@ export interface ScanEventPublic {
   staff: { id: string; full_name: string; staff_code: string } | null;
   camera: { id: string; camera_code: string; name: string } | null;
   clip: ScanClipSummary | null;
+  // 3d list migration: agent liveness của org tại thời điểm gọi
+  // (per-org theo readAgentLiveness — 1 kho 1 agent đúng thật; multi-
+  // warehouse thì sai-nhẹ, xử theo cọc #6 project_camera_probe_tech_debt_cocs).
+  // List dùng field này render badge "Kho offline" khi > 30s.
+  agent_offline_seconds: number;
 }
 
 export interface ScanClipSummary {
@@ -70,6 +77,13 @@ export interface ScanClipSummary {
   // small badge so operators understand why this particular clip took
   // longer to generate than the others.
   transcoded_for_browser: boolean;
+  // 3d list migration: cần tách "clip đã cắt" (status=ready) khỏi "clip
+  // xem-ngay-được từ cloud" (bucket_uploaded_at còn TTL). Row status=ready
+  // nhưng bucket null/expired → list phải hiện "Chưa lên cloud" + nút
+  // [Tạo lại], KHÔNG hiện [Xem] (endpoint stream cũ sẽ 410 file_missing
+  // trên Vercel serverless vì clip_path là ổ agent local).
+  bucket_path: string | null;
+  bucket_uploaded_at: string | null;
 }
 
 const PACKING_COLUMNS = `
@@ -113,7 +127,7 @@ async function attachClipsToEvents(
   const { data: clipsData } = await admin
     .from("order_proof_clips")
     .select(
-      "id, packing_event_id, status, generated_at, duration_seconds, clip_size_bytes, error_message, generation_params, created_at",
+      "id, packing_event_id, status, generated_at, duration_seconds, clip_size_bytes, error_message, generation_params, created_at, bucket_path, bucket_uploaded_at",
     )
     .eq("organization_id", organizationId)
     .in("packing_event_id", eventIds)
@@ -132,6 +146,8 @@ async function attachClipsToEvents(
     clip_size_bytes: number | null;
     error_message: string | null;
     generation_params: Record<string, unknown> | null;
+    bucket_path: string | null;
+    bucket_uploaded_at: string | null;
   }>) {
     if (clipByEvent.has(c.packing_event_id)) continue;
     const params = c.generation_params ?? {};
@@ -162,8 +178,16 @@ async function attachClipsToEvents(
       clip_size_bytes: c.clip_size_bytes,
       error_message: c.error_message,
       transcoded_for_browser: !!transcoded,
+      bucket_path: c.bucket_path,
+      bucket_uploaded_at: c.bucket_uploaded_at,
     });
   }
+
+  // 3d list migration: 1 lookup agent liveness cho toàn list (per-org).
+  // Đọc chung readAgentLiveness với /watch — cùng HÀM, không chỉ cùng
+  // cột — để badge list và state /watch KHÔNG lệch ở ranh giới ngưỡng.
+  const liveness = await readAgentLiveness(admin, organizationId);
+  const agentOfflineSeconds = liveness.offline_duration_seconds;
 
   return events.map((e) => ({
     id: e.id,
@@ -178,7 +202,24 @@ async function attachClipsToEvents(
     staff: first(e.staff),
     camera: first(e.camera),
     clip: clipByEvent.get(e.id) ?? null,
+    agent_offline_seconds: agentOfflineSeconds,
   }));
+}
+
+/**
+ * Helper cho UI: clip có xem-ngay-được từ bucket không?
+ * status='ready' + bucket_path + bucket_uploaded_at còn trong TTL.
+ * Đặt cạnh service để list và các endpoint khác dùng chung 1 công thức
+ * TTL — cùng bài học nguồn-sự-thật-duy-nhất.
+ */
+export function clipBucketValid(clip: ScanClipSummary | null): boolean {
+  if (!clip) return false;
+  if (clip.status !== "ready") return false;
+  if (!clip.bucket_path || !clip.bucket_uploaded_at) return false;
+  const uploadedMs = new Date(clip.bucket_uploaded_at).getTime();
+  if (!Number.isFinite(uploadedMs)) return false;
+  const ageMs = Date.now() - uploadedMs;
+  return ageMs < BUCKET_TTL_HOURS * 3600 * 1000;
 }
 
 export async function listScansByWaybill(
