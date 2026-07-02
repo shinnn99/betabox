@@ -19,15 +19,24 @@ const CAMERA_PROBE_STALE_MS = Number(
 
 /**
  * "Trạng thái kết nối camera" — bốn nhánh. Kết hợp cameras.last_probe_at
- * + last_probe_ok + agent.last_seen_at để KHÔNG dồn mọi ca stale thành
- * "chưa rõ" — mình có `agent.last_seen_at` để phân biệt agent-chết vs
- * camera-chết, dùng nó.
+ * + last_probe_ok + agent.last_seen_at + hasRecordingIntent để KHÔNG dồn
+ * mọi ca stale thành "chưa rõ" — mình có agent.last_seen_at để phân
+ * biệt agent-chết vs camera-chết, dùng nó.
  *   - probe tươi + ok=true → online
  *   - probe tươi + ok=false → offline (agent ping được, camera không nghe)
  *   - probe stale + agent sống → offline (agent chạy mà không tới cam)
  *   - probe stale + agent chết → warehouse_disconnected (không đổ lỗi cam)
- *   - chưa có probe (camera không trong desired-recording) → not_probed
- *     (UI hiển thị snapshot cameras.status như trước — không giả real-time)
+ *   - chưa có probe (last_probe_at=null):
+ *       + có session recording (camera đang được yêu cầu ghi) + agent
+ *         chết → warehouse_disconnected (agent muốn probe mà không probe
+ *         được vì agent chết — nhất quán với ca camera-đã-probe cùng
+ *         hoàn cảnh, không hiển thị "Đã cấu hình" nói dối "ổn").
+ *       + có session recording + agent sống → nhánh này hiếm (agent
+ *         vừa spawn xong chưa kịp probe nhịp đầu) → not_probed (tối đa
+ *         30s sẽ có probe đầu tiên).
+ *       + không có session recording → not_probed (camera chưa được
+ *         yêu cầu ghi, không cần probe — UI hiển thị snapshot
+ *         cameras.status).
  */
 export type CameraOnlineState =
   | "online"
@@ -39,12 +48,19 @@ function deriveCameraOnlineState(input: {
   lastProbeAt: string | null;
   lastProbeOk: boolean | null;
   agentLastSeenAt: string | null;
+  hasRecordingIntent: boolean;
   now: number;
 }): CameraOnlineState {
   const agentOffline = input.agentLastSeenAt
     ? input.now - Date.parse(input.agentLastSeenAt) > AGENT_ONLINE_STALE_MS
     : true;
   if (!input.lastProbeAt || input.lastProbeOk === null) {
+    // Camera chưa từng được probe. Nếu đang được yêu cầu ghi mà agent
+    // chết → warehouse_disconnected, không "Đã cấu hình" (nói dối "ổn"
+    // trong khi agent thực chất chết).
+    if (input.hasRecordingIntent && agentOffline) {
+      return "warehouse_disconnected";
+    }
     return "not_probed";
   }
   const probeAgeMs = input.now - Date.parse(input.lastProbeAt);
@@ -260,18 +276,28 @@ export async function GET() {
   const nowForOnline = Date.now();
 
   // Attach the soft-link id, recording state, và camera online state.
-  const cameraRows = cameras.map((c) => ({
-    kind: "camera" as const,
-    ...c,
-    station_device_id: cameraSoftLinkByCameraId.get(c.id) ?? null,
-    recording: recordingByCameraId.get(c.id) ?? null,
-    camera_online_state: deriveCameraOnlineState({
-      lastProbeAt: c.last_probe_at,
-      lastProbeOk: c.last_probe_ok,
-      agentLastSeenAt: agentForOnline?.last_seen_at ?? null,
-      now: nowForOnline,
-    }),
-  }));
+  // `hasRecordingIntent` = có session ui_state='recording' hoặc
+  // 'agent_disconnected' (agent đang giữ hoặc mất kết nối nhưng vẫn có
+  // ý định ghi). 'stopped'/'error' KHÔNG tính (user đã dừng hoặc lỗi
+  // vĩnh viễn).
+  const cameraRows = cameras.map((c) => {
+    const rec = recordingByCameraId.get(c.id) ?? null;
+    const hasRecordingIntent =
+      rec?.ui_state === "recording" || rec?.ui_state === "agent_disconnected";
+    return {
+      kind: "camera" as const,
+      ...c,
+      station_device_id: cameraSoftLinkByCameraId.get(c.id) ?? null,
+      recording: rec,
+      camera_online_state: deriveCameraOnlineState({
+        lastProbeAt: c.last_probe_at,
+        lastProbeOk: c.last_probe_ok,
+        agentLastSeenAt: agentForOnline?.last_seen_at ?? null,
+        hasRecordingIntent,
+        now: nowForOnline,
+      }),
+    };
+  });
 
   return NextResponse.json({
     devices: [...cameraRows, ...scanners],
