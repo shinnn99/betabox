@@ -214,6 +214,7 @@ export function CameraDetailPanel({
   onAfterChange,
   onBack,
   onDelete,
+  codecSlot,
 }: {
   camera: Camera;
   recording: RecordingInfo | undefined;
@@ -226,6 +227,9 @@ export function CameraDetailPanel({
   onAfterChange: () => void;
   onBack?: () => void;
   onDelete?: () => void;
+  // Slot cho CodecProbePanel — render giữa header card và detail
+  // section, dùng chung space-y-3 của outer container.
+  codecSlot?: React.ReactNode;
 }) {
   const toast = useToast();
   const recState = deriveRecState(recording);
@@ -476,6 +480,8 @@ export function CameraDetailPanel({
             />
           </div>
         </div>
+
+        {codecSlot}
 
         {/* ===== Main 2-column grid ===== */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">

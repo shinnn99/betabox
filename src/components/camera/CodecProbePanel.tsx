@@ -161,6 +161,46 @@ export default function CodecProbePanel({
   const badge = badgeFor(codec);
   const BadgeIcon = badge.Icon;
 
+  // Compact mode: codec đã h264 + không warning + không error probe.
+  // Không cần chiếm card lớn — thu gọn 1 dòng inline.
+  const isCompact = codec === "h264" && !warning && !probeError;
+
+  if (isCompact) {
+    return (
+      <div className={`rounded-lg border ${badge.bg} px-3 py-2 flex items-center gap-2 text-xs`}>
+        <BadgeIcon
+          className={`h-4 w-4 flex-none ${badge.text} ${busy ? "animate-spin" : ""}`}
+        />
+        <span className={`font-medium ${badge.text}`}>{badge.label}</span>
+        {probedAt && (
+          <span className="text-slate-500">
+            · Probe cuối{" "}
+            {new Date(probedAt).toLocaleString("vi-VN", {
+              dateStyle: "short",
+              timeStyle: "short",
+            })}
+          </span>
+        )}
+        {msg && (
+          <span className="italic text-slate-600 truncate">· {msg}</span>
+        )}
+        <button
+          type="button"
+          onClick={runProbe}
+          disabled={busy}
+          className="ml-auto inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <RefreshCw className="h-3 w-3" />
+          )}
+          {busy ? "Probe..." : "Probe lại"}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className={`rounded-lg border ${badge.bg} px-4 py-3`}>
       <div className="flex items-start gap-3">

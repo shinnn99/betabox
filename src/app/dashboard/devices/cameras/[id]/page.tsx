@@ -212,15 +212,6 @@ export default function CameraDetailPage({
       pageSubtitle={`Camera · ${camera.camera_code}`}
       pageIcon={Cctv}
     >
-      <div className="mb-3 px-3 lg:px-0">
-        <CodecProbePanel
-          cameraId={camera.id}
-          initialCodec={camera.codec_detected ?? null}
-          initialWarning={camera.codec_warning ?? null}
-          initialProbedAt={camera.codec_probed_at ?? null}
-          initialError={camera.codec_probe_error ?? null}
-        />
-      </div>
       <div className="bg-white rounded-2xl border border-slate-100 shadow-sm h-full min-h-0 flex flex-col overflow-hidden">
         <CameraDetailPanel
           camera={camera}
@@ -238,6 +229,15 @@ export default function CameraDetailPage({
           }}
           onBack={() => router.push("/dashboard/devices?type=camera")}
           onDelete={onDelete}
+          codecSlot={
+            <CodecProbePanel
+              cameraId={camera.id}
+              initialCodec={camera.codec_detected ?? null}
+              initialWarning={camera.codec_warning ?? null}
+              initialProbedAt={camera.codec_probed_at ?? null}
+              initialError={camera.codec_probe_error ?? null}
+            />
+          }
         />
       </div>
 

@@ -59,7 +59,7 @@ export default function CodecWarningBanner() {
   const uniqueCams = Array.from(byCam.values());
 
   return (
-    <div className="mx-3 mt-3 rounded-lg border border-red-300 bg-red-50 px-4 py-3 shadow-sm">
+    <div className="mx-3 lg:mx-0 mt-3 lg:mt-0 mb-3 rounded-lg border border-red-300 bg-red-50 px-4 py-3 shadow-sm">
       <div className="flex items-start gap-3">
         <AlertTriangle className="mt-0.5 h-5 w-5 flex-none text-red-600" />
         <div className="flex-1 min-w-0">
