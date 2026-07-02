@@ -70,6 +70,31 @@ export async function getLatestSession(
   cameraId: string,
 ): Promise<RecordingSession | null> {
   const admin = createAdminClient();
+
+  // Ưu tiên session `status='recording'` (agent còn giữ) trước, không
+  // theo started_at ngây thơ. Ca thật: sweep cũ chốt session A đang
+  // ghi thành 'error' → user bấm start ở UI → tạo session B với
+  // started_at NEWER → agent vẫn giữ session A (desired-recording.json
+  // ghim session_id A). Poll-commands giờ đính chính A về 'recording',
+  // A mới là "sống thật". Sort started_at DESC nhặt B (started_at
+  // sau) → UI thấy status=error → nói dối "Lỗi ghi".
+  //
+  // Lấy TẤT CẢ session recording (agent-pattern: unique partial index
+  // đảm bảo tối đa 1 session status='recording' mỗi camera), nếu có
+  // → dùng. Không có → mới fallback sort started_at cho session
+  // stopped/error mới nhất (để hiển thị "Đã dừng"/"Lỗi ghi" gần nhất).
+  const { data: recRow, error: recErr } = await admin
+    .from("camera_recording_sessions")
+    .select(SESSION_COLUMNS)
+    .eq("organization_id", organizationId)
+    .eq("camera_id", cameraId)
+    .eq("status", "recording")
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (recErr) throw recErr;
+  if (recRow) return recRow as RecordingSession;
+
   const { data, error } = await admin
     .from("camera_recording_sessions")
     .select(SESSION_COLUMNS)

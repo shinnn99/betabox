@@ -131,15 +131,35 @@ export async function GET() {
     }
   >();
   if (cameras.length > 0) {
-    const { data: sessions } = await admin
+    // Ưu tiên session status='recording' (agent còn giữ) trước, không
+    // theo started_at ngây thơ — vì có thể có session mồ côi
+    // status='error' với started_at NEWER hơn session 'recording' đang
+    // sống (sweep cũ chốt session A, user bấm start tạo B, agent vẫn
+    // ghi A). Query 2 pass: pass 1 lấy session recording (partial
+    // unique index đảm bảo tối đa 1 per camera); pass 2 lấy session
+    // gần nhất cho camera chưa có row từ pass 1.
+    const cameraIdList = cameras.map((c) => c.id);
+    const { data: recSessions } = await admin
       .from("camera_recording_sessions")
       .select("camera_id, status, started_at, last_heartbeat_at")
       .eq("organization_id", ctx.organizationId)
-      .in(
-        "camera_id",
-        cameras.map((c) => c.id),
-      )
-      .order("started_at", { ascending: false });
+      .in("camera_id", cameraIdList)
+      .eq("status", "recording");
+
+    const camerasWithoutRec = cameraIdList.filter(
+      (id) => !(recSessions ?? []).some((r) => r.camera_id === id),
+    );
+    const { data: otherSessions } =
+      camerasWithoutRec.length > 0
+        ? await admin
+            .from("camera_recording_sessions")
+            .select("camera_id, status, started_at, last_heartbeat_at")
+            .eq("organization_id", ctx.organizationId)
+            .in("camera_id", camerasWithoutRec)
+            .order("started_at", { ascending: false })
+        : { data: [] as Array<{ camera_id: string; status: string; started_at: string; last_heartbeat_at: string | null }> };
+
+    const sessions = [...(recSessions ?? []), ...(otherSessions ?? [])];
 
     // Agent online gần nhất trong org — cùng cách xác định với route
     // /status. Một truy vấn đủ vì UI cần 1 kết luận per org (đang
