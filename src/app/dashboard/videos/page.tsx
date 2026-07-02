@@ -656,6 +656,27 @@ function ClipStateCell({ scan }: { scan: ScanRow }) {
     );
   }
   if (state === "failed") {
+    // Phân biệt 2 loại failed:
+    //   (a) no_segments = THÔNG BÁO ("không có video vào lúc đó"), không
+    //       phải lỗi hệ thống. Camera có thể chưa cắm hoặc window nằm
+    //       ngoài giờ ghi hình. Badge slate, không đỏ.
+    //   (b) Lỗi thật (ffmpeg fail, agent crash, ...) — badge rose, hiện
+    //       error_message.
+    // Detect no_segments qua prefix message ổn định từ /watch route.ts.
+    const msg = clip?.error_message ?? "";
+    const isNoSegments = msg.startsWith("Không có video");
+    if (isNoSegments) {
+      return (
+        <>
+          <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-600">
+            Không có video
+          </span>
+          <div className="text-[10px] text-slate-500 mt-0.5 max-w-[180px]">
+            Camera chưa ghi hình khoảng này.
+          </div>
+        </>
+      );
+    }
     return (
       <>
         <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-rose-50 text-rose-700">
@@ -688,15 +709,17 @@ function ClipStateCell({ scan }: { scan: ScanRow }) {
       </>
     );
   }
-  // ready_no_cloud
+  // ready_no_cloud — thiết kế: clip tạo on-demand khi user cần. Row có
+  // status='ready' + bucket null/expired = clip cũ, không phải "phải
+  // đồng bộ". Không dùng badge cảnh báo (amber/AlertTriangle) — chỉ
+  // thông báo trung tính: chưa tạo clip xem, bấm khi cần.
   return (
     <>
-      <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-amber-50 text-amber-700 inline-flex items-center gap-1">
-        <AlertTriangle className="h-3 w-3" />
-        Chưa lên cloud
+      <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-600">
+        Chưa tạo clip
       </span>
       <div className="text-[10px] text-slate-500 mt-0.5">
-        Clip cũ chỉ có trên ổ kho. Bấm Tạo lại để cắt+upload.
+        Bấm Tạo clip khi cần xem.
       </div>
     </>
   );
@@ -763,14 +786,15 @@ function ScanActions({
   }
 
   // none / failed / ready_no_cloud → 1 nút primary mở modal generate.
-  const label =
-    state === "none"
-      ? "Tạo clip"
-      : state === "failed"
-        ? "Thử lại"
-        : "Tạo lại";
-  const Icon =
-    state === "failed" ? RotateCw : state === "ready_no_cloud" ? RotateCw : Plus;
+  // Label + icon nhất quán với badge cell:
+  //   none            → "Tạo clip" (Plus)     — chưa từng có clip.
+  //   failed no_segments → "Thử lại" (RotateCw) — user thử lại xem segment
+  //                        có được cắt không (biết đâu agent đã ghi thêm).
+  //   failed khác     → "Thử lại" (RotateCw) — lỗi hệ thống, retry hợp lý.
+  //   ready_no_cloud  → "Tạo clip" (Plus)     — clip cũ, tạo mới on-demand
+  //                     (khớp thiết kế "tạo khi cần xem").
+  const label = state === "failed" ? "Thử lại" : "Tạo clip";
+  const Icon = state === "failed" ? RotateCw : Plus;
 
   return (
     <button
