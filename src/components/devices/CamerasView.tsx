@@ -398,7 +398,10 @@ export function CameraDetailPanel({
   })();
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto">
+    // Bỏ inner overflow-y-auto — page detail dùng scroll của <main>
+    // trong DashboardLayout. Trước đây 2 scroll chồng (main + inner)
+    // gây scrollbar đôi bên phải khi content dài.
+    <div className="flex-1 min-h-0">
       <div className="p-4 space-y-3">
         {/* ===== Header card ===== */}
         <div className="rounded-2xl border border-slate-100 bg-white px-4 py-3 flex items-center justify-between gap-3 flex-wrap">

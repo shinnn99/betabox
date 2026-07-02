@@ -212,7 +212,7 @@ export default function CameraDetailPage({
       pageSubtitle={`Camera · ${camera.camera_code}`}
       pageIcon={Cctv}
     >
-      <div className="bg-white rounded-2xl border border-slate-100 shadow-sm h-full min-h-0 flex flex-col overflow-hidden">
+      <div className="bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col">
         <CameraDetailPanel
           camera={camera}
           recording={recInfo}
