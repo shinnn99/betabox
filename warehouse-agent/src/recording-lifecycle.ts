@@ -80,6 +80,15 @@ export interface LifecycleDeps {
 export class RecordingLifecycle {
   private readonly states = new Map<string, CamLifecycleState>();
   private desired = new Map<string, DesiredEntry>();
+  // Cache spec cho camera probe. `states` bị delete khi spawn fail
+  // (transient/permanent) → cam_02 tắt vật lý chỉ có state 1 lần/5phút
+  // (mỗi lần long-retry) → probeTargets() từ states không probe đều
+  // được. Cache riêng chỉ delete khi user chủ động stop hoặc camera bị
+  // gỡ khỏi desired → probe loop có target ổn định.
+  private readonly probeSpecs = new Map<
+    string,
+    { cameraCode: string; rtspUrl: string }
+  >();
 
   constructor(private readonly deps: LifecycleDeps) {}
 
@@ -105,21 +114,21 @@ export class RecordingLifecycle {
   }
 
   /**
-   * Danh sách target để probe TCP RTSP port. Rút từ CamLifecycleState —
-   * bao gồm CẢ camera chưa spawn thành công (đang ở long-retry). Nếu
-   * chỉ lấy từ listActiveRecordings() thì cam đang tắt vật lý sẽ không
-   * bao giờ được probe (ffmpeg fail → không vào runningMap) → UI mãi
-   * dựa vào snapshot cũ, không real-time. Ở đây rtspUrl sẵn có trong
-   * spec (đã fetch từ recording-credentials khi vào lifecycle state).
+   * Danh sách target probe TCP RTSP port. Đọc từ probeSpecs (không phải
+   * states) — vì states bị delete khi spawn fail (cam vật lý tắt →
+   * transient → states.delete + scheduleLongRetry 5 phút). Nếu đọc từ
+   * states thì camera tắt chỉ được probe 1 lần mỗi 5 phút (mỗi lần
+   * long-retry spawn lại), không đều 30s → UI mãi hiện "Đã cấu hình"
+   * hoặc probe stale. probeSpecs chỉ delete khi user chủ động stop hoặc
+   * lỗi permanent → probe loop ổn định qua khoảng long-retry.
    */
   probeTargets(): Array<{ cameraId: string; cameraCode: string; rtspUrl: string }> {
     const out: Array<{ cameraId: string; cameraCode: string; rtspUrl: string }> = [];
-    for (const state of this.states.values()) {
-      if (state.stopped) continue;
+    for (const [cameraId, spec] of this.probeSpecs.entries()) {
       out.push({
-        cameraId: state.spec.cameraId,
-        cameraCode: state.spec.cameraCode,
-        rtspUrl: state.spec.rtspUrl,
+        cameraId,
+        cameraCode: spec.cameraCode,
+        rtspUrl: spec.rtspUrl,
       });
     }
     return out;
@@ -325,6 +334,14 @@ export class RecordingLifecycle {
     state.spec = spec;
     state.stopped = false;
     this.states.set(spec.cameraId, state);
+    // Cache probe target sớm — trước cả khi spawn ffmpeg. Nếu spawn
+    // fail transient (cam vật lý tắt) states.delete() vẫn xảy ra
+    // nhưng probeSpecs giữ target → probe loop tiếp tục ping IP mỗi
+    // 30s ngay cả trong khoảng long-retry 5 phút.
+    this.probeSpecs.set(spec.cameraId, {
+      cameraCode: spec.cameraCode,
+      rtspUrl: spec.rtspUrl,
+    });
 
     const outcome = await startRecording({
       ffmpegBin: this.deps.ffmpegBin,
@@ -345,6 +362,7 @@ export class RecordingLifecycle {
       // không loop chết-lên-chết-lên.
       if (kind === "permanent") {
         this.desired.delete(spec.cameraId);
+        this.probeSpecs.delete(spec.cameraId);
         await this.deps.desiredStore.save(this.desired);
         await this.reportStatus(spec, "error", `${outcome.reason} :: ${outcome.stderrTail.slice(-500)}`);
       } else {
@@ -399,6 +417,7 @@ export class RecordingLifecycle {
     );
     if (kind === "permanent") {
       this.desired.delete(spec.cameraId);
+      this.probeSpecs.delete(spec.cameraId);
       void this.deps.desiredStore.save(this.desired);
       void this.reportStatus(spec, "error", `permanent :: ${stderrTail.slice(-500)}`);
       // Segment cuối vừa đóng — báo ended_at, tháo watcher hẳn.
@@ -478,6 +497,7 @@ export class RecordingLifecycle {
     }
     const outcome = await stopRecording(params.cameraId);
     this.desired.delete(params.cameraId);
+    this.probeSpecs.delete(params.cameraId);
     await this.deps.desiredStore.save(this.desired);
     this.states.delete(params.cameraId);
     await this.reportStatus(
