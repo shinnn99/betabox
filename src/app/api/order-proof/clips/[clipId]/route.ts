@@ -116,7 +116,7 @@ export async function GET(req: Request, { params }: RouteContext) {
       {
         error: "file_missing",
         message:
-          "Clip chưa đồng bộ lên cloud. Mở trang xem clip riêng (route /dashboard/orders/[pe_id]/watch) để cắt+upload lại.",
+          "Clip chưa đồng bộ lên cloud. Vào /dashboard/videos, tìm đơn tương ứng và bấm Xem — modal sẽ tự cắt+upload lại.",
         packing_event_id: row.packing_event_id,
       },
       { status: 410 },

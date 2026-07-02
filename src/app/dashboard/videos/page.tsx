@@ -1,8 +1,7 @@
 "use client";
 
 import type { ComponentType } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Camera,
@@ -28,24 +27,29 @@ import {
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import DateRangePicker from "@/components/ui/DateRangePicker";
 import { useToast } from "@/components/ui/Toast";
+import {
+  useWatchClipState,
+  formatOfflineDuration,
+  type WatchClipState,
+} from "@/lib/watch/use-watch-clip-state";
 
 /**
- * Lát 3d list migration: `/dashboard/videos` từng chạy stack cũ (backend
- * Vercel spawn ffmpeg + đọc clip_path local). Migration đưa list vào
- * luồng agent-pattern:
- *   - Nút [Tạo clip]/[Thử lại]/[Tạo lại] → link sang /dashboard/orders/{peId}/watch
- *     (trang detail có state machine 3c/3d — auto POST /watch enqueue cut).
- *   - Nút [Xem] mở modal, modal gọi POST /watch trực tiếp và render theo
- *     state THẬT trả về — KHÔNG hardcode "mở từ [Xem] nên ready".
- *   - Cột "Clip" tách bucket-valid vs status='ready': ready-cloud vs
- *     ready-chưa-cloud. Row cũ clip_path=local + bucket=null hiện
- *     [Tạo lại] không phải [Xem] (proactive, không đợi <video> lỗi).
- *   - Badge "Kho offline" khi agent_offline_seconds > 30 (nguồn chung
- *     readAgentLiveness với /watch — cùng HÀM, không chỉ cùng cột).
+ * Lát 3d list migration + UX một-cửa-thật-sự (2026-07-03):
  *
- * KHÔNG đẻ luồng thứ hai. List không tự enqueue, không poll — mọi hành
- * động đi qua /watch (trang detail hoặc modal gọi 1 lần). Cùng bài học
- * task_id/sweep: một cửa, không hai chỗ cùng làm một việc.
+ * `/dashboard/videos` từng chạy stack cũ (backend Vercel spawn ffmpeg +
+ * đọc clip_path local). Migration đưa list vào luồng agent-pattern, và
+ * gom mọi thao tác vào modal — không nhảy tab, không link sang trang
+ * khác. Trang `/dashboard/orders/[pe_id]/watch` cũ đã xóa; state machine
+ * 3c/3d chuyển vào hook `useWatchClipState` dùng chung.
+ *
+ * Mọi nút hành động (Xem/Tạo clip/Thử lại/Tạo lại) mở CÙNG một modal,
+ * khác nhau chỉ ở state ban đầu — user không cần nhớ nút nào mở gì.
+ * Modal tự POST /watch, tự poll (2s active / 20s offline), tự xử 8
+ * nhánh state, cleanup timer khi đóng.
+ *
+ * KHÔNG đẻ luồng thứ hai. Modal là NƠI POLL DUY NHẤT (trang detail đã
+ * xóa). Nguyên tắc "một nơi poll" giữ nguyên, chỉ đổi vị trí từ trang
+ * sang modal.
  */
 
 const AGENT_OFFLINE_THRESHOLD_SECONDS = 30;
@@ -140,13 +144,8 @@ function clipDurationTooltip(c: {
   return parts.join("\n");
 }
 
-function formatOfflineDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} phút`;
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
-}
+// formatOfflineDuration import từ @/lib/watch/use-watch-clip-state — dùng
+// chung với modal, đừng chép công thức ra hai chỗ.
 
 type ViewMode = "list" | "grid";
 
@@ -204,7 +203,17 @@ export default function VideosPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
-  const [playing, setPlaying] = useState<ScanRow | null>(null);
+  // Modal state: null = đóng. Khi mở, mang cả scan + mode để modal biết
+  // phải render "view" (ready ngay) / "generate" (retry + poll) / "watch"
+  // (poll tiếp).
+  const [openModal, setOpenModal] = useState<{
+    scan: ScanRow;
+    mode: ModalMode;
+  } | null>(null);
+  const openFor = useCallback(
+    (scan: ScanRow) => (mode: ModalMode) => setOpenModal({ scan, mode }),
+    [],
+  );
 
   const totalClipBytes = useMemo(
     () =>
@@ -320,13 +329,13 @@ export default function VideosPage() {
             <ListView
               loading={loading}
               rows={rows}
-              onPlay={setPlaying}
+              openFor={openFor}
             />
           ) : (
             <GridView
               loading={loading}
               rows={rows}
-              onPlay={setPlaying}
+              openFor={openFor}
             />
           )}
 
@@ -349,8 +358,12 @@ export default function VideosPage() {
         </div>
       </div>
 
-      {playing && (
-        <PlayerModal scan={playing} onClose={() => setPlaying(null)} />
+      {openModal && (
+        <PlayerModal
+          scan={openModal.scan}
+          mode={openModal.mode}
+          onClose={() => setOpenModal(null)}
+        />
       )}
     </DashboardLayout>
   );
@@ -428,11 +441,11 @@ function SearchBar(props: {
 function ListView({
   loading,
   rows,
-  onPlay,
+  openFor,
 }: {
   loading: boolean;
   rows: ScanRow[];
-  onPlay: (r: ScanRow) => void;
+  openFor: (r: ScanRow) => (mode: ModalMode) => void;
 }) {
   return (
     <div>
@@ -475,7 +488,7 @@ function ListView({
               <ScanRowView
                 key={r.id}
                 scan={r}
-                onPlay={() => onPlay(r)}
+                onOpen={openFor(r)}
               />
             ))}
         </tbody>
@@ -487,11 +500,11 @@ function ListView({
 function GridView({
   loading,
   rows,
-  onPlay,
+  openFor,
 }: {
   loading: boolean;
   rows: ScanRow[];
-  onPlay: (r: ScanRow) => void;
+  openFor: (r: ScanRow) => (mode: ModalMode) => void;
 }) {
   if (loading) {
     return (
@@ -515,19 +528,11 @@ function GridView({
         <ScanCardView
           key={r.id}
           scan={r}
-          onPlay={() => onPlay(r)}
+          onOpen={openFor(r)}
         />
       ))}
     </div>
   );
-}
-
-/**
- * URL sang trang detail /watch cho một scan. Mọi hành động cắt/upload
- * trong luồng 3c/3d đi qua đây — list KHÔNG tự enqueue.
- */
-function watchPageHref(peId: string): string {
-  return `/dashboard/orders/${peId}/watch`;
 }
 
 // Badge "Kho offline" hiển thị khi agent_offline_seconds vượt ngưỡng.
@@ -537,7 +542,7 @@ function OfflineBadge({ seconds }: { seconds: number }) {
   return (
     <span
       className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700"
-      title={`Agent kho không phản hồi ${formatOfflineDuration(seconds)}. Bấm nút để mở trang xem chi tiết trạng thái.`}
+      title={`Agent kho không phản hồi ${formatOfflineDuration(seconds)}. Bấm nút để mở modal xem chi tiết trạng thái.`}
     >
       <WifiOff className="h-3 w-3" />
       Kho offline
@@ -612,52 +617,67 @@ function ClipStateCell({ scan }: { scan: ScanRow }) {
   );
 }
 
-// Nút hành động theo state clip + agent offline.
-// Mọi nút hành-động = <a target="_blank"> sang /watch. KHÔNG handler async
-// trong list — mọi hành động đi qua trang detail (một cửa).
-function ScanActions({ scan, onPlay }: { scan: ScanRow; onPlay: () => void }) {
+/**
+ * Nút hành động — MỌI nút mở CÙNG modal, khác nhau chỉ ở state ban đầu.
+ * Modal tự POST /watch (auto enqueue cut nếu chưa có clip), tự poll đến
+ * ready/terminal. User không nhảy tab, không link — một cửa trong list.
+ *
+ * `mode` truyền vào modal:
+ *   - "view"   : row ready_cloud → mở modal, /watch trả ready ngay → video.
+ *   - "generate": row none/failed/ready_no_cloud → mở modal, /watch enqueue
+ *                 cut → poll preparing → ready.
+ *   - "watch"  : row processing (đang cắt ở tab khác) → mở modal → poll
+ *                 tiếp cho đến ready.
+ * "generate" cần POST /watch/retry TRƯỚC khi tick đầu (xóa row failed +
+ * bucket cũ, không thì reconcile thấy failed → loop). "view"/"watch" chỉ
+ * cần tick /watch bình thường.
+ */
+type ModalMode = "view" | "generate" | "watch";
+
+function ScanActions({
+  scan,
+  onOpen,
+}: {
+  scan: ScanRow;
+  onOpen: (mode: ModalMode) => void;
+}) {
   const state = clipCellState(scan.clip);
-  const watchUrl = watchPageHref(scan.id);
 
   if (state === "ready_cloud") {
     return (
       <div className="inline-flex items-center justify-end gap-1">
         <button
-          onClick={onPlay}
+          onClick={() => onOpen("view")}
           className="h-8 px-2.5 rounded-lg bg-violet-50 hover:bg-violet-100 text-violet-700 inline-flex items-center gap-1 text-xs font-semibold"
         >
           <Play className="h-3 w-3" /> Xem
         </button>
-        <a
-          href={watchUrl}
-          target="_blank"
-          rel="noopener"
+        <button
+          onClick={() => onOpen("generate")}
           className="h-8 px-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1 text-xs font-semibold"
-          title="Cắt lại clip (mở trang xem)"
+          title="Cắt lại clip từ đầu"
         >
           <RotateCw className="h-3 w-3" />
           Tạo lại
-        </a>
+        </button>
       </div>
     );
   }
 
   if (state === "processing") {
     return (
-      <a
-        href={watchUrl}
-        target="_blank"
-        rel="noopener"
+      <button
+        onClick={() => onOpen("watch")}
         className="h-8 px-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1 text-xs font-semibold"
-        title="Đang cắt, mở trang xem để theo dõi tiến độ"
+        title="Đang cắt, mở modal để theo dõi tiến độ"
       >
         <Loader2 className="h-3 w-3 animate-spin" />
         Đang cắt
-      </a>
+      </button>
     );
   }
 
-  // none / failed / ready_no_cloud → 1 nút primary sang /watch.
+  // none / failed / ready_no_cloud → 1 nút primary mở modal generate.
   const label =
     state === "none"
       ? "Tạo clip"
@@ -668,24 +688,22 @@ function ScanActions({ scan, onPlay }: { scan: ScanRow; onPlay: () => void }) {
     state === "failed" ? RotateCw : state === "ready_no_cloud" ? RotateCw : Plus;
 
   return (
-    <a
-      href={watchUrl}
-      target="_blank"
-      rel="noopener"
+    <button
+      onClick={() => onOpen("generate")}
       className="h-8 px-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white inline-flex items-center gap-1 text-xs font-semibold"
     >
       <Icon className="h-3 w-3" />
       {label}
-    </a>
+    </button>
   );
 }
 
 function ScanRowView({
   scan,
-  onPlay,
+  onOpen,
 }: {
   scan: ScanRow;
-  onPlay: () => void;
+  onOpen: (mode: ModalMode) => void;
 }) {
   return (
     <tr className="[&>td]:border-t [&>td]:border-slate-100 hover:bg-slate-50 align-top">
@@ -746,7 +764,7 @@ function ScanRowView({
       </td>
       <td className="px-3 py-2.5 text-right whitespace-nowrap">
         <div className="inline-flex flex-col items-end gap-1">
-          <ScanActions scan={scan} onPlay={onPlay} />
+          <ScanActions scan={scan} onOpen={onOpen} />
           <OfflineBadge seconds={scan.agent_offline_seconds} />
         </div>
       </td>
@@ -756,10 +774,10 @@ function ScanRowView({
 
 function ScanCardView({
   scan,
-  onPlay,
+  onOpen,
 }: {
   scan: ScanRow;
-  onPlay: () => void;
+  onOpen: (mode: ModalMode) => void;
 }) {
   const clip = scan.clip;
   const state = clipCellState(clip);
@@ -769,7 +787,7 @@ function ScanCardView({
     <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
       <button
         type="button"
-        onClick={canPlay ? onPlay : undefined}
+        onClick={canPlay ? () => onOpen("view") : undefined}
         disabled={!canPlay}
         className={`relative w-full aspect-video bg-slate-900 group ${
           canPlay ? "cursor-pointer" : "cursor-default"
@@ -827,7 +845,7 @@ function ScanCardView({
           </div>
         )}
         <div className="pt-1">
-          <ScanActions scan={scan} onPlay={onPlay} />
+          <ScanActions scan={scan} onOpen={onOpen} />
         </div>
       </div>
     </div>
@@ -835,107 +853,73 @@ function ScanCardView({
 }
 
 /**
- * PlayerModal: mount → POST /watch một lần → render theo state THẬT.
+ * PlayerModal: dùng hook `useWatchClipState` — mount → gọi start()/retry()
+ * theo mode → tự POST /watch, tự poll 2s active / 20s offline, tự cleanup
+ * khi đóng. Modal là NƠI POLL DUY NHẤT (trang /watch đã xóa).
+ *
  * KHÔNG hardcode "mở từ nút Xem nên chắc ready". Data list có thể cũ
  * (bucket vừa hết TTL giữa lúc load và bấm → race → preparing_upload),
  * modal phải xử được ca này bằng cách đọc state thật, không giả định.
  *
- * `<video>` CHỈ render trong nhánh `ready`. Các nhánh khác hiện text +
- * nút đóng modal điều hướng cùng tab sang trang watch (giữ nhất quán
- * "một cửa" — không đẻ luồng poll trong modal, trang watch là chỗ duy
- * nhất poll).
+ * `<video>` CHỈ render trong nhánh `ready` + có signed_url. Các nhánh
+ * khác hiện text + nút retry inline (không link đi đâu).
+ *
+ * mode:
+ *   - "view"   : chỉ start(), /watch trả ready ngay → video.
+ *   - "generate": retry() trước (xóa row+bucket cũ) rồi start() ẩn dưới,
+ *                 tick đầu enqueue cut → poll preparing → ready.
+ *   - "watch"  : start(), /watch cho biết đang preparing → poll tiếp.
  */
-type WatchState =
-  | "preparing_cut"
-  | "preparing_upload"
-  | "ready"
-  | "failed"
-  | "upload_failed"
-  | "warehouse_offline"
-  | "offline_giveup"
-  | "unknown";
-
-interface WatchApiResponse {
-  state: WatchState;
-  signed_url?: string;
-  expires_at?: string;
-  error?: string;
-  offline_duration_seconds?: number;
-}
-
-type ModalUiState =
-  | { kind: "loading" }
-  | { kind: "network_error"; message: string }
-  | { kind: "watch_response"; data: WatchApiResponse };
-
 function PlayerModal({
   scan,
+  mode,
   onClose,
 }: {
   scan: ScanRow;
+  mode: ModalMode;
   onClose: () => void;
 }) {
-  const router = useRouter();
   const scannedAt = new Date(scan.scanned_at);
-  const watchPageUrl = watchPageHref(scan.id);
+  const watch = useWatchClipState(scan.id);
 
-  const [ui, setUi] = useState<ModalUiState>({ kind: "loading" });
-  // Chỉ chạy fetch 1 lần khi mount. Modal đóng+mở lại = component mới =
-  // fetch mới. Không dùng SWR/cache — mỗi lần bấm [Xem] là 1 tick /watch,
-  // đảm bảo state luôn tươi (bắt ca race TTL bucket vừa hết hạn).
-  const fetchOnce = useRef(false);
-
-  const goToWatch = useCallback(() => {
-    onClose();
-    router.push(watchPageUrl);
-  }, [onClose, router, watchPageUrl]);
-
+  // Kick tick đầu theo mode. Chạy 1 lần khi mount — hook idempotent nếu
+  // gọi start() 2 lần liên tiếp.
   useEffect(() => {
-    if (fetchOnce.current) return;
-    fetchOnce.current = true;
-    (async () => {
-      try {
-        const res = await fetch(
-          `/api/order-proof/${scan.id}/watch`,
-          { method: "POST", cache: "no-store" },
-        );
-        const data = (await res.json()) as WatchApiResponse;
-        if (!res.ok && res.status !== 200) {
-          // /watch trả 200 cho hầu hết state (kể cả failed/upload_failed).
-          // 4xx/5xx = lỗi bất thường (auth, không tìm thấy pe, ...).
-          setUi({
-            kind: "network_error",
-            message: data.error ?? `HTTP ${res.status}`,
-          });
-          return;
-        }
-        setUi({ kind: "watch_response", data });
-      } catch (err) {
-        setUi({
-          kind: "network_error",
-          message: (err as Error).message,
-        });
-      }
-    })();
-  }, [scan.id]);
+    if (mode === "generate") {
+      void watch.retry();
+    } else {
+      watch.start();
+    }
+    // Chỉ chạy khi mount. Đổi mode giữa chừng không xảy ra (modal đóng
+    // rồi mở lại = component mới).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Cleanup: khi user đóng modal → stop poll. Hook đã có cleanup unmount,
+  // đây là gọi tường minh để đảm bảo không có race giữa unmount và tick
+  // đang pending.
+  const handleClose = useCallback(() => {
+    watch.stop();
+    onClose();
+  }, [watch, onClose]);
 
   return (
     <div
       className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm"
-      onClick={onClose}
+      onClick={handleClose}
     >
       <div
         className="bg-white rounded-2xl shadow-xl w-full max-w-4xl relative overflow-hidden max-h-[92vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         <button
-          onClick={onClose}
+          onClick={handleClose}
           className="absolute top-2 right-2 z-10 h-8 w-8 rounded-lg bg-black/60 hover:bg-black text-white inline-flex items-center justify-center"
         >
           <X className="h-4 w-4" />
         </button>
 
-        <ModalBody ui={ui} onGoWatch={goToWatch} />
+        <ModalBody watch={watch} />
 
         {scan.clip?.transcoded_for_browser && (
           <div className="px-4 pt-2 text-[11px] text-slate-500">
@@ -1035,21 +1019,20 @@ function PlayerModal({
 }
 
 /**
- * Body của modal — chia theo state /watch response. `<video>` CHỈ render
- * ở nhánh ready. Các nhánh khác hiện text + nút điều hướng cùng tab sang
- * trang watch (goToWatch: onClose() + router.push()).
+ * Body của modal — chia theo state hook trả về. `<video>` CHỈ render ở
+ * nhánh ready + có signed_url. Các nhánh khác hiện text + nút retry
+ * inline (không link đi đâu — modal tự retry qua hook).
  *
  * Nguyên tắc: KHÔNG hardcode "mở từ [Xem] nên chắc ready" — luôn đọc
- * state THẬT từ response. Bắt ca race TTL bucket vừa hết hạn.
+ * state THẬT từ hook. Bắt ca race TTL bucket vừa hết hạn (mở [Xem] →
+ * hook tick /watch → server thấy bucket hết hạn → trả preparing_upload
+ * → modal poll tiếp đến ready thật, không video-đen).
  */
-function ModalBody({
-  ui,
-  onGoWatch,
-}: {
-  ui: ModalUiState;
-  onGoWatch: () => void;
-}) {
-  if (ui.kind === "loading") {
+function ModalBody({ watch }: { watch: ReturnType<typeof useWatchClipState> }) {
+  // idle = hook chưa tick lần đầu (start()/retry() vừa gọi). Hiển thị
+  // "đang tải trạng thái" ngắn. Sau tick đầu, state chuyển sang một
+  // trong 8 nhánh cụ thể.
+  if (watch.state === "idle") {
     return (
       <div className="w-full aspect-video bg-slate-900 flex items-center justify-center">
         <div className="text-white text-sm inline-flex items-center gap-2">
@@ -1060,23 +1043,21 @@ function ModalBody({
     );
   }
 
-  if (ui.kind === "network_error") {
+  if (watch.state === "network_error") {
     return (
       <MessageBox
         title="Lỗi tải trạng thái"
-        message={ui.message}
-        actionLabel="Mở trang xem clip"
-        onAction={onGoWatch}
+        message={watch.errorMessage ?? "Không rõ lý do"}
+        actionLabel="Thử lại"
+        onAction={watch.retry}
       />
     );
   }
 
-  const { data } = ui;
-
-  if (data.state === "ready" && data.signed_url) {
+  if (watch.state === "ready" && watch.signedUrl) {
     return (
       <video
-        src={data.signed_url}
+        src={watch.signedUrl}
         controls
         autoPlay
         playsInline
@@ -1086,88 +1067,108 @@ function ModalBody({
     );
   }
 
-  if (data.state === "preparing_cut") {
+  if (watch.state === "preparing_cut") {
     return (
-      <MessageBox
-        title="Clip đang được cắt"
-        message="Agent kho đang cắt clip từ segment gốc. Thường mất 10–30s. Mở trang xem để theo dõi tiến độ."
-        actionLabel="Mở trang xem"
-        onAction={onGoWatch}
+      <ProgressBox
+        title="Đang tải clip, vui lòng đợi..."
+        message="Agent kho đang cắt clip từ segment gốc. Thường mất 10–30s."
+        elapsedSeconds={watch.elapsedSeconds}
       />
     );
   }
 
-  if (data.state === "preparing_upload") {
+  if (watch.state === "preparing_upload") {
     return (
-      <MessageBox
-        title="Clip đang được đồng bộ lên cloud"
-        message="Clip đã cắt, agent đang upload lên bucket. Thường mất vài giây. Mở trang xem để theo dõi."
-        actionLabel="Mở trang xem"
-        onAction={onGoWatch}
+      <ProgressBox
+        title="Đang tải clip, vui lòng đợi..."
+        message="Clip đã cắt, agent đang đồng bộ lên cloud. Thường mất vài giây."
+        elapsedSeconds={watch.elapsedSeconds}
       />
     );
   }
 
-  if (data.state === "warehouse_offline") {
-    const dur = data.offline_duration_seconds ?? 0;
+  if (watch.state === "warehouse_offline") {
+    const dur = watch.offlineDurationSeconds ?? 0;
     return (
       <MessageBox
         title="Kho đang offline"
-        message={`Agent kho không phản hồi ${formatOfflineDuration(dur)}. Chờ agent về mạng rồi thử lại. Mở trang xem để theo dõi tự động.`}
-        actionLabel="Mở trang xem"
-        onAction={onGoWatch}
+        message={`Agent kho không phản hồi ${formatOfflineDuration(dur)}. Đang tự động chờ agent về mạng và thử lại — không cần đóng cửa sổ này.`}
         icon={WifiOff}
       />
     );
   }
 
-  if (data.state === "offline_giveup") {
-    const dur = data.offline_duration_seconds ?? 0;
+  if (watch.state === "offline_giveup") {
+    const dur = watch.offlineDurationSeconds ?? 0;
     return (
       <MessageBox
         title="Kho offline quá lâu"
-        message={`Agent kho đã offline ${formatOfflineDuration(dur)}. Kiểm tra agent trên máy kho, rồi thử lại. Mở trang xem để retry thủ công.`}
-        actionLabel="Mở trang xem"
-        onAction={onGoWatch}
+        message={`Agent kho đã offline ${formatOfflineDuration(dur)}. Kiểm tra agent trên máy kho, rồi thử lại.`}
+        actionLabel="Thử lại"
+        onAction={watch.retry}
         icon={WifiOff}
       />
     );
   }
 
-  if (data.state === "failed") {
+  if (watch.state === "failed") {
     return (
       <MessageBox
         title="Cắt clip thất bại"
-        message={data.error ?? "Không rõ lý do. Mở trang xem để thử lại."}
-        actionLabel="Mở trang xem"
-        onAction={onGoWatch}
+        message={watch.errorMessage ?? "Không rõ lý do."}
+        actionLabel="Thử lại"
+        onAction={watch.retry}
         icon={AlertTriangle}
       />
     );
   }
 
-  if (data.state === "upload_failed") {
+  if (watch.state === "upload_failed") {
     return (
       <MessageBox
-        title="Upload lên cloud thất bại"
-        message={data.error ?? "Agent không upload được clip lên cloud. Mở trang xem để thử lại."}
-        actionLabel="Mở trang xem"
-        onAction={onGoWatch}
+        title="Đồng bộ cloud thất bại"
+        message={watch.errorMessage ?? "Agent không tải được clip lên cloud."}
+        actionLabel="Thử lại"
+        onAction={watch.retry}
         icon={AlertTriangle}
       />
     );
   }
 
-  // 'unknown' hoặc ready-nhưng-thiếu-signed_url (không kỳ vọng) — fallback
-  // an toàn: điều hướng sang trang watch. KHÔNG render <video> khi thiếu
-  // signed_url (ca âm ca 7).
+  // Fallback an toàn — không kỳ vọng rơi vào đây (mọi state đã handle).
+  // KHÔNG render <video> khi state không phải ready (ca âm chặn video-đen).
   return (
     <MessageBox
       title="Trạng thái chưa xác định"
-      message="Mở trang xem để lấy trạng thái mới nhất."
-      actionLabel="Mở trang xem"
-      onAction={onGoWatch}
+      message="Đóng cửa sổ và mở lại, hoặc bấm Thử lại."
+      actionLabel="Thử lại"
+      onAction={watch.retry}
     />
+  );
+}
+
+/**
+ * Hộp hiển thị lúc đang chờ (preparing_cut / preparing_upload). Có
+ * elapsed counter + spinner để user thấy hệ đang chạy, không đứng yên.
+ */
+function ProgressBox({
+  title,
+  message,
+  elapsedSeconds,
+}: {
+  title: string;
+  message: string;
+  elapsedSeconds: number;
+}) {
+  return (
+    <div className="w-full aspect-video bg-slate-900 flex flex-col items-center justify-center gap-3 p-6 text-center">
+      <Loader2 className="h-8 w-8 text-emerald-400 animate-spin" />
+      <div className="text-white text-sm font-medium">{title}</div>
+      <div className="text-slate-300 text-xs max-w-md">{message}</div>
+      <div className="text-slate-400 text-[11px] font-mono">
+        Đã chờ {elapsedSeconds}s
+      </div>
+    </div>
   );
 }
 
@@ -1180,8 +1181,8 @@ function MessageBox({
 }: {
   title: string;
   message: string;
-  actionLabel: string;
-  onAction: () => void;
+  actionLabel?: string;
+  onAction?: () => void;
   icon?: ComponentType<{ className?: string }>;
 }) {
   return (
@@ -1189,12 +1190,14 @@ function MessageBox({
       {Icon && <Icon className="h-8 w-8 text-slate-300" />}
       <div className="text-white text-sm font-medium">{title}</div>
       <div className="text-slate-300 text-xs max-w-md">{message}</div>
-      <button
-        onClick={onAction}
-        className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold"
-      >
-        {actionLabel}
-      </button>
+      {actionLabel && onAction && (
+        <button
+          onClick={onAction}
+          className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold"
+        >
+          {actionLabel}
+        </button>
+      )}
     </div>
   );
 }

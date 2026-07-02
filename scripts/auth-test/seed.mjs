@@ -112,7 +112,7 @@ function printReady(userId) {
   console.log("  1. Browser private → https://localhost:3000/login");
   console.log(`     login ${USER_EMAIL} / ${USER_PASSWORD}`);
   console.log("  2. Curl retry với cookie session của user này:");
-  console.log("     (hoặc mở /dashboard/orders/bcacfa25-9059-40d8-b368-df9134a3bbc1/watch bấm Xem clip)");
+  console.log("     (hoặc mở /dashboard/videos, tìm đơn bcacfa25-9059-40d8-b368-df9134a3bbc1 bấm Xem)");
   console.log("");
   console.log("[seed] Kỳ vọng: watch → state=failed error=cross_org_access_denied");
   console.log("                retry curl → HTTP 403 cross_org_access_denied");
