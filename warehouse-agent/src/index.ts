@@ -32,6 +32,7 @@ import {
   checkSegmentsExist,
   cleanupOrphanConcatFiles,
   cutClip,
+  probeDurationSeconds,
   type CutSegmentInput,
 } from "./clip-cutter";
 import { CLIPS_SUBDIR, probeCodec, testCameraConnection } from "./recording";
@@ -432,43 +433,77 @@ async function main(): Promise<void> {
       const outputAbs = resolve(recordingRoot, outputRel);
       const clipName = `${p.packing_event_id}.mp4`;
 
-      // Idempotent: nếu clip đã tồn tại + duration hợp lệ → skipped.
-      // "Duration hợp lệ" = duration ≥ (target_end - target_start) - REENCODE_RETRY_DRIFT (2s).
+      // Idempotent: nếu clip đã tồn tại + probe data hợp lệ → gửi `done`
+      // với data probe (KHÔNG `skipped`).
+      //
+      // Trước (2026-07-03): dùng `skipped` với giả định "cloud giữ row
+      // cũ". Rà DB thấy 0 row nhưng 32 command done trong 10 phút cho
+      // 1 pe_id — vòng lặp: agent skip idempotent → cloud không update
+      // DB (outcome=skipped early-return) → /watch thấy chưa có row →
+      // enqueue lại → agent skip → ...
+      //
+      // Fix (C): probe duration + size từ file có sẵn → gửi outcome=done
+      // với data thật. Backend insert row status=ready → /watch tick sau
+      // thấy ready + enqueue upload → hết loop.
+      //
+      // Trước tick sau, `hasRecentEnqueuedCut` cooldown 60s ở /watch chặn
+      // dội bất kể lý do — lưới cho ca report fail (mạng).
       const targetDurationS = (Date.parse(p.target_end) - Date.parse(p.target_start)) / 1000;
       if (existsSync(outputAbs)) {
-        // Chạy ffprobe nhanh để kiểm duration.
-        // Nếu ffprobe fail → coi như file hỏng, cắt lại.
         try {
           const st = await fsp.stat(outputAbs);
           if (st.size > 0) {
-            // Có file cụ thể trong ổ + non-zero size — trong 3a-2 ta
-            // coi đây là idempotent hit. Cloud sẽ giữ row cũ vì
-            // agent chỉ báo `skipped`, không update DB.
-            await postClipCutResult({
-              backendUrl: config.backendUrl,
-              agentCode: config.agentCode,
-              agentSecret: config.agentSecret,
-              packingEventId: p.packing_event_id,
-              cameraId: p.camera_id,
-              waybillCode: p.waybill_code,
-              outcome: "skipped",
-            });
-            await reportCommandResult({
-              backendUrl: config.backendUrl,
-              agentCode: config.agentCode,
-              agentSecret: config.agentSecret,
-              commandId: command.id,
-              status: "done",
-              result: {
-                skipped: true,
-                clip_path: outputRel,
-                file_size_bytes: st.size,
-              },
-            });
-            console.log(
-              `[clip-cutter] skipped (idempotent) packing_event=${p.packing_event_id} size=${st.size}`,
+            const probedDuration = await probeDurationSeconds(config.ffprobePath, outputAbs);
+            if (probedDuration !== null && probedDuration > 0) {
+              const drift = Math.abs(targetDurationS - probedDuration);
+              await postClipCutResult({
+                backendUrl: config.backendUrl,
+                agentCode: config.agentCode,
+                agentSecret: config.agentSecret,
+                packingEventId: p.packing_event_id,
+                cameraId: p.camera_id,
+                waybillCode: p.waybill_code,
+                outcome: "done",
+                clipPath: outputRel,
+                clipName,
+                clipStartedAt: p.cut_start,
+                clipEndedAt: p.cut_end,
+                durationSeconds: probedDuration,
+                durationDriftSeconds: drift,
+                fileSizeBytes: st.size,
+                isPartial: p.partial_coverage ?? false,
+                coveredRangeLower: p.covered_range?.lower ?? null,
+                coveredRangeUpper: p.covered_range?.upper ?? null,
+                sourceFiles: p.segments.map((s) => s.file_path),
+                generationParams: {
+                  cut_mode: "copy",
+                  idempotent_reuse: true,
+                  total_gap_seconds: p.total_gap_seconds ?? 0,
+                },
+              });
+              await reportCommandResult({
+                backendUrl: config.backendUrl,
+                agentCode: config.agentCode,
+                agentSecret: config.agentSecret,
+                commandId: command.id,
+                status: "done",
+                result: {
+                  idempotent_reuse: true,
+                  clip_path: outputRel,
+                  file_size_bytes: st.size,
+                  duration_seconds: probedDuration,
+                },
+              });
+              console.log(
+                `[clip-cutter] idempotent-reuse packing_event=${p.packing_event_id} size=${st.size} duration=${probedDuration}s`,
+              );
+              return;
+            }
+            // Probe fail hoặc duration <= 0 → file có mà không đọc được.
+            // Coi như file hỏng, cắt lại (fall through).
+            console.warn(
+              `[clip-cutter] existing file probe failed packing_event=${p.packing_event_id} size=${st.size} — recutting`,
             );
-            return;
           }
         } catch {
           // stat lỗi — cắt lại

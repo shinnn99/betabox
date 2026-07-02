@@ -8,6 +8,7 @@ import {
 import {
   BUCKET_NAME,
   BUCKET_TTL_HOURS,
+  ENQUEUE_CUT_COOLDOWN_SECONDS,
   OFFLINE_POLL_GIVEUP_MINUTES,
   SIGNED_URL_TTL_SECONDS,
   UPLOAD_FAILED_COOLDOWN_MINUTES,
@@ -108,6 +109,60 @@ async function hasRecentFailedUpload(
     .limit(1);
   return (data ?? []).length > 0;
 }
+
+/**
+ * Cooldown chặn dội enqueue cut_clip.
+ *
+ * Vấn đề (2026-07-03): rà DB cho pe_id = 32 command done + 0 row
+ * ready trong 10 phút. Nguyên nhân: `hasActiveJob` chỉ check pending/
+ * taken; command đã `done` không tính. Agent skip idempotent + không
+ * insert row → tick sau thấy "không job + không row ready" → enqueue.
+ * Loop.
+ *
+ * Cooldown chặn ĐỘI ở mọi đường (kể cả sau khi agent-side (C) fix):
+ * check command `cut_clip` gần nhất theo `created_at` (BẤT KỂ status —
+ * pending/taken/done/failed đều tính). Trong 60s qua có bất kỳ command
+ * nào cho pe_id này → không enqueue nữa, chờ.
+ *
+ * Đo theo `created_at` (không `completed_at`) để command đang taken
+ * cũng nằm trong cửa sổ → không enqueue chồng khi agent đang chạy.
+ *
+ * User bấm [Thử lại] bypass cooldown bằng cách WIPE SLATE (xóa
+ * `agent_commands` cho pe_id) — không phải bypass ngoại lệ. Xem
+ * /watch/retry route.
+ */
+async function hasRecentEnqueuedCut(
+  admin: ReturnType<typeof createAdminClient>,
+  packingEventId: string,
+): Promise<boolean> {
+  const sinceIso = new Date(
+    Date.now() - ENQUEUE_CUT_COOLDOWN_SECONDS * 1000,
+  ).toISOString();
+  const { data } = await admin
+    .from("agent_commands")
+    .select("id")
+    .eq("type", "cut_clip")
+    .filter("payload->>packing_event_id", "eq", packingEventId)
+    .gte("created_at", sinceIso)
+    .limit(1);
+  return (data ?? []).length > 0;
+}
+
+/**
+ * Precheck (A): "không có segment" đã được xử ở tầng `enqueueCutClip`
+ * (src/lib/agent-commands/enqueue.ts dòng 351-358, `resolved.files
+ * === 0` → return { ok: false, reason: "no_segments" }`). Vấn đề trước
+ * là /watch KHÔNG bắt return value của enqueueCutClip — chỉ `await`
+ * không kiểm — nên `no_segments` bị nuốt sạch, /watch vẫn trả
+ * preparing_cut, modal poll mãi.
+ *
+ * Fix: dưới đây bắt return value, nếu reason=`no_segments` → set
+ * order_proof_clips.status='failed' với message người đọc.
+ *
+ * Cọc #7: khi Lát 5 cleanup ổ, phải xóa row `camera_recording_files`
+ * tương ứng, không thì `resolved.files > 0` nhưng ổ không có file →
+ * agent cắt fail. Hiện tại (2026-07-03) DB-ổ đồng bộ vì chưa cleanup.
+ */
 
 /**
  * TRỤ 3 — offline_duration đo THỜI GIAN THẬT KHO OFFLINE (từ
@@ -313,7 +368,22 @@ export async function POST(_req: Request, ctx: RouteContext) {
     return NextResponse.json<WatchResponse>({ state: "preparing_cut" });
   }
 
-  // Không có clip + không có job → cần enqueue cut. Kiểm agent BÂY GIỜ.
+  // Cooldown: chặn dội enqueue cho pe_id đã có command cut_clip trong
+  // 60s qua (BẤT KỂ status: pending/taken/done/failed). Chống loop
+  // done→không-row-ready→enqueue-lại đã quan sát 2026-07-03 (32 command
+  // done trong 10 phút cho 1 pe_id).
+  //
+  // Ca đang taken (chưa hết cooldown): trả preparing_cut, modal hiển
+  // thị "đang tải clip" — vì agent thật sự đang chạy.
+  const cutRecent = await hasRecentEnqueuedCut(admin, packingEventId);
+  if (cutRecent) {
+    if (liveness.is_offline) {
+      return offlineResponse(liveness);
+    }
+    return NextResponse.json<WatchResponse>({ state: "preparing_cut" });
+  }
+
+  // Không có clip + không có job đang chạy + không cooldown → enqueue.
   if (liveness.is_offline) {
     return offlineResponse(liveness);
   }
@@ -327,8 +397,14 @@ export async function POST(_req: Request, ctx: RouteContext) {
   if (!liveness.agent_id) {
     return offlineResponse(liveness);
   }
+
+  // (A) precheck qua return value enqueueCutClip. `enqueueCutClip`
+  // gọi resolveClipBounds → nếu 0 segment cho window → trả
+  // { ok:false, reason:"no_segments" } (KHÔNG throw). Trước đây /watch
+  // await mà không bắt return → nuốt sạch → modal poll mãi.
+  let cutResult;
   try {
-    await enqueueCutClip({
+    cutResult = await enqueueCutClip({
       organizationId: pe.organization_id,
       agentId: liveness.agent_id,
       packingEventId,
@@ -339,5 +415,39 @@ export async function POST(_req: Request, ctx: RouteContext) {
       { status: 200 },
     );
   }
+
+  if (!cutResult.ok) {
+    // Map reason enqueueCutClip → message người đọc + insert row failed
+    // để tick sau /watch thấy status=failed (không phải "chưa có row").
+    // Modal hiện "Không có video trong khoảng đơn hàng" NGAY, không
+    // poll vô hạn.
+    const userMessage =
+      cutResult.reason === "no_segments"
+        ? "Không có video trong khoảng thời gian đơn hàng (segment ổ đã dọn hoặc chưa có ghi hình)."
+        : cutResult.reason === "no_camera"
+          ? "Đơn không gán camera bằng chứng."
+          : cutResult.reason === "segment_still_open"
+            ? "Segment cuối chưa đóng, thử lại sau vài giây."
+            : cutResult.reason === "not_found"
+              ? "Không tìm thấy đơn."
+              : `enqueue_cut_failed: ${cutResult.message ?? "unknown"}`;
+
+    // Insert row failed để reconcile tick sau thấy status=failed thay
+    // vì "chưa có row" (loop). Camera_id null nếu no_camera.
+    await admin.from("order_proof_clips").insert({
+      organization_id: pe.organization_id,
+      packing_event_id: packingEventId,
+      waybill_code: pe.waybill_code ?? "",
+      camera_id: pe.proof_camera_id,
+      status: "failed",
+      error_message: userMessage,
+    });
+
+    return NextResponse.json<WatchResponse>(
+      { state: "failed", error: userMessage },
+      { status: 200 },
+    );
+  }
+
   return NextResponse.json<WatchResponse>({ state: "preparing_cut" });
 }

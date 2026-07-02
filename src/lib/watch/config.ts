@@ -28,6 +28,29 @@ export const UPLOAD_FAILED_COOLDOWN_MINUTES = Number(
 );
 
 /**
+ * Reconcile /watch enqueue cooldown cho cut_clip.
+ *
+ * Bối cảnh (2026-07-03): rà DB cho một pe_id thấy 32 command `done` +
+ * 0 row `order_proof_clips` trong 10 phút — /watch dội cut_clip vì
+ * agent skip idempotent (không insert row) và `hasActiveJob` chỉ check
+ * pending/taken, bỏ qua done. Vòng lặp: done + không row ready →
+ * enqueue → agent skipped → done + không row ready → enqueue …
+ *
+ * Cooldown chặn ĐỘI ở mọi đường (không chỉ ca skipped đã fix ở agent).
+ * Nếu vừa enqueue một cut_clip trong X giây qua BẤT KỂ STATUS (pending/
+ * taken/done/failed) → không enqueue nữa, chờ.
+ *
+ * Đo theo `created_at` command gần nhất (không theo completed_at) để
+ * command đang taken cũng nằm trong cửa sổ — không enqueue chồng.
+ *
+ * 60s = 1.5× thực tế (~40s cho happy path: cut ~34s + upload ~2s +
+ * report ~500ms). Dư an toàn cho mạng chậm/agent bận.
+ */
+export const ENQUEUE_CUT_COOLDOWN_SECONDS = Number(
+  process.env.ENQUEUE_CUT_COOLDOWN_SECONDS ?? 60,
+);
+
+/**
  * 3d: ngưỡng agent offline. Đọc từ `warehouse_agents.last_seen_at`,
  * so với `now()`. Nếu chênh > ngưỡng này = agent offline.
  *

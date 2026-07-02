@@ -271,7 +271,7 @@ export async function cutClip(params: CutClipParams): Promise<CutClipResult> {
   };
 }
 
-async function probeDurationSeconds(bin: string, filePath: string): Promise<number | null> {
+export async function probeDurationSeconds(bin: string, filePath: string): Promise<number | null> {
   return new Promise((resolve) => {
     let proc;
     try {

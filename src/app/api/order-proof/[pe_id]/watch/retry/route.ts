@@ -9,9 +9,27 @@ export const dynamic = "force-dynamic";
 /**
  * 3c: user click "Thử lại" khi state=failed hoặc upload_failed.
  *
- * Xóa row order_proof_clips + xóa file bucket (nếu có) → reconcile
- * tick kế sẽ thấy unknown → enqueue cut lại. User-driven, không
- * auto-retry server-side.
+ * WIPE SLATE (2026-07-03 update): xóa cả `agent_commands` cho pe_id
+ * để bypass cooldown reconcile (60s) — không phải "bypass ngoại lệ"
+ * mà là xóa cái làm cooldown kích hoạt. Retry = làm lại sạch, cooldown
+ * luôn áp cho auto-poll, không có nhánh ngoại lệ. Nguyên tắc: một quy
+ * tắc (cooldown), không exception.
+ *
+ * Xử ca command đang `taken` (agent đang chạy):
+ * - Retry xóa command taken → agent cắt xong gọi command-result →
+ *   backend trả 409 stale_command (WHERE status='taken' AND id=X
+ *   không match) → agent log bỏ. KHÔNG mồ côi DB.
+ * - File .mp4 agent vừa cắt vẫn nằm trong `_clips/{pe_id}.mp4` ổ →
+ *   tick tiếp /watch enqueue cut mới → agent nhận command mới → thấy
+ *   file có sẵn → sau agent-side (C) fix → gửi `done` với data probe.
+ *   File tái sử dụng.
+ *
+ * Cọc #8 project_camera_probe_tech_debt_cocs: nếu file cũ SAI (cut
+ * lỗi trước đó, không phải report fail) → tái sử dụng lặp lại lỗi.
+ * Triệu chứng: user báo "bấm Thử lại vẫn ra clip lỗi/sai cũ". Khi
+ * đó thêm flag `force_recut:true` vào payload. Bằng chứng 2026-07-03
+ * cho phép hoãn: 0 row order_proof_clips failed; 2/59 cut_clip failed
+ * đều `segments_missing_on_disk` (đã được (A) chặn ở tầng enqueue).
  */
 interface RouteContext {
   params: Promise<{ pe_id: string }>;
@@ -74,6 +92,18 @@ export async function POST(_req: Request, ctx: RouteContext) {
     .delete()
     .eq("packing_event_id", packingEventId)
     .eq("organization_id", pe.organization_id);
+
+  // WIPE SLATE — xóa cả agent_commands cho pe_id (cut_clip + upload_clip),
+  // bất kể status. Bảo vệ command đang taken: xem docstring trên.
+  //
+  // Filter payload->>packing_event_id giống hasActiveJob/hasRecentEnqueuedCut
+  // ở /watch/route.ts — cùng cột JSON path, không lệch.
+  await admin
+    .from("agent_commands")
+    .delete()
+    .eq("organization_id", pe.organization_id)
+    .in("type", ["cut_clip", "upload_clip"])
+    .filter("payload->>packing_event_id", "eq", packingEventId);
 
   return NextResponse.json({ ok: true, action: "reset_will_reprocess" });
 }
