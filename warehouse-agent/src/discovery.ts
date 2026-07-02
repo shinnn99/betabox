@@ -1,6 +1,15 @@
 import { SerialPort } from "serialport";
 import { signBody } from "./signing";
-import { describeFetchError } from "./fetch-error";
+import {
+  describeFetchError,
+  fetchWithRetry,
+  LogRateLimiter,
+} from "./fetch-error";
+
+// Rate limiter singleton cho discovery. Vercel POP hkg1 reset không
+// đều đặn — retry ăn phần lớn, nhưng vẫn có ca 3 retry đều fail. Khi
+// đó log 1 dòng, im 5 phút, tổng kết.
+const discoveryLogLimiter = new LogRateLimiter();
 
 /**
  * What we report up to the backend for one serial port. Field names match
@@ -87,12 +96,16 @@ export async function postDiscovery(params: {
     body,
   });
   try {
-    const res = await fetch(`${params.backendUrl}/api/warehouse/discovery`, {
-      method: "POST",
-      headers,
-      body,
-      redirect: "manual",
-    });
+    const res = await fetchWithRetry(
+      `${params.backendUrl}/api/warehouse/discovery`,
+      {
+        method: "POST",
+        headers,
+        body,
+        redirect: "manual",
+      },
+      { label: "discovery" },
+    );
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       console.error(
@@ -106,7 +119,20 @@ export async function postDiscovery(params: {
     );
     return json;
   } catch (err) {
-    console.error(`[discovery] POST threw: ${describeFetchError(err)}`);
+    // Đã retry 3 lần vẫn fail — log qua rate limiter.
+    // Key gộp theo error code để log riêng cho từng loại (ECONNRESET
+    // vs ETIMEDOUT chẳng hạn), không gộp thành 1 dòng chung.
+    const desc = describeFetchError(err);
+    const codeMatch = desc.match(/code=(\w+)/);
+    const code = codeMatch ? codeMatch[1] : "unknown";
+    const verdict = discoveryLogLimiter.tick(`discovery:${code}`);
+    if (verdict.kind === "log_first") {
+      console.error(`[discovery] POST threw: ${desc} (retry+backoff exhausted)`);
+    } else if (verdict.kind === "log_summary") {
+      console.error(
+        `[discovery] still failing (${code}): ${verdict.count + 1} lần trong 5m`,
+      );
+    }
     return null;
   }
 }

@@ -1,4 +1,5 @@
 import { signBody } from "./signing";
+import { fetchWithRetry } from "./fetch-error";
 
 export interface ScanPayload {
   /**
@@ -40,7 +41,7 @@ export async function sendScan(params: {
     body,
   });
 
-  const res = await fetch(`${params.backendUrl}/api/warehouse/scans`, {
+  const res = await fetchWithRetry(`${params.backendUrl}/api/warehouse/scans`, {
     method: "POST",
     headers,
     body,

@@ -39,7 +39,17 @@ import { CLIPS_SUBDIR, probeCodec, testCameraConnection } from "./recording";
 import { promises as fsp } from "node:fs";
 import { existsSync } from "node:fs";
 import { EncodeGate } from "./encode-gate";
-import { describeFetchError } from "./fetch-error";
+import { describeFetchError, LogRateLimiter } from "./fetch-error";
+
+/**
+ * Rate limiter dùng chung cho các fetch loop trong index.ts (heartbeat,
+ * poll-commands). Log lần đầu + im 5 phút + tổng kết — tránh spam khi
+ * Vercel POP reset intermittent.
+ *
+ * Tách singleton toàn module vì mỗi loop (heartbeat/poll-commands) chạy
+ * setInterval riêng, key khác nhau — 1 limiter chứa nhiều key OK.
+ */
+const fetchLogLimiter = new LogRateLimiter();
 import { probeTargets, reportProbes } from "./camera-probe";
 
 /**
@@ -1002,7 +1012,20 @@ async function main(): Promise<void> {
         encodingBusy: encodeGate.isBusy(),
       });
     } catch (err) {
-      console.error(`[COMMAND-POLL-FAIL] ${describeFetchError(err)}`);
+      // pollCommandsWithState nội bộ chưa có retry — nhưng poll chạy mỗi
+      // 3s, tự nó là "retry loop tự nhiên". Không cần retry nội bộ vì
+      // sẽ chồng lên lần poll kế. Log qua rate limiter cho gọn.
+      const desc = describeFetchError(err);
+      const codeMatch = desc.match(/code=(\w+)/);
+      const code = codeMatch ? codeMatch[1] : "unknown";
+      const verdict = fetchLogLimiter.tick(`poll-commands:${code}`);
+      if (verdict.kind === "log_first") {
+        console.error(`[COMMAND-POLL-FAIL] ${desc}`);
+      } else if (verdict.kind === "log_summary") {
+        console.error(
+          `[COMMAND-POLL] still failing (${code}): ${verdict.count + 1} lần trong 5m`,
+        );
+      }
       return;
     }
     for (const cmd of commands) {
@@ -1025,6 +1048,8 @@ async function main(): Promise<void> {
   }
 
   // Heartbeat so the backend dashboard knows the agent is alive.
+  // sendHeartbeat đã retry 3 lần với backoff — chỉ đến đây khi tất cả
+  // fail. Log qua rate limiter (lần đầu + tổng kết mỗi 5m).
   async function ping(): Promise<void> {
     try {
       const r = await sendHeartbeat({
@@ -1034,7 +1059,17 @@ async function main(): Promise<void> {
       });
       if (!r.ok) console.error(`[HEARTBEAT-FAIL ${r.status}]`);
     } catch (err) {
-      console.error(`[HEARTBEAT-THREW] ${describeFetchError(err)}`);
+      const desc = describeFetchError(err);
+      const codeMatch = desc.match(/code=(\w+)/);
+      const code = codeMatch ? codeMatch[1] : "unknown";
+      const verdict = fetchLogLimiter.tick(`heartbeat:${code}`);
+      if (verdict.kind === "log_first") {
+        console.error(`[HEARTBEAT-THREW] ${desc} (retry+backoff exhausted)`);
+      } else if (verdict.kind === "log_summary") {
+        console.error(
+          `[HEARTBEAT] still failing (${code}): ${verdict.count + 1} lần trong 5m`,
+        );
+      }
     }
   }
 

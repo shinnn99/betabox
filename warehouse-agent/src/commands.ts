@@ -1,4 +1,5 @@
 import { signBody } from "./signing";
+import { fetchWithRetry } from "./fetch-error";
 
 export interface AgentCommand {
   id: string;
@@ -31,7 +32,7 @@ export async function pollCommands(params: {
     agentSecret: params.agentSecret,
     body,
   });
-  const res = await fetch(`${params.backendUrl}/api/agent/poll-commands`, {
+  const res = await fetchWithRetry(`${params.backendUrl}/api/agent/poll-commands`, {
     method: "POST",
     headers,
     body,
@@ -77,7 +78,7 @@ export async function pollCommandsWithState(params: {
     agentSecret: params.agentSecret,
     body,
   });
-  const res = await fetch(`${params.backendUrl}/api/agent/poll-commands`, {
+  const res = await fetchWithRetry(`${params.backendUrl}/api/agent/poll-commands`, {
     method: "POST",
     headers,
     body,
@@ -110,7 +111,7 @@ export async function fetchRecordingCredentials(params: {
     agentSecret: params.agentSecret,
     body,
   });
-  const res = await fetch(`${params.backendUrl}/api/agent/recording-credentials`, {
+  const res = await fetchWithRetry(`${params.backendUrl}/api/agent/recording-credentials`, {
     method: "POST",
     headers,
     body,
@@ -158,7 +159,7 @@ export async function postRecordingStatus(params: {
     body,
   });
   try {
-    const res = await fetch(`${params.backendUrl}/api/agent/recording-status`, {
+    const res = await fetchWithRetry(`${params.backendUrl}/api/agent/recording-status`, {
       method: "POST",
       headers,
       body,
@@ -201,7 +202,7 @@ export async function postRecordingFiles(params: {
     body,
   });
   try {
-    const res = await fetch(`${params.backendUrl}/api/agent/recording-files`, {
+    const res = await fetchWithRetry(`${params.backendUrl}/api/agent/recording-files`, {
       method: "POST",
       headers,
       body,
@@ -247,7 +248,7 @@ export async function fetchKnownRecordingFiles(params: {
     agentSecret: params.agentSecret,
     body,
   });
-  const res = await fetch(`${params.backendUrl}/api/agent/recording-files/known`, {
+  const res = await fetchWithRetry(`${params.backendUrl}/api/agent/recording-files/known`, {
     method: "POST",
     headers,
     body,
@@ -313,7 +314,7 @@ export async function postClipCutResult(
     body,
   });
   try {
-    const res = await fetch(`${params.backendUrl}/api/agent/clip-cut-result`, {
+    const res = await fetchWithRetry(`${params.backendUrl}/api/agent/clip-cut-result`, {
       method: "POST",
       headers,
       body,
@@ -343,7 +344,7 @@ export async function fetchClipUploadUrl(params: {
     body,
   });
   try {
-    const res = await fetch(`${params.backendUrl}/api/agent/clip-upload-url`, {
+    const res = await fetchWithRetry(`${params.backendUrl}/api/agent/clip-upload-url`, {
       method: "POST",
       headers,
       body,
@@ -387,7 +388,7 @@ export async function notifyClipUploadComplete(params: {
     body,
   });
   try {
-    const res = await fetch(
+    const res = await fetchWithRetry(
       `${params.backendUrl}/api/agent/clip-upload-complete`,
       {
         method: "POST",
@@ -432,7 +433,7 @@ export async function reportCommandResult(params: {
     agentSecret: params.agentSecret,
     body,
   });
-  const res = await fetch(`${params.backendUrl}/api/agent/command-result`, {
+  const res = await fetchWithRetry(`${params.backendUrl}/api/agent/command-result`, {
     method: "POST",
     headers,
     body,

@@ -1,7 +1,7 @@
 import net from "node:net";
 import { URL } from "node:url";
 import { signBody } from "./signing";
-import { describeFetchError } from "./fetch-error";
+import { describeFetchError, fetchWithRetry } from "./fetch-error";
 
 /**
  * Lát 2: mỗi 30s TCP-connect RTSP port của mọi camera đang có ffmpeg
@@ -108,7 +108,7 @@ export async function reportProbes(params: {
     body,
   });
   try {
-    const res = await fetch(`${params.backendUrl}/api/agent/camera-probe`, {
+    const res = await fetchWithRetry(`${params.backendUrl}/api/agent/camera-probe`, {
       method: "POST",
       headers,
       body,
