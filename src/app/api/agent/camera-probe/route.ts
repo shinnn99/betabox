@@ -109,29 +109,99 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: verdict.error }, { status: verdict.status });
   }
 
-  // Multi-tenant filter: chỉ ghi vào camera thuộc org agent.
+  // Multi-tenant filter: chỉ ghi vào camera thuộc org agent. Kèm
+  // last_probe_ok cũ để tính consecutive_fails (chống flicker Online↔
+  // Offline khi mạng kho jitter — cần 2 nhịp fail liên tiếp mới đổi
+  // Offline; 1 nhịp jitter bỏ qua, giữ trạng thái cũ).
   const cameraIds = parsed.probes.map((p) => p.camera_id);
   const { data: cams } = await admin
     .from("cameras")
-    .select("id")
+    .select("id, last_probe_ok, probe_consecutive_fails")
     .in("id", cameraIds)
     .eq("organization_id", agent.organization_id);
-  const allowed = new Set((cams ?? []).map((c) => c.id));
+  const allowedById = new Map<
+    string,
+    {
+      last_probe_ok: boolean | null;
+      probe_consecutive_fails: number | null;
+    }
+  >();
+  for (const c of cams ?? []) {
+    allowedById.set(c.id, {
+      last_probe_ok: c.last_probe_ok,
+      probe_consecutive_fails: c.probe_consecutive_fails,
+    });
+  }
 
-  const nowIso = new Date().toISOString();
-  let updated = 0;
+  // Đếm nhịp fail liên tiếp:
+  //   - probe ok=true → reset counter về 0 và set last_probe_ok=true.
+  //   - probe ok=false → tăng counter. Chỉ set last_probe_ok=false khi
+  //     counter ≥ FAIL_THRESHOLD (mặc định 2). Nhịp fail đầu tiên: counter
+  //     tăng nhưng last_probe_ok giữ nguyên (thường vẫn true) → UI vẫn
+  //     "Online". Nhịp fail thứ 2 liên tiếp → last_probe_ok=false → UI
+  //     đổi "Offline". Một nhịp ok=true giữa hai fail sẽ reset counter →
+  //     không tích lũy fail rời rạc thành Offline sai.
+  //
+  // Vì sao debounce ở BACKEND không phải agent: agent restart mất RAM
+  // state; đặt ở DB là nguồn chân lý sống, agent stateless về mặt này.
+  const FAIL_THRESHOLD = Number(
+    process.env.CAMERA_PROBE_FAIL_THRESHOLD ?? 2,
+  );
+
+  interface UpdateRow {
+    id: string;
+    last_probe_ok: boolean;
+    last_probe_latency_ms: number | null;
+    probe_consecutive_fails: number;
+  }
+  const rowsToUpsert: UpdateRow[] = [];
   for (const p of parsed.probes) {
-    if (!allowed.has(p.camera_id)) continue;
-    const { error } = await admin
-      .from("cameras")
-      .update({
-        last_probe_at: nowIso,
-        last_probe_ok: p.ok,
-        last_probe_latency_ms: p.latency_ms,
-      })
-      .eq("id", p.camera_id)
-      .eq("organization_id", agent.organization_id);
-    if (!error) updated++;
+    const current = allowedById.get(p.camera_id);
+    if (!current) continue;
+    let nextFails: number;
+    let effectiveOk: boolean;
+    if (p.ok) {
+      nextFails = 0;
+      effectiveOk = true;
+    } else {
+      nextFails = (current.probe_consecutive_fails ?? 0) + 1;
+      if (nextFails >= FAIL_THRESHOLD) {
+        effectiveOk = false;
+      } else {
+        // Chưa đủ ngưỡng — giữ nguyên last_probe_ok cũ, tăng counter.
+        effectiveOk = current.last_probe_ok ?? false;
+      }
+    }
+    rowsToUpsert.push({
+      id: p.camera_id,
+      last_probe_ok: effectiveOk,
+      last_probe_latency_ms: p.latency_ms,
+      probe_consecutive_fails: nextFails,
+    });
+  }
+  const nowIso = new Date().toISOString();
+
+  let updated = 0;
+  if (rowsToUpsert.length > 0) {
+    // Batch UPDATE qua RPC — 1 round-trip cho toàn bộ probe, thay N
+    // update tuần tự. Không dùng .upsert() vì cameras có NOT NULL columns
+    // (name, camera_code, ip) không có default; upsert-with-id chỉ UPDATE
+    // khi row tồn tại nhưng nếu race (row bị xóa giữa allowedById.get và
+    // upsert) sẽ INSERT fail. RPC UPDATE ... FROM (subquery) sạch hơn.
+    const { data: updatedCount, error } = await admin.rpc(
+      "apply_camera_probes",
+      {
+        p_probes: rowsToUpsert.map((r) => ({
+          id: r.id,
+          last_probe_ok: r.last_probe_ok,
+          last_probe_latency_ms: r.last_probe_latency_ms,
+          probe_consecutive_fails: r.probe_consecutive_fails,
+        })),
+      },
+    );
+    if (!error && typeof updatedCount === "number") {
+      updated = updatedCount;
+    }
   }
 
   await admin
