@@ -105,6 +105,27 @@ export class RecordingLifecycle {
   }
 
   /**
+   * Danh sách target để probe TCP RTSP port. Rút từ CamLifecycleState —
+   * bao gồm CẢ camera chưa spawn thành công (đang ở long-retry). Nếu
+   * chỉ lấy từ listActiveRecordings() thì cam đang tắt vật lý sẽ không
+   * bao giờ được probe (ffmpeg fail → không vào runningMap) → UI mãi
+   * dựa vào snapshot cũ, không real-time. Ở đây rtspUrl sẵn có trong
+   * spec (đã fetch từ recording-credentials khi vào lifecycle state).
+   */
+  probeTargets(): Array<{ cameraId: string; cameraCode: string; rtspUrl: string }> {
+    const out: Array<{ cameraId: string; cameraCode: string; rtspUrl: string }> = [];
+    for (const state of this.states.values()) {
+      if (state.stopped) continue;
+      out.push({
+        cameraId: state.spec.cameraId,
+        cameraCode: state.spec.cameraCode,
+        rtspUrl: state.spec.rtspUrl,
+      });
+    }
+    return out;
+  }
+
+  /**
    * Boot flow. Đọc desired file → gọi cloud lấy credential → spawn
    * ffmpeg song song bằng allSettled (một camera hỏng không kéo cả rổ).
    * Nếu mạng chưa lên (fetch credential fail), retry mỗi

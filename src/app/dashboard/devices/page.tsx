@@ -62,6 +62,7 @@ interface CameraDevice extends Camera {
     is_recording: boolean;
     ui_state: "recording" | "agent_disconnected" | "stopped" | "error";
   } | null;
+  camera_online_state: "online" | "offline" | "warehouse_disconnected" | "not_probed";
 }
 
 interface ScannerDevice {
@@ -117,21 +118,46 @@ function connectionBadge(d: Device): {
   icon: typeof Wifi;
 } {
   if (d.kind === "camera") {
-    if (d.status === "active") {
-      return {
-        label: "Online",
-        cls: "bg-emerald-50 text-emerald-700",
-        icon: Wifi,
-      };
+    // Ưu tiên real-time từ probe loop của agent. `not_probed` = camera
+    // không trong desired-recording (agent không có RTSP URL để ping)
+    // → rơi về snapshot cameras.status như trước, không giả real-time.
+    switch (d.camera_online_state) {
+      case "online":
+        return {
+          label: "Online",
+          cls: "bg-emerald-50 text-emerald-700",
+          icon: Wifi,
+        };
+      case "offline":
+        return {
+          label: "Offline",
+          cls: "bg-rose-50 text-rose-700",
+          icon: WifiOff,
+        };
+      case "warehouse_disconnected":
+        return {
+          label: "Mất kết nối kho",
+          cls: "bg-amber-50 text-amber-700",
+          icon: WifiOff,
+        };
+      case "not_probed":
+      default:
+        if (d.status === "active") {
+          return {
+            label: "Đã cấu hình",
+            cls: "bg-slate-100 text-slate-600",
+            icon: Wifi,
+          };
+        }
+        if (d.status === "error") {
+          return { label: "Lỗi cấu hình", cls: "bg-rose-50 text-rose-700", icon: WifiOff };
+        }
+        return {
+          label: "Chưa test",
+          cls: "bg-slate-100 text-slate-500",
+          icon: WifiOff,
+        };
     }
-    if (d.status === "error") {
-      return { label: "Offline", cls: "bg-rose-50 text-rose-700", icon: WifiOff };
-    }
-    return {
-      label: "Chưa test",
-      cls: "bg-slate-100 text-slate-500",
-      icon: WifiOff,
-    };
   }
   switch (d.connection_status) {
     case "connected":

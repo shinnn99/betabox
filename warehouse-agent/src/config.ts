@@ -44,6 +44,13 @@ const EnvSchema = z.object({
    */
   POLL_INTERVAL_MS: z.coerce.number().int().positive().default(3000),
   /**
+   * Interval TCP-connect probe RTSP port của mọi camera trong lifecycle,
+   * batch report cloud (POST /api/agent/camera-probe). 30s = mỗi camera
+   * cứ 30s được kiểm nghe port một lần; cam vừa off sẽ thấy Offline
+   * trong 1-30s (agent report cả fail). 90s = 3 nhịp missed mới stale.
+   */
+  CAMERA_PROBE_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
+  /**
    * Thư mục lưu segment recording. Mỗi camera có thư mục riêng
    * <RECORDING_DIR>/<camera_code>/<YYYY>/<MM>/<DD>/<code>_<YYYYMMDD>_<HHMMSS>.mp4
    */
@@ -99,6 +106,7 @@ export interface AgentConfig {
   discoveryIntervalMs: number;
   defaultBaudRate: number;
   pollIntervalMs: number;
+  cameraProbeIntervalMs: number;
   recordingDir: string;
   ffmpegPath: string;
   ffprobePath: string;
@@ -148,6 +156,7 @@ export function loadConfig(): AgentConfig {
     discoveryIntervalMs: env.DISCOVERY_INTERVAL_MS,
     defaultBaudRate: env.DEFAULT_BAUD_RATE,
     pollIntervalMs: env.POLL_INTERVAL_MS,
+    cameraProbeIntervalMs: env.CAMERA_PROBE_INTERVAL_MS,
     recordingDir: env.RECORDING_DIR,
     ffmpegPath: env.FFMPEG_PATH,
     ffprobePath: env.FFPROBE_PATH,

@@ -3,15 +3,58 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { isError, requirePermission } from "@/lib/supabase/guard";
 import { listCameras } from "@/lib/camera/service";
 
-// Đồng bộ với ngưỡng ở /api/cameras/[id]/recording/status.
-// session.last_heartbeat_at (90s) khác agent.last_seen_at (60s) —
-// hai cột hai việc, đừng dùng lẫn.
+// BA cột heartbeat/probe, đừng dùng lẫn:
+//   - warehouse_agents.last_seen_at (agent còn sống, 60s ngưỡng)
+//   - camera_recording_sessions.last_heartbeat_at (session đang ghi, 90s)
+//   - cameras.last_probe_at (camera nghe RTSP port, 90s)
 const SESSION_HEARTBEAT_STALE_MS = Number(
   process.env.RECORDING_SESSION_STALE_MS ?? 90_000,
 );
 const AGENT_ONLINE_STALE_MS = Number(
   process.env.AGENT_ONLINE_STALE_MS ?? 60_000,
 );
+const CAMERA_PROBE_STALE_MS = Number(
+  process.env.CAMERA_PROBE_STALE_MS ?? 90_000,
+);
+
+/**
+ * "Trạng thái kết nối camera" — bốn nhánh. Kết hợp cameras.last_probe_at
+ * + last_probe_ok + agent.last_seen_at để KHÔNG dồn mọi ca stale thành
+ * "chưa rõ" — mình có `agent.last_seen_at` để phân biệt agent-chết vs
+ * camera-chết, dùng nó.
+ *   - probe tươi + ok=true → online
+ *   - probe tươi + ok=false → offline (agent ping được, camera không nghe)
+ *   - probe stale + agent sống → offline (agent chạy mà không tới cam)
+ *   - probe stale + agent chết → warehouse_disconnected (không đổ lỗi cam)
+ *   - chưa có probe (camera không trong desired-recording) → not_probed
+ *     (UI hiển thị snapshot cameras.status như trước — không giả real-time)
+ */
+export type CameraOnlineState =
+  | "online"
+  | "offline"
+  | "warehouse_disconnected"
+  | "not_probed";
+
+function deriveCameraOnlineState(input: {
+  lastProbeAt: string | null;
+  lastProbeOk: boolean | null;
+  agentLastSeenAt: string | null;
+  now: number;
+}): CameraOnlineState {
+  const agentOffline = input.agentLastSeenAt
+    ? input.now - Date.parse(input.agentLastSeenAt) > AGENT_ONLINE_STALE_MS
+    : true;
+  if (!input.lastProbeAt || input.lastProbeOk === null) {
+    return "not_probed";
+  }
+  const probeAgeMs = input.now - Date.parse(input.lastProbeAt);
+  const probeStale = probeAgeMs > CAMERA_PROBE_STALE_MS;
+  if (!probeStale) {
+    return input.lastProbeOk ? "online" : "offline";
+  }
+  // Stale: kết hợp agent.last_seen_at để phân biệt.
+  return agentOffline ? "warehouse_disconnected" : "offline";
+}
 
 export const runtime = "nodejs";
 
@@ -202,12 +245,32 @@ export async function GET() {
     }
   }
 
-  // Attach the soft-link id and live recording state to each camera row.
+  // Agent online gần nhất trong org — dùng cho cả recording state VÀ
+  // camera online state. Query 1 lần, dùng chung. (Trước đây query trong
+  // if(cameras.length>0) block, giờ cần cả nhánh camera_online_state
+  // dùng — kéo ra ngoài để không phụ thuộc có recording session hay không.)
+  const { data: agentForOnline } = await admin
+    .from("warehouse_agents")
+    .select("last_seen_at")
+    .eq("organization_id", ctx.organizationId)
+    .eq("status", "active")
+    .order("last_seen_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+  const nowForOnline = Date.now();
+
+  // Attach the soft-link id, recording state, và camera online state.
   const cameraRows = cameras.map((c) => ({
     kind: "camera" as const,
     ...c,
     station_device_id: cameraSoftLinkByCameraId.get(c.id) ?? null,
     recording: recordingByCameraId.get(c.id) ?? null,
+    camera_online_state: deriveCameraOnlineState({
+      lastProbeAt: c.last_probe_at,
+      lastProbeOk: c.last_probe_ok,
+      agentLastSeenAt: agentForOnline?.last_seen_at ?? null,
+      now: nowForOnline,
+    }),
   }));
 
   return NextResponse.json({

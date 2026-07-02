@@ -70,6 +70,12 @@ export interface Camera {
   codec_warning?: string | null;
   codec_probed_at?: string | null;
   codec_probe_error?: string | null;
+  // Lát 2: agent TCP-probe RTSP port. Optional để tương thích với
+  // payload cũ (nếu API chưa được deploy fix mới).
+  last_probe_at?: string | null;
+  last_probe_ok?: boolean | null;
+  last_probe_latency_ms?: number | null;
+  camera_online_state?: "online" | "offline" | "warehouse_disconnected" | "not_probed";
 }
 
 export interface RecordingSession {
@@ -168,26 +174,49 @@ const REC_BADGE: Record<RecState, { label: string; cls: string; dot: string }> =
   },
 };
 
-const CONN_BADGE: Record<
-  Camera["status"],
-  { label: string; cls: string; icon: typeof Wifi }
-> = {
-  active: {
-    label: "Online",
-    cls: "bg-emerald-50 text-emerald-700",
-    icon: Wifi,
-  },
-  inactive: {
-    label: "Chưa test",
-    cls: "bg-slate-100 text-slate-600",
-    icon: WifiOff,
-  },
-  error: {
-    label: "Offline",
-    cls: "bg-rose-50 text-rose-700",
-    icon: WifiOff,
-  },
-};
+// Ưu tiên camera_online_state (real-time từ agent TCP probe) nếu có.
+// Fallback về Camera.status (snapshot cấu hình) khi payload cũ hoặc
+// camera không trong desired-recording (không được probe).
+function deriveConnBadge(camera: Camera): {
+  label: string;
+  cls: string;
+  icon: typeof Wifi;
+} {
+  switch (camera.camera_online_state) {
+    case "online":
+      return { label: "Online", cls: "bg-emerald-50 text-emerald-700", icon: Wifi };
+    case "offline":
+      return { label: "Offline", cls: "bg-rose-50 text-rose-700", icon: WifiOff };
+    case "warehouse_disconnected":
+      return {
+        label: "Mất kết nối kho",
+        cls: "bg-amber-50 text-amber-700",
+        icon: WifiOff,
+      };
+    case "not_probed":
+      if (camera.status === "active") {
+        return {
+          label: "Đã cấu hình",
+          cls: "bg-slate-100 text-slate-600",
+          icon: Wifi,
+        };
+      }
+      if (camera.status === "error") {
+        return { label: "Lỗi cấu hình", cls: "bg-rose-50 text-rose-700", icon: WifiOff };
+      }
+      return { label: "Chưa test", cls: "bg-slate-100 text-slate-500", icon: WifiOff };
+    default:
+      // Payload cũ không có camera_online_state → giữ hành vi cũ
+      // (đọc Camera.status) để không vỡ khi API chưa deploy.
+      if (camera.status === "active") {
+        return { label: "Online", cls: "bg-emerald-50 text-emerald-700", icon: Wifi };
+      }
+      if (camera.status === "error") {
+        return { label: "Offline", cls: "bg-rose-50 text-rose-700", icon: WifiOff };
+      }
+      return { label: "Chưa test", cls: "bg-slate-100 text-slate-600", icon: WifiOff };
+  }
+}
 
 function formatTime(iso: string | null): string {
   if (!iso) return "—";
@@ -242,7 +271,7 @@ export function CameraDetailPanel({
 }) {
   const toast = useToast();
   const recState = deriveRecState(recording);
-  const connBadge = CONN_BADGE[camera.status];
+  const connBadge = deriveConnBadge(camera);
   const recBadge = REC_BADGE[recState];
   const latestFile = recording?.latestFile ?? null;
   const status = recording?.status ?? null;

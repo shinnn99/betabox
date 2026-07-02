@@ -39,6 +39,7 @@ import { promises as fsp } from "node:fs";
 import { existsSync } from "node:fs";
 import { EncodeGate } from "./encode-gate";
 import { describeFetchError } from "./fetch-error";
+import { probeTargets, reportProbes } from "./camera-probe";
 
 /**
  * The agent runs three things on timers:
@@ -1044,6 +1045,23 @@ async function main(): Promise<void> {
     void pollOnce();
   }, config.pollIntervalMs);
 
+  // Camera probe: TCP-connect RTSP port của mọi camera trong lifecycle
+  // state (bao gồm cả camera đang long-retry vì tắt vật lý), batch
+  // report ok/fail. Backend đọc `cameras.last_probe_at + last_probe_ok`
+  // + `warehouse_agents.last_seen_at` để phân biệt 4 nhánh Online /
+  // Offline / Mất kết nối kho / Chưa test.
+  const cameraProbeTimer = setInterval(async () => {
+    const targets = lifecycle.probeTargets();
+    if (targets.length === 0) return;
+    const results = await probeTargets(targets);
+    await reportProbes({
+      backendUrl: config.backendUrl,
+      agentCode: config.agentCode,
+      agentSecret: config.agentSecret,
+      probes: results,
+    });
+  }, config.cameraProbeIntervalMs);
+
   // Retry queued scans periodically.
   const flushTimer = setInterval(async () => {
     const items = await queue.readAll().catch((): QueuedScan[] => []);
@@ -1076,6 +1094,7 @@ async function main(): Promise<void> {
     clearInterval(heartbeatTimer);
     clearInterval(discoveryTimer);
     clearInterval(pollTimer);
+    clearInterval(cameraProbeTimer);
     for (const s of sessions.values()) s.stop();
     // Graceful stop mọi ffmpeg đang chạy để moov trailer segment cuối
     // được ghi. Không await — process.exit sẽ chạy sau delay.

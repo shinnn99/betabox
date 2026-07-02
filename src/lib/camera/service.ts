@@ -97,6 +97,12 @@ export interface CameraPublic {
   codec_warning: string | null;
   codec_probed_at: string | null;
   codec_probe_error: string | null;
+  // Lát 2: agent local TCP-connect RTSP port mỗi 30s. UI dùng cùng
+  // agent.last_seen_at để phân biệt "Camera offline" (probe fail + agent
+  // sống) vs "Mất kết nối kho" (agent chết).
+  last_probe_at: string | null;
+  last_probe_ok: boolean | null;
+  last_probe_latency_ms: number | null;
 }
 
 // DB row including encrypted password columns. Internal use only.
@@ -107,7 +113,7 @@ export interface CameraRow extends Omit<CameraPublic, "has_password"> {
 }
 
 const SAFE_COLUMNS =
-  "id, name, camera_code, ip, rtsp_port, username, rtsp_path, location, status, last_tested_at, last_test_result, created_at, updated_at, codec_detected, codec_warning, codec_probed_at, codec_probe_error";
+  "id, name, camera_code, ip, rtsp_port, username, rtsp_path, location, status, last_tested_at, last_test_result, created_at, updated_at, codec_detected, codec_warning, codec_probed_at, codec_probe_error, last_probe_at, last_probe_ok, last_probe_latency_ms";
 
 const ALL_COLUMNS = `${SAFE_COLUMNS}, password_ciphertext, password_iv, password_tag`;
 
@@ -132,6 +138,9 @@ export function toPublicCamera(row: CameraRow): CameraPublic {
     codec_warning: row.codec_warning,
     codec_probed_at: row.codec_probed_at,
     codec_probe_error: row.codec_probe_error,
+    last_probe_at: row.last_probe_at,
+    last_probe_ok: row.last_probe_ok,
+    last_probe_latency_ms: row.last_probe_latency_ms,
   };
 }
 
