@@ -60,7 +60,7 @@ interface CameraDevice extends Camera {
   station_device_id: string | null;
   recording: {
     is_recording: boolean;
-    session_status: "recording" | "stopped" | "error" | null;
+    ui_state: "recording" | "agent_disconnected" | "stopped" | "error";
   } | null;
 }
 
@@ -99,7 +99,7 @@ const TAB_LABELS: Record<TabKey, string> = {
 function isCameraError(c: CameraDevice): boolean {
   if (c.status === "error") return true;
   if (c.last_test_result?.success === false) return true;
-  if (c.recording?.session_status === "error") return true;
+  if (c.recording?.ui_state === "error") return true;
   return false;
 }
 
@@ -159,14 +159,17 @@ function connectionBadge(d: Device): {
 
 function statusLabel(d: Device): { label: string; cls: string } {
   if (d.kind === "camera") {
-    const r = d.recording?.session_status;
-    if (d.recording?.is_recording) {
+    const s = d.recording?.ui_state;
+    if (s === "recording") {
       return { label: "Đang ghi", cls: "text-red-700 bg-red-50" };
     }
-    if (r === "error") {
+    if (s === "agent_disconnected") {
+      return { label: "Agent mất kết nối", cls: "text-amber-700 bg-amber-50" };
+    }
+    if (s === "error") {
       return { label: "Lỗi ghi", cls: "text-rose-700 bg-rose-50" };
     }
-    if (r === "stopped") {
+    if (s === "stopped") {
       return { label: "Đã dừng", cls: "text-slate-600 bg-slate-100" };
     }
     return { label: "Sẵn sàng", cls: "text-slate-600 bg-slate-50" };
