@@ -212,34 +212,32 @@ export default function CameraDetailPage({
       pageSubtitle={`Camera · ${camera.camera_code}`}
       pageIcon={Cctv}
     >
-      <div className="bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col">
-        <CameraDetailPanel
-          camera={camera}
-          recording={recInfo}
-          recentFiles={recentFiles}
-          warehouseName={warehouseName}
-          connHistory={connHistory}
-          onRecordConnCheck={recordConnCheck}
-          onEdit={() => setEditing(true)}
-          onOpenFiles={() => {
-            router.push(`/dashboard/devices/cameras/${camera.id}/recordings`);
-          }}
-          onAfterChange={() => {
-            void loadCamera();
-          }}
-          onBack={() => router.push("/dashboard/devices?type=camera")}
-          onDelete={onDelete}
-          codecSlot={
-            <CodecProbePanel
-              cameraId={camera.id}
-              initialCodec={camera.codec_detected ?? null}
-              initialWarning={camera.codec_warning ?? null}
-              initialProbedAt={camera.codec_probed_at ?? null}
-              initialError={camera.codec_probe_error ?? null}
-            />
-          }
-        />
-      </div>
+      <CameraDetailPanel
+        camera={camera}
+        recording={recInfo}
+        recentFiles={recentFiles}
+        warehouseName={warehouseName}
+        connHistory={connHistory}
+        onRecordConnCheck={recordConnCheck}
+        onEdit={() => setEditing(true)}
+        onOpenFiles={() => {
+          router.push(`/dashboard/devices/cameras/${camera.id}/recordings`);
+        }}
+        onAfterChange={() => {
+          void loadCamera();
+        }}
+        onBack={() => router.push("/dashboard/devices?type=camera")}
+        onDelete={onDelete}
+        codecSlot={
+          <CodecProbePanel
+            cameraId={camera.id}
+            initialCodec={camera.codec_detected ?? null}
+            initialWarning={camera.codec_warning ?? null}
+            initialProbedAt={camera.codec_probed_at ?? null}
+            initialError={camera.codec_probe_error ?? null}
+          />
+        }
+      />
 
       {editing && (
         <CameraDialog

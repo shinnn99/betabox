@@ -398,10 +398,11 @@ export function CameraDetailPanel({
   })();
 
   return (
-    // Bỏ inner overflow-y-auto — page detail dùng scroll của <main>
-    // trong DashboardLayout. Trước đây 2 scroll chồng (main + inner)
-    // gây scrollbar đôi bên phải khi content dài.
-    <div className="flex-1 min-h-0">
+    // Layout phẳng, không flex/overflow — pattern giống dashboard/videos:
+    // scroll duy nhất của <main> trong DashboardLayout, các card grow tự
+    // nhiên theo content. Trước đây có flex-1 min-h-0 + wrapper h-full
+    // overflow-hidden ở page.tsx → 2 scroll chồng.
+    <>
       <div className="p-4 space-y-3">
         {/* ===== Header card ===== */}
         <div className="rounded-2xl border border-slate-100 bg-white px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
@@ -1035,7 +1036,7 @@ export function CameraDetailPanel({
           </pre>
         </Modal>
       )}
-    </div>
+    </>
   );
 }
 
