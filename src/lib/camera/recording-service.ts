@@ -157,37 +157,6 @@ export async function markSessionStopped(
     .eq("id", sessionId);
 }
 
-export async function touchHeartbeat(sessionId: string): Promise<void> {
-  const admin = createAdminClient();
-  await admin
-    .from("camera_recording_sessions")
-    .update({ last_heartbeat_at: new Date().toISOString() })
-    .eq("id", sessionId);
-}
-
-// Called once at app boot: any session still marked `recording` must
-// be a leftover from a previous Node process. The child died with the
-// old process, so we can't recover it — mark as error.
-export async function sweepStaleSessions(): Promise<number> {
-  const admin = createAdminClient();
-  const { data, error } = await admin
-    .from("camera_recording_sessions")
-    .update({
-      status: "error",
-      stopped_at: new Date().toISOString(),
-      error_message: "Backend restarted, recording process lost",
-    })
-    .eq("status", "recording")
-    .select("id");
-  if (error) {
-    console.error("[recording] sweep failed:", error);
-    return 0;
-  }
-  const n = (data ?? []).length;
-  if (n > 0) console.log(`[recording] swept ${n} stale session(s) on boot`);
-  return n;
-}
-
 // ---------- Files ----------
 
 export interface ListFilesQuery {

@@ -22,14 +22,18 @@ interface Session {
   error_message: string | null;
 }
 
+type UiState =
+  | "recording"
+  | "agent_disconnected"
+  | "stopped"
+  | "error"
+  | "unknown";
+
 interface Status {
+  ui_state: UiState;
   is_recording: boolean;
-  pid: number | null;
-  started_at: string | null;
   session: Session | null;
-  warning: string | null;
-  newest_file_mtime: string | null;
-  last_stderr: string | null;
+  agent_last_seen_at: string | null;
 }
 
 interface Props {
@@ -107,31 +111,31 @@ export default function RecordingControls({
     }
   };
 
+  const uiState = status?.ui_state ?? "unknown";
   const isRecording = !!status?.is_recording;
   const session = status?.session ?? null;
   const errMsg = session?.error_message;
 
   return (
     <div className="border-t border-slate-100 bg-slate-50/40 px-4 py-2.5 flex flex-wrap items-center gap-3 text-xs">
-      <Badge isRecording={isRecording} session={session} />
+      <Badge uiState={uiState} />
       {isRecording && (
         <span className="text-slate-600">
-          PID <span className="font-mono">{status?.pid ?? "—"}</span> ·{" "}
           {session?.segment_seconds ?? 60}s/segment ·{" "}
           {session?.transport.toUpperCase()}
         </span>
       )}
-      {status?.started_at && (
+      {session?.started_at && (
         <span className="text-slate-500">
-          Bắt đầu {new Date(status.started_at).toLocaleTimeString("vi-VN")}
+          Bắt đầu {new Date(session.started_at).toLocaleTimeString("vi-VN")}
         </span>
       )}
-      {status?.warning && (
+      {uiState === "agent_disconnected" && (
         <span className="text-amber-700 bg-amber-50 px-2 py-0.5 rounded">
-          {status.warning}
+          Agent kho tạm mất kết nối — camera có thể vẫn đang ghi trên máy kho.
         </span>
       )}
-      {!isRecording && errMsg && <ErrorBadge message={errMsg} />}
+      {uiState === "error" && errMsg && <ErrorBadge message={errMsg} />}
 
       <div className="ml-auto inline-flex items-center gap-1">
         {!isRecording && (
@@ -237,14 +241,8 @@ function ErrorBadge({ message }: { message: string }) {
   );
 }
 
-function Badge({
-  isRecording,
-  session,
-}: {
-  isRecording: boolean;
-  session: Session | null;
-}) {
-  if (isRecording) {
+function Badge({ uiState }: { uiState: UiState }) {
+  if (uiState === "recording") {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-50 text-red-700 font-semibold">
         <Circle className="h-2.5 w-2.5 fill-current animate-pulse" />
@@ -252,10 +250,25 @@ function Badge({
       </span>
     );
   }
-  if (session?.status === "error") {
+  if (uiState === "agent_disconnected") {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700 font-semibold">
+        Agent mất kết nối
+      </span>
+    );
+  }
+  if (uiState === "error") {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-50 text-rose-700 font-semibold">
         Lỗi ghi
+      </span>
+    );
+  }
+  if (uiState === "stopped") {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-semibold">
+        <CircleDashed className="h-2.5 w-2.5" />
+        Đã dừng
       </span>
     );
   }

@@ -155,23 +155,32 @@ export async function POST(req: Request) {
     .update({ last_seen_at: nowIso })
     .eq("id", agent.id);
 
-  // agent_state là optional. Parse dùng lại `parsedBody` đã parse ở
-  // đầu cho encoding_busy. Không fail request nếu body cũ dạng {}
-  // hoặc format lạ.
+  // agent_state là optional. Agent Lát 2 gửi kèm `active_recordings`
+  // = danh sách session ffmpeg thực sự sống trên máy agent. Cloud dùng
+  // để KHẲNG ĐỊNH session vẫn đang ghi — không chỉ cập nhật
+  // last_heartbeat_at mà còn ĐÍNH CHÍNH trạng thái nếu có route/sweep
+  // nào trước đó flip nhầm session sang 'error'. Trước đây update chỉ
+  // áp cho status='recording' → nếu session bị bẻ sang 'error' thì
+  // heartbeat không kéo về được, DB nói dối mãi. Giờ:
+  //   - status='recording' hoặc 'error' → kéo về 'recording', xóa
+  //     stopped_at, xóa error_message, cập nhật last_heartbeat_at.
+  //   - status='stopped' → KHÔNG đụng (user chủ động dừng, agent sẽ
+  //     nhận stop_recording command và tự dừng ffmpeg; đính chính về
+  //     recording sẽ đá lại quyết định của user).
   const activeRecordings = parseAgentState(parsedBody);
   if (activeRecordings.length > 0) {
     const sessionIds = activeRecordings.map((r) => r.session_id);
-    // last_heartbeat_at chỉ được set cho session đúng org, đúng
-    // status='recording'. Session status khác (stopped/error) không
-    // được tô hồng bởi agent — nếu agent còn báo heartbeat cho session
-    // đã bị cloud đánh dấu stop, đó là dấu hiệu cần reconcile (Lát
-    // sau).
     await admin
       .from("camera_recording_sessions")
-      .update({ last_heartbeat_at: nowIso })
+      .update({
+        status: "recording",
+        last_heartbeat_at: nowIso,
+        stopped_at: null,
+        error_message: null,
+      })
       .in("id", sessionIds)
       .eq("organization_id", agent.organization_id)
-      .eq("status", "recording");
+      .in("status", ["recording", "error"]);
   }
 
   return NextResponse.json({

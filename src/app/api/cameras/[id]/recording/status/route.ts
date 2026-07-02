@@ -1,23 +1,13 @@
 import { NextResponse } from "next/server";
-import { readdir, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import path from "node:path";
+import { createAdminClient } from "@/lib/supabase/admin";
 import {
   isError,
   requirePermission,
 } from "@/lib/supabase/guard";
 import {
-  getActiveSession,
   getLatestSession,
-  markSessionStopped,
-  touchHeartbeat,
 } from "@/lib/camera/recording-service";
-import {
-  getRecording,
-  isAlive,
-} from "@/lib/camera/recording";
 import { getCameraRow } from "@/lib/camera/service";
-import { cameraRecordingDir } from "@/lib/camera/recording-paths";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -25,42 +15,76 @@ interface RouteContext {
 
 export const runtime = "nodejs";
 
-const HEALTHCHECK_SECONDS = Number(
-  process.env.CAMERA_RECORDING_HEALTHCHECK_SECONDS ?? 30,
+/**
+ * Lát 2 SaaS refactor: /recording/status chuyển từ kiểu web-kiểm-process
+ * (isAlive + newestFileMtime đọc fs local) → đọc DB thuần theo agent-pattern.
+ *
+ * Kiến trúc cũ giả định ffmpeg chạy TRONG process Vercel: status route
+ * kiểm getRecording(cameraId) trong in-memory map, KHÔNG thấy → flip
+ * session sang 'error' với message "Recording process not found". Trên
+ * Vercel serverless, ffmpeg KHÔNG BAO GIỜ chạy trong process của route →
+ * flip nhầm mọi session recording sang error mỗi lần UI poll → "Lỗi ghi"
+ * giả trong khi agent kho vẫn ghi thật.
+ *
+ * Nguồn chân lý mới:
+ *   - `camera_recording_sessions.status` — agent tự cập nhật qua poll.
+ *   - `camera_recording_sessions.last_heartbeat_at` — agent piggyback
+ *     mỗi 3s qua /api/agent/poll-commands (agent_state.active_recordings).
+ *   - `warehouse_agents.last_seen_at` — agent còn sống nói chung.
+ *
+ * Ba nhánh trạng thái:
+ *   1. status='recording' + session heartbeat tươi (< 90s) → recording.
+ *   2. status='recording' + heartbeat stale hoặc agent offline
+ *      → agent_disconnected (KHÔNG error — agent hiccup mạng vẫn ghi
+ *      local; báo lỗi = nói dối).
+ *   3. status='stopped' → stopped.
+ *   4. status='error' → error (chỉ khi agent xác nhận qua báo error thật,
+ *      không phải do web đoán).
+ *
+ * Chú ý phân biệt hai cột heartbeat:
+ *   - session.last_heartbeat_at (90s stale): "session này đang ghi".
+ *   - agent.last_seen_at (60s stale): "agent còn sống".
+ * Không dùng lẫn.
+ */
+const SESSION_HEARTBEAT_STALE_MS = Number(
+  process.env.RECORDING_SESSION_STALE_MS ?? 90_000,
+);
+const AGENT_ONLINE_STALE_MS = Number(
+  process.env.AGENT_ONLINE_STALE_MS ?? 60_000,
 );
 
-// Lazy health check: caller polls this endpoint (~10s). We:
-//   1. Look up DB session.
-//   2. Cross-check with in-memory process map.
-//   3. If DB says recording but process is gone -> mark error.
-//   4. Bonus liveness: peek the camera's recording dir for a file
-//      modified in the last (segment*2) seconds. If nothing recent,
-//      surface a soft warning (not an error — segment may still be
-//      open and not yet flushed to disk).
-async function newestFileMtime(dir: string): Promise<number | null> {
-  if (!existsSync(dir)) return null;
-  let newest = 0;
-  async function walk(d: string, depth: number) {
-    let entries;
-    try {
-      entries = await readdir(d, { withFileTypes: true });
-    } catch {
-      return;
+export type RecordingUiState =
+  | "recording"
+  | "agent_disconnected"
+  | "stopped"
+  | "error"
+  | "unknown";
+
+function deriveUiState(input: {
+  sessionStatus: string | null;
+  sessionHeartbeatAt: string | null;
+  agentLastSeenAt: string | null;
+  now: number;
+}): RecordingUiState {
+  if (!input.sessionStatus) return "unknown";
+  if (input.sessionStatus === "stopped") return "stopped";
+  if (input.sessionStatus === "error") return "error";
+  if (input.sessionStatus === "recording") {
+    const hbAgeMs = input.sessionHeartbeatAt
+      ? input.now - Date.parse(input.sessionHeartbeatAt)
+      : Infinity;
+    const agentAgeMs = input.agentLastSeenAt
+      ? input.now - Date.parse(input.agentLastSeenAt)
+      : Infinity;
+    if (
+      hbAgeMs > SESSION_HEARTBEAT_STALE_MS ||
+      agentAgeMs > AGENT_ONLINE_STALE_MS
+    ) {
+      return "agent_disconnected";
     }
-    for (const ent of entries) {
-      const full = path.join(d, ent.name);
-      if (ent.isDirectory()) {
-        if (depth < 3) await walk(full, depth + 1);
-      } else if (ent.name.endsWith(".mp4")) {
-        try {
-          const st = await stat(full);
-          if (st.mtimeMs > newest) newest = st.mtimeMs;
-        } catch {}
-      }
-    }
+    return "recording";
   }
-  await walk(dir, 0);
-  return newest > 0 ? newest : null;
+  return "unknown";
 }
 
 export async function GET(_req: Request, { params }: RouteContext) {
@@ -71,54 +95,33 @@ export async function GET(_req: Request, { params }: RouteContext) {
   const camera = await getCameraRow(ctx.organizationId, id);
   if (!camera) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
-  let active = await getActiveSession(ctx.organizationId, id);
-  const proc = getRecording(id);
+  const session = await getLatestSession(ctx.organizationId, id);
 
-  // Reconcile. Allow a grace window after session creation before we
-  // call a missing in-memory entry "lost" — the client may poll
-  // /status milliseconds after /start before spawn finishes, and Next
-  // dev HMR may reload the recording module mid-session without
-  // killing the actual child. In both cases the next poll cycle will
-  // see the real state (either ffmpeg is alive or its exit handler
-  // updated the row).
-  const ageMs = active ? Date.now() - new Date(active.started_at).getTime() : 0;
-  const GRACE_MS = 8_000;
-  if (active && !proc && ageMs > GRACE_MS) {
-    await markSessionStopped(active.id, {
-      errorMessage: "Recording process not found (likely backend restarted)",
-    });
-    active = null;
-  } else if (active && proc && !isAlive(id)) {
-    await markSessionStopped(active.id, {
-      errorMessage:
-        proc.lastStderr?.slice(-500) ?? "Process died unexpectedly",
-    });
-    active = null;
-  } else if (active && proc) {
-    // best-effort heartbeat
-    void touchHeartbeat(active.id);
-  }
+  // Agent gần nhất còn sống của org — dùng để phân biệt "agent mất kết
+  // nối" với "recording error". Không gắn cứng agent-camera 1-1 vì cùng
+  // org có thể có nhiều agent (multi-kho tương lai) — session vẫn thuộc
+  // đúng org.
+  const admin = createAdminClient();
+  const { data: agent } = await admin
+    .from("warehouse_agents")
+    .select("last_seen_at")
+    .eq("organization_id", ctx.organizationId)
+    .eq("status", "active")
+    .order("last_seen_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
 
-  const latest = active ?? (await getLatestSession(ctx.organizationId, id));
-  const camDir = cameraRecordingDir(camera.camera_code);
-  const newestMtime = await newestFileMtime(camDir);
-  let warning: string | null = null;
-  if (active) {
-    const ageSec = newestMtime ? (Date.now() - newestMtime) / 1000 : Infinity;
-    const segS = active.segment_seconds;
-    if (ageSec > Math.max(HEALTHCHECK_SECONDS, segS * 2)) {
-      warning = "Không có file MP4 mới gần đây. Camera có thể ngắt kết nối.";
-    }
-  }
+  const uiState = deriveUiState({
+    sessionStatus: session?.status ?? null,
+    sessionHeartbeatAt: session?.last_heartbeat_at ?? null,
+    agentLastSeenAt: agent?.last_seen_at ?? null,
+    now: Date.now(),
+  });
 
   return NextResponse.json({
-    is_recording: !!active,
-    pid: proc?.pid ?? null,
-    started_at: proc?.startedAt?.toISOString() ?? null,
-    session: latest,
-    warning,
-    output_dir_exists: existsSync(camDir),
-    newest_file_mtime: newestMtime ? new Date(newestMtime).toISOString() : null,
-    last_stderr: active && proc ? proc.lastStderr.slice(-500) : null,
+    ui_state: uiState,
+    is_recording: uiState === "recording",
+    session,
+    agent_last_seen_at: agent?.last_seen_at ?? null,
   });
 }

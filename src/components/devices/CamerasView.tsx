@@ -83,14 +83,18 @@ export interface RecordingSession {
   error_message: string | null;
 }
 
+export type RecordingUiState =
+  | "recording"
+  | "agent_disconnected"
+  | "stopped"
+  | "error"
+  | "unknown";
+
 export interface RecordingStatus {
+  ui_state: RecordingUiState;
   is_recording: boolean;
-  pid: number | null;
-  started_at: string | null;
   session: RecordingSession | null;
-  warning: string | null;
-  newest_file_mtime: string | null;
-  last_stderr: string | null;
+  agent_last_seen_at: string | null;
 }
 
 export interface LatestFile {
@@ -125,15 +129,15 @@ export interface ConnCheckEntry {
   message: string | null;
 }
 
-// "Trạng thái ghi" derived from connection + recording session.
-type RecState = "recording" | "error" | "stopped" | "unknown";
+// "Trạng thái ghi" đọc thẳng từ ui_state của backend — backend đã hợp
+// nhất session.status + heartbeat + agent.last_seen_at thành 1 kết luận.
+// "agent_disconnected" ≠ "error": agent hiccup mạng vẫn ghi local, báo
+// error là nói dối trạng thái.
+type RecState = RecordingUiState;
 
 function deriveRecState(rec: RecordingInfo | undefined): RecState {
   if (!rec || !rec.status) return "unknown";
-  if (rec.status.is_recording) return "recording";
-  if (rec.status.session?.status === "error") return "error";
-  if (rec.status.session?.status === "stopped") return "stopped";
-  return "unknown";
+  return rec.status.ui_state;
 }
 
 const REC_BADGE: Record<RecState, { label: string; cls: string; dot: string }> = {
@@ -141,6 +145,11 @@ const REC_BADGE: Record<RecState, { label: string; cls: string; dot: string }> =
     label: "Đang ghi",
     cls: "bg-red-50 text-red-700",
     dot: "bg-red-500 animate-pulse",
+  },
+  agent_disconnected: {
+    label: "Agent mất kết nối",
+    cls: "bg-amber-50 text-amber-700",
+    dot: "bg-amber-500",
   },
   error: {
     label: "Lỗi ghi",
@@ -239,7 +248,7 @@ export function CameraDetailPanel({
   const status = recording?.status ?? null;
   const session = status?.session ?? null;
   const isRecording = !!status?.is_recording;
-  const errMsg = session?.error_message ?? status?.last_stderr ?? null;
+  const errMsg = session?.error_message ?? null;
 
   const [busy, setBusy] = useState<
     "test" | "snapshot" | "restart" | "start" | "stop" | null
@@ -954,14 +963,14 @@ export function CameraDetailPanel({
             body?: string;
             withDetailButton?: boolean;
           }[] = [];
-          if (status?.warning) {
+          if (recState === "agent_disconnected") {
             issues.push({
               tone: "amber",
-              title: "Cảnh báo timestamp / liveness",
-              body: status.warning,
+              title: "Agent kho tạm mất kết nối",
+              body: "Camera có thể vẫn đang ghi trên máy kho — trạng thái hiển thị sẽ tự đồng bộ khi agent kết nối lại.",
             });
           }
-          if (!isRecording && errMsg) {
+          if (!isRecording && errMsg && recState !== "agent_disconnected") {
             issues.push({
               tone: "rose",
               title: "Lỗi recording",

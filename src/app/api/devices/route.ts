@@ -2,7 +2,16 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isError, requirePermission } from "@/lib/supabase/guard";
 import { listCameras } from "@/lib/camera/service";
-import { isAlive } from "@/lib/camera/recording";
+
+// Đồng bộ với ngưỡng ở /api/cameras/[id]/recording/status.
+// session.last_heartbeat_at (90s) khác agent.last_seen_at (60s) —
+// hai cột hai việc, đừng dùng lẫn.
+const SESSION_HEARTBEAT_STALE_MS = Number(
+  process.env.RECORDING_SESSION_STALE_MS ?? 90_000,
+);
+const AGENT_ONLINE_STALE_MS = Number(
+  process.env.AGENT_ONLINE_STALE_MS ?? 60_000,
+);
 
 export const runtime = "nodejs";
 
@@ -104,40 +113,71 @@ export async function GET() {
     });
   }
 
-  // --- Batch recording status for every camera in a single query ---------
-  // We deliberately read DB-only (no filesystem walk). That mirrors what
-  // the unified table needs: "is this camera recording right now?" The
-  // per-camera /recording/status endpoint still does the full health
-  // check when an operator opens the detail panel.
+  // Batch recording status per camera. Đọc DB-only theo agent-pattern:
+  // session.status + session.last_heartbeat_at + agent.last_seen_at. Ba
+  // nhánh khớp /api/cameras/[id]/recording/status ui_state:
+  //   - status=recording + heartbeat tươi + agent online → recording
+  //   - status=recording + heartbeat stale hoặc agent offline
+  //       → agent_disconnected (KHÔNG error — agent hiccup vẫn ghi)
+  //   - status=stopped → stopped
+  //   - status=error → error
+  // Trước đây cross-check `isAlive(cameraId)` với process map local trên
+  // Vercel — luôn empty → luôn nói "không ghi" dù agent kho đang ghi thật.
   let recordingByCameraId = new Map<
     string,
-    { is_recording: boolean; session_status: "recording" | "stopped" | "error" }
+    {
+      is_recording: boolean;
+      ui_state: "recording" | "agent_disconnected" | "stopped" | "error";
+    }
   >();
   if (cameras.length > 0) {
     const { data: sessions } = await admin
       .from("camera_recording_sessions")
-      .select("camera_id, status, started_at")
+      .select("camera_id, status, started_at, last_heartbeat_at")
       .eq("organization_id", ctx.organizationId)
       .in(
         "camera_id",
         cameras.map((c) => c.id),
       )
       .order("started_at", { ascending: false });
-    // Keep the latest session per camera; cross-check against the
-    // in-memory process map so we don't claim "đang ghi" when the
-    // backend has restarted and the ffmpeg child is gone.
+
+    // Agent online gần nhất trong org — cùng cách xác định với route
+    // /status. Một truy vấn đủ vì UI cần 1 kết luận per org (đang
+    // multi-agent thì mở rộng sau — session vẫn thuộc đúng org).
+    const { data: agent } = await admin
+      .from("warehouse_agents")
+      .select("last_seen_at")
+      .eq("organization_id", ctx.organizationId)
+      .eq("status", "active")
+      .order("last_seen_at", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle();
+    const now = Date.now();
+    const agentOffline = agent?.last_seen_at
+      ? now - Date.parse(agent.last_seen_at) > AGENT_ONLINE_STALE_MS
+      : true;
+
     const seen = new Set<string>();
     for (const s of (sessions ?? []) as Array<{
       camera_id: string;
       status: "recording" | "stopped" | "error";
+      last_heartbeat_at: string | null;
     }>) {
       if (seen.has(s.camera_id)) continue;
       seen.add(s.camera_id);
-      const dbThinksRecording = s.status === "recording";
-      const actuallyAlive = dbThinksRecording && isAlive(s.camera_id);
+      let uiState: "recording" | "agent_disconnected" | "stopped" | "error";
+      if (s.status === "stopped") uiState = "stopped";
+      else if (s.status === "error") uiState = "error";
+      else {
+        const hbAgeMs = s.last_heartbeat_at
+          ? now - Date.parse(s.last_heartbeat_at)
+          : Infinity;
+        const hbStale = hbAgeMs > SESSION_HEARTBEAT_STALE_MS;
+        uiState = hbStale || agentOffline ? "agent_disconnected" : "recording";
+      }
       recordingByCameraId.set(s.camera_id, {
-        is_recording: actuallyAlive,
-        session_status: actuallyAlive ? "recording" : s.status,
+        is_recording: uiState === "recording",
+        ui_state: uiState,
       });
     }
   }
