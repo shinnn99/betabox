@@ -164,6 +164,126 @@ export async function enqueueProbeCodec(
 }
 
 /**
+ * Lát 2 SaaS refactor: enqueue test_camera_connection cho camera đã save.
+ * Agent build RTSP từ credential, chạy ffmpeg thử connect, report ok/fail.
+ */
+export interface EnqueueTestCameraConnectionArgs {
+  organizationId: string;
+  agentId: string;
+  cameraId: string;
+  transport?: "tcp" | "udp" | "auto";
+}
+
+export async function enqueueTestCameraConnection(
+  args: EnqueueTestCameraConnectionArgs,
+): Promise<{ command_id: string }> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("agent_commands")
+    .insert({
+      organization_id: args.organizationId,
+      agent_id: args.agentId,
+      type: "test_camera_connection",
+      payload: {
+        camera_id: args.cameraId,
+        transport: args.transport ?? "auto",
+      },
+    })
+    .select("id")
+    .single();
+  if (error || !data) {
+    throw new Error(`enqueue test_camera_connection failed: ${error?.message}`);
+  }
+  return { command_id: data.id };
+}
+
+/**
+ * Lát 2 SaaS refactor: enqueue snapshot_camera. Agent capture 1 JPEG frame,
+ * upload lên bucket camera-snapshots-transient, callback với bucket_path.
+ * Cloud cấp signed URL cho UI.
+ */
+export interface EnqueueSnapshotCameraArgs {
+  organizationId: string;
+  agentId: string;
+  cameraId: string;
+  bucketPath: string;
+  transport?: "tcp" | "udp" | "auto";
+}
+
+export async function enqueueSnapshotCamera(
+  args: EnqueueSnapshotCameraArgs,
+): Promise<{ command_id: string }> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("agent_commands")
+    .insert({
+      organization_id: args.organizationId,
+      agent_id: args.agentId,
+      type: "snapshot_camera",
+      payload: {
+        camera_id: args.cameraId,
+        bucket_path: args.bucketPath,
+        transport: args.transport ?? "auto",
+      },
+    })
+    .select("id")
+    .single();
+  if (error || !data) {
+    throw new Error(`enqueue snapshot_camera failed: ${error?.message}`);
+  }
+  return { command_id: data.id };
+}
+
+/**
+ * Lát 2 SaaS refactor: enqueue test_camera_draft cho camera CHƯA save.
+ * Onboard flow "Tự tìm camera": user điền IP+port+creds → cần verify trước save.
+ *
+ * Credential ĐI QUA payload nhưng CHẤP NHẬN được vì:
+ *   - Command chỉ sống tới khi agent xử xong (<10s).
+ *   - Agent claim + verify HMAC → chỉ agent đúng org đọc được.
+ *   - Sau khi agent report, endpoint có thể xóa row luôn.
+ *
+ * Vẫn cẩn thận: KHÔNG log payload này ra console/audit.
+ */
+export interface EnqueueTestCameraDraftArgs {
+  organizationId: string;
+  agentId: string;
+  ip: string;
+  rtspPort: number;
+  username: string;
+  password: string | null;
+  rtspPath: string;
+  transport?: "tcp" | "udp" | "auto";
+}
+
+export async function enqueueTestCameraDraft(
+  args: EnqueueTestCameraDraftArgs,
+): Promise<{ command_id: string }> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("agent_commands")
+    .insert({
+      organization_id: args.organizationId,
+      agent_id: args.agentId,
+      type: "test_camera_draft",
+      payload: {
+        ip: args.ip,
+        rtsp_port: args.rtspPort,
+        username: args.username,
+        password: args.password,
+        rtsp_path: args.rtspPath,
+        transport: args.transport ?? "auto",
+      },
+    })
+    .select("id")
+    .single();
+  if (error || !data) {
+    throw new Error(`enqueue test_camera_draft failed: ${error?.message}`);
+  }
+  return { command_id: data.id };
+}
+
+/**
  * 3c: enqueue job upload_clip. Agent đọc clip từ ổ local, xin
  * signed URL, PUT lên bucket, báo complete.
  */

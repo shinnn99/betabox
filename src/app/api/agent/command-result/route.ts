@@ -183,5 +183,42 @@ export async function POST(req: Request) {
     }
   }
 
+  // Lát 2 SaaS refactor: nhánh test_camera_connection ghi kết quả
+  // vào cameras.last_test_result + last_tested_at. Route web POST
+  // /api/cameras/[id]/test-connection giờ enqueue command này thay vì
+  // spawn ffmpeg trực tiếp (cloud SaaS không tới được camera LAN).
+  if (updated.type === "test_camera_connection") {
+    const payload = updated.payload as { camera_id?: string } | null;
+    const cameraId = payload?.camera_id;
+    if (cameraId) {
+      const nowIso = new Date().toISOString();
+      const success = body.status === "done";
+      const testResult: Record<string, unknown> = {
+        success,
+        message: success
+          ? typeof body.result?.message === "string"
+            ? body.result.message
+            : "Kết nối camera thành công."
+          : body.error_message ?? "Kết nối thất bại.",
+        tested_via: "agent",
+      };
+      if (typeof body.result?.duration_ms === "number") {
+        testResult.duration_ms = body.result.duration_ms;
+      }
+      if (typeof body.result?.transport_used === "string") {
+        testResult.transport_used = body.result.transport_used;
+      }
+      await admin
+        .from("cameras")
+        .update({
+          last_test_result: testResult,
+          last_tested_at: nowIso,
+          updated_at: nowIso,
+        })
+        .eq("id", cameraId)
+        .eq("organization_id", updated.organization_id);
+    }
+  }
+
   return NextResponse.json({ ok: true });
 }

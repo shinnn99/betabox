@@ -24,7 +24,7 @@ import {
   cutClip,
   type CutSegmentInput,
 } from "./clip-cutter";
-import { CLIPS_SUBDIR, probeCodec } from "./recording";
+import { CLIPS_SUBDIR, probeCodec, testCameraConnection } from "./recording";
 import { promises as fsp } from "node:fs";
 import { existsSync } from "node:fs";
 import { EncodeGate } from "./encode-gate";
@@ -845,6 +845,89 @@ async function main(): Promise<void> {
           commandId: command.id,
           status: "failed",
           error: `probe_failed: ${probe.reason}`,
+        });
+      }
+      return;
+    }
+
+    if (command.type === "test_camera_connection") {
+      const p = command.payload as { camera_id?: string; transport?: "tcp" | "udp" | "auto" };
+      if (!p.camera_id) {
+        await reportCommandResult({
+          backendUrl: config.backendUrl,
+          agentCode: config.agentCode,
+          agentSecret: config.agentSecret,
+          commandId: command.id,
+          status: "failed",
+          error: "test_camera_connection payload missing camera_id",
+        });
+        return;
+      }
+      console.log(`[COMMAND TEST_CAMERA_CONNECTION] ${command.id} camera=${p.camera_id}`);
+      let rtspUrl: string;
+      let credTransport: "tcp" | "udp";
+      try {
+        const creds = await fetchRecordingCredentials({
+          backendUrl: config.backendUrl,
+          agentCode: config.agentCode,
+          agentSecret: config.agentSecret,
+          cameraIds: [p.camera_id],
+        });
+        const cred = creds.find((c) => c.camera_id === p.camera_id);
+        if (!cred) {
+          throw new Error("camera credential not returned by backend");
+        }
+        rtspUrl = cred.rtsp_url;
+        credTransport = cred.transport;
+      } catch (err) {
+        await reportCommandResult({
+          backendUrl: config.backendUrl,
+          agentCode: config.agentCode,
+          agentSecret: config.agentSecret,
+          commandId: command.id,
+          status: "failed",
+          error: `credentials_fetch_failed: ${(err as Error).message}`,
+        });
+        return;
+      }
+      // Payload transport override cred transport nếu client chỉ định cụ thể;
+      // "auto"/undefined → dùng cred transport (đã fallback tcp/udp trong recording start).
+      const requested = p.transport ?? "auto";
+      const useTransport: "tcp" | "udp" =
+        requested === "tcp" || requested === "udp" ? requested : credTransport;
+
+      const result = await testCameraConnection(
+        config.ffmpegPath,
+        rtspUrl,
+        useTransport,
+      );
+      if (result.ok) {
+        console.log(
+          `[test_camera_connection] camera=${p.camera_id} OK transport=${result.transportUsed} duration=${result.durationMs}ms`,
+        );
+        await reportCommandResult({
+          backendUrl: config.backendUrl,
+          agentCode: config.agentCode,
+          agentSecret: config.agentSecret,
+          commandId: command.id,
+          status: "done",
+          result: {
+            message: "Kết nối camera thành công.",
+            duration_ms: result.durationMs,
+            transport_used: result.transportUsed,
+          },
+        });
+      } else {
+        console.warn(
+          `[test_camera_connection] camera=${p.camera_id} FAILED reason=${result.reason}`,
+        );
+        await reportCommandResult({
+          backendUrl: config.backendUrl,
+          agentCode: config.agentCode,
+          agentSecret: config.agentSecret,
+          commandId: command.id,
+          status: "failed",
+          error: `test_failed: ${result.reason}`,
         });
       }
       return;

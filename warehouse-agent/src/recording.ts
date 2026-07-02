@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 /**
@@ -458,6 +459,101 @@ export async function probeCodec(
       }
       const warning = codec === "h264" ? null : "not_browser_safe";
       resolve({ ok: true, codec, codecWarning: warning, reason: null });
+    });
+  });
+}
+
+// ---------- Lát 2 SaaS: test camera connection từ agent ----------
+//
+// Web Vercel không tới được camera LAN → test-connection phải chạy ở
+// agent. Agent nhận command `test_camera_connection` → gọi hàm này →
+// report done/failed qua reportCommandResult.
+//
+// Hàm này ngắn hơn probeCodec: không phân tích codec, chỉ verify RTSP
+// alive + credential đúng. Grab 1 frame với ffmpeg (ghi tmp rồi xóa)
+// tương tự pattern web cũ.
+
+export interface TestConnectionResult {
+  ok: boolean;
+  durationMs: number;
+  transportUsed: "tcp" | "udp";
+  reason: string | null;
+}
+
+const TEST_CONNECTION_TIMEOUT_MS = 10_000;
+
+export async function testCameraConnection(
+  ffmpegBin: string,
+  rtspUrl: string,
+  transport: "tcp" | "udp",
+): Promise<TestConnectionResult> {
+  const started = Date.now();
+  return new Promise((resolve) => {
+    // Ghi tmp frame vào ổ tạm agent, xóa ngay sau khi ffmpeg exit.
+    // Tên file random tránh collision khi nhiều test song song.
+    const tmpFile = path.join(
+      tmpdir(),
+      `_probe_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`,
+    );
+    let proc;
+    try {
+      proc = spawn(
+        ffmpegBin,
+        [
+          "-hide_banner",
+          "-loglevel", "error",
+          "-y",
+          "-rtsp_transport", transport,
+          "-i", rtspUrl,
+          "-frames:v", "1",
+          "-an",
+          tmpFile,
+        ],
+        { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch (err) {
+      return resolve({
+        ok: false,
+        durationMs: Date.now() - started,
+        transportUsed: transport,
+        reason: `spawn_error: ${(err as Error).message}`,
+      });
+    }
+    let errBuf = "";
+    proc.stderr?.on("data", (c: Buffer) => {
+      errBuf += c.toString("utf8");
+      if (errBuf.length > 4000) errBuf = errBuf.slice(-4000);
+    });
+    const t = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+    }, TEST_CONNECTION_TIMEOUT_MS);
+    proc.on("error", (err) => {
+      clearTimeout(t);
+      resolve({
+        ok: false,
+        durationMs: Date.now() - started,
+        transportUsed: transport,
+        reason: `proc_error: ${err.message}`,
+      });
+    });
+    proc.on("close", (code) => {
+      clearTimeout(t);
+      // Xóa tmp best-effort
+      fs.unlink(tmpFile).catch(() => {});
+      if (code !== 0) {
+        return resolve({
+          ok: false,
+          durationMs: Date.now() - started,
+          transportUsed: transport,
+          reason: `exit_${code}: ${errBuf.trim().slice(-200)}`,
+        });
+      }
+      resolve({
+        ok: true,
+        durationMs: Date.now() - started,
+        transportUsed: transport,
+        reason: null,
+      });
     });
   });
 }

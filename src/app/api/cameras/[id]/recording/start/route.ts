@@ -1,45 +1,37 @@
-// BLOCKS-GO-LIVE (Lát 2): route này VẪN spawn ffmpeg trong Next.js
-// process. Song song với đó, warehouse-agent Lát 2 cũng có kênh
-// start_recording qua agent_commands. Nếu ai đó bấm UI cũ để start
-// camera X trong lúc agent cũng đang ghi X (do desired-recording.json
-// bên agent) → 2 ffmpeg cùng ghi 1 camera, đúng bug muốn diệt.
-//
-// Partial unique index idx_one_active_recording_per_camera trong
-// camera_recording_sessions chỉ chặn tạo session thứ hai — không chặn
-// ffmpeg thứ hai nếu ffmpeg spawn trước khi tạo session (ở đây cũng
-// spawn trước insertSession trong logic hiện tại).
-//
-// Trước khi cho staff thật dùng: hoặc DIỆT route này (chuyển UI sang
-// gọi enqueueStartRecording), hoặc thêm guard kiểm agent_commands +
-// desired-recording bên agent trước khi spawn. Chưa xử lý ở Lát 2 vì
-// chỉ Betacom test một agent.
 import { NextResponse } from "next/server";
 import {
   isError,
   requirePermissionStrict,
 } from "@/lib/supabase/guard";
 import { audit } from "@/lib/audit";
-import {
-  buildRtspForRow,
-  getCameraRow,
-} from "@/lib/camera/service";
+import { getCameraRow } from "@/lib/camera/service";
+import { createAdminClient } from "@/lib/supabase/admin";
 import {
   getActiveSession,
   insertSession,
-  markSessionStopped,
 } from "@/lib/camera/recording-service";
-import {
-  isRecording,
-  startRecording,
-} from "@/lib/camera/recording";
-import { cameraRecordingDir } from "@/lib/camera/recording-paths";
+import { enqueueStartRecording } from "@/lib/agent-commands/enqueue";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
 }
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
+/**
+ * Lát 2 SaaS refactor: recording/start chuyển từ spawn ffmpeg trong
+ * Next.js process → enqueue command cho agent. Web Vercel không spawn
+ * được ffmpeg VÀ không tới được camera LAN. Đóng cọc BLOCKS-GO-LIVE
+ * Lát 2 (double-spawn) — chỉ còn 1 đường ghi qua agent.
+ *
+ * Flow:
+ *   1. Verify camera thuộc org.
+ *   2. Kiểm session đang chạy → trả 409 (idempotent).
+ *   3. Insert session status='recording'.
+ *   4. Enqueue start_recording command cho agent poll → agent spawn ffmpeg.
+ *   5. Trả 202 với session_id + command_id.
+ */
 const DEFAULT_SEGMENT = Number(process.env.RECORDING_SEGMENT_SECONDS ?? 60);
 const DEFAULT_TRANSPORT = ((): "tcp" | "udp" => {
   const v = process.env.CAMERA_RECORDING_TRANSPORT;
@@ -56,169 +48,112 @@ export async function POST(req: Request, { params }: RouteContext) {
     transport?: "tcp" | "udp";
   };
 
-  // Idempotency: if there's already an active session AND a live child,
-  // surface that instead of starting a second ffmpeg.
-  if (isRecording(id)) {
-    const existing = await getActiveSession(ctx.organizationId, id);
-    if (existing) {
-      return NextResponse.json(
-        {
-          error: "already_recording",
-          message: "Camera đang được ghi.",
-          session: existing,
-        },
-        { status: 409 },
-      );
-    }
+  const cameraRow = await getCameraRow(ctx.organizationId, id);
+  if (!cameraRow) {
+    return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
-  // Stale cleanup. The partial unique index
-  // idx_one_active_recording_per_camera serialises the actual insert, so
-  // we no longer rely on this pre-check for correctness — but the DB row
-  // does need to be flipped to 'stopped' before insertSession can succeed
-  // when a previous Node process died with status='recording' still set.
-  // Only do this when the in-memory map agrees the process is gone;
-  // otherwise we'd kill an active session being inserted by a concurrent
-  // /start that hasn't populated the map yet.
-  if (!isRecording(id)) {
-    const stale = await getActiveSession(ctx.organizationId, id);
-    if (stale) {
-      await markSessionStopped(stale.id, {
-        errorMessage: "Replaced by new start request",
-      });
-    }
-  }
-
-  const row = await getCameraRow(ctx.organizationId, id);
-  if (!row) return NextResponse.json({ error: "not_found" }, { status: 404 });
-
-  let rtspUrl: string;
-  try {
-    rtspUrl = buildRtspForRow(row);
-  } catch (err) {
-    return NextResponse.json(
-      { error: "decrypt_failed", message: (err as Error).message },
-      { status: 500 },
-    );
-  }
-
-  const segmentSeconds = Math.max(
-    5,
-    Math.min(3600, Number(body.segment_seconds ?? DEFAULT_SEGMENT)),
-  );
-  const transport: "tcp" | "udp" =
-    body.transport === "udp" ? "udp" : body.transport === "tcp" ? "tcp" : DEFAULT_TRANSPORT;
-
-  // Reserve the DB row first so we always have something to mark error
-  // against if the spawn fails. The partial unique index
-  // idx_one_active_recording_per_camera serialises concurrent /start
-  // requests at the DB; the loser of the race gets kind='already_active'
-  // and we surface 409 instead of spinning up a second ffmpeg.
-  let session;
-  let alreadyActive = false;
-  try {
-    const result = await insertSession({
-      organizationId: ctx.organizationId,
-      cameraId: id,
-      transport,
-      segmentSeconds,
-      outputDir: cameraRecordingDir(row.camera_code),
-      createdBy: ctx.userId,
-    });
-    session = result.session;
-    alreadyActive = result.kind === "already_active";
-  } catch (err) {
-    return NextResponse.json(
-      { error: "session_insert_failed", message: (err as Error).message },
-      { status: 500 },
-    );
-  }
-
-  if (alreadyActive) {
-    // Another concurrent /start won. Don't spawn a second ffmpeg; return
-    // the winning session — matches the existing isRecording(id) early
-    // exit shape so the UI sees a consistent "already_recording" 409.
+  const existing = await getActiveSession(ctx.organizationId, id);
+  if (existing) {
     return NextResponse.json(
       {
         error: "already_recording",
         message: "Camera đang được ghi.",
-        session,
+        session: existing,
       },
       { status: 409 },
     );
   }
 
-  try {
-    const { pid, outputDir } = await startRecording({
-      sessionId: session.id,
-      cameraId: id,
-      cameraCode: row.camera_code,
-      rtspUrl,
-      transport,
-      segmentSeconds,
-      onExit: ({ code, signal, lastStderr }) => {
-        // We only touch the row if it's still 'recording' — meaning the
-        // stop route hasn't already marked it stopped. In that case
-        // ffmpeg exited on its own (camera dropped, crash, etc.).
-        //
-        // Don't treat a clean exit (code 0) as an error: ffmpeg's stderr
-        // tail is almost always full of benign warnings ("Timestamps are
-        // unset", "Non-monotonic DTS") that would otherwise surface in
-        // the UI as a recording error every time the camera reconnects.
-        void (async () => {
-          try {
-            const cur = await getActiveSession(ctx.organizationId, id);
-            if (!cur || cur.id !== session!.id) return;
-            const cleanExit = code === 0 && !signal;
-            if (cleanExit) {
-              await markSessionStopped(session!.id);
-              return;
-            }
-            const reason =
-              code !== 0 && code !== null
-                ? `ffmpeg exited code=${code}`
-                : signal
-                  ? `ffmpeg killed signal=${signal}`
-                  : "ffmpeg exited";
-            await markSessionStopped(session!.id, {
-              errorMessage: `${reason}${lastStderr ? `\n${lastStderr.slice(-2000)}` : ""}`,
-            });
-          } catch (e) {
-            console.error("[recording] onExit DB update failed", e);
-          }
-        })();
-      },
-    });
-
-    await audit({
-      organizationId: ctx.organizationId,
-      actorUserId: ctx.userId,
-      actorEmail: ctx.email,
-      action: "camera.recording.start",
-      targetType: "camera",
-      targetId: id,
-      metadata: {
-        session_id: session.id,
-        pid,
-        transport,
-        segment_seconds: segmentSeconds,
-      },
-    });
-
-    return NextResponse.json({
-      ok: true,
-      session: { ...session, output_dir: outputDir },
-      pid,
-    });
-  } catch (err) {
-    // Roll the session forward into 'error' so it's not stuck at
-    // 'recording' forever.
-    await markSessionStopped(session.id, {
-      errorMessage: `Spawn failed: ${(err as Error).message}`,
-    });
+  const admin = createAdminClient();
+  const { data: agent } = await admin
+    .from("warehouse_agents")
+    .select("id, last_seen_at")
+    .eq("organization_id", ctx.organizationId)
+    .eq("status", "active")
+    .order("last_seen_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+  if (!agent) {
     return NextResponse.json(
-      { error: "start_failed", message: (err as Error).message },
+      { error: "no_agent", message: "Chưa có agent nào cho tổ chức." },
+      { status: 409 },
+    );
+  }
+
+  const transport = body.transport === "udp" ? "udp" : (body.transport ?? DEFAULT_TRANSPORT);
+  const segmentSeconds = body.segment_seconds ?? DEFAULT_SEGMENT;
+  const outputDir = `_agent_managed/${cameraRow.camera_code}`;
+
+  const inserted = await insertSession({
+    organizationId: ctx.organizationId,
+    cameraId: id,
+    transport,
+    segmentSeconds,
+    outputDir,
+    createdBy: ctx.userId,
+  });
+
+  if (inserted.kind === "already_active") {
+    return NextResponse.json(
+      {
+        error: "already_recording",
+        message: "Camera đang được ghi (race).",
+        session: inserted.session,
+      },
+      { status: 409 },
+    );
+  }
+
+  const session = inserted.session;
+
+  let commandId: string;
+  try {
+    const enq = await enqueueStartRecording({
+      organizationId: ctx.organizationId,
+      agentId: agent.id,
+      cameraId: id,
+      sessionId: session.id,
+    });
+    commandId = enq.command_id;
+  } catch (err) {
+    await admin
+      .from("camera_recording_sessions")
+      .update({
+        status: "error",
+        stopped_at: new Date().toISOString(),
+        error_message: `enqueue_failed: ${(err as Error).message}`,
+      })
+      .eq("id", session.id);
+    return NextResponse.json(
+      { error: "enqueue_failed", message: (err as Error).message },
       { status: 500 },
     );
   }
+
+  await audit({
+    organizationId: ctx.organizationId,
+    actorUserId: ctx.userId,
+    actorEmail: ctx.email,
+    action: "camera.recording.start.enqueued",
+    targetType: "camera",
+    targetId: id,
+    metadata: {
+      session_id: session.id,
+      command_id: commandId,
+      agent_id: agent.id,
+      transport_requested: transport,
+      segment_seconds: segmentSeconds,
+    },
+  });
+
+  return NextResponse.json(
+    {
+      ok: true,
+      session_id: session.id,
+      command_id: commandId,
+      agent_id: agent.id,
+    },
+    { status: 202 },
+  );
 }

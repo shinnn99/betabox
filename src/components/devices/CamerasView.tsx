@@ -254,19 +254,60 @@ export function CameraDetailPanel({
   const onTest = async () => {
     setBusy("test");
     try {
-      const res = await fetch(`/api/cameras/${camera.id}/test-connection`, {
+      // Lát 2 SaaS refactor: test-connection giờ async — enqueue command
+      // → agent tại kho test cam → callback ghi cameras.last_test_result.
+      // UI poll cameras row cho tới khi last_tested_at đổi so với snapshot
+      // ban đầu, hoặc timeout ~30s.
+      const preTestedAt = camera.last_tested_at ?? null;
+      const enqRes = await fetch(`/api/cameras/${camera.id}/test-connection`, {
         method: "POST",
       });
-      const data = await res.json();
-      if (data.success) toast.success(data.message ?? "Kết nối OK");
-      else toast.error(data.message ?? data.error ?? "Test thất bại");
-      onRecordConnCheck?.({
-        at: new Date().toISOString(),
-        success: !!data.success,
-        duration_ms:
-          typeof data.duration_ms === "number" ? data.duration_ms : null,
-        message: data.message ?? data.error ?? null,
-      });
+      if (enqRes.status === 409) {
+        const errJson = await enqRes.json().catch(() => ({}));
+        toast.error(errJson.message ?? "Chưa có agent nào cho tổ chức.");
+        return;
+      }
+      if (!enqRes.ok) {
+        const errJson = await enqRes.json().catch(() => ({}));
+        toast.error(
+          errJson.message ?? errJson.error ?? "Không gửi được lệnh test tới agent.",
+        );
+        return;
+      }
+
+      // Poll cameras row (max 20 lần × 1.5s = 30s buffer).
+      const POLL_INTERVAL_MS = 1500;
+      const POLL_MAX_ATTEMPTS = 20;
+      let done = false;
+      for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        const listRes = await fetch("/api/cameras", { cache: "no-store" });
+        if (!listRes.ok) continue;
+        const listJson = (await listRes.json()) as { cameras?: Camera[] };
+        const fresh = listJson.cameras?.find((c) => c.id === camera.id);
+        if (!fresh) continue;
+        const freshTestedAt = fresh.last_tested_at ?? null;
+        if (freshTestedAt && freshTestedAt !== preTestedAt) {
+          const result = fresh.last_test_result ?? {};
+          const success = !!result.success;
+          const message = result.message ?? "";
+          if (success) toast.success(message || "Kết nối OK");
+          else toast.error(message || "Test thất bại");
+          onRecordConnCheck?.({
+            at: freshTestedAt,
+            success,
+            duration_ms: null,
+            message: message || null,
+          });
+          done = true;
+          break;
+        }
+      }
+      if (!done) {
+        toast.error(
+          "Chờ quá lâu chưa có kết quả từ agent. Agent có thể offline hoặc RTSP không tới được camera.",
+        );
+      }
     } finally {
       setBusy(null);
       onAfterChange();
@@ -305,6 +346,10 @@ export function CameraDetailPanel({
   const callRecording = async (action: "start" | "stop" | "restart") => {
     setBusy(action);
     try {
+      // Lát 2 SaaS refactor: 3 route giờ enqueue command → trả 202
+      // với command_id. Agent poll → xử ffmpeg → session update qua
+      // recording-status callback. UI toast ngay khi enqueue thành công
+      // (không chờ agent xử xong — onAfterChange refresh poll session).
       const res = await fetch(
         `/api/cameras/${camera.id}/recording/${action}`,
         {
@@ -314,18 +359,22 @@ export function CameraDetailPanel({
         },
       );
       const data = await res.json().catch(() => ({}));
-      if (!res.ok && res.status !== 409) {
-        toast.error(data.message ?? data.error ?? `${action} thất bại`);
-      } else if (res.status === 409) {
-        toast.info("Camera đang được ghi.");
-      } else {
+      if (res.status === 409) {
+        // 409 có 2 nghĩa:
+        //   - start: "already_recording" (đã có session)
+        //   - stop: "no_active_session" (không có session)
+        //   - restart: "already_recording (race)"
+        toast.info(data.message ?? "Trạng thái không phù hợp.");
+      } else if (res.status === 202) {
         const label =
           action === "start"
-            ? "Đã bắt đầu ghi"
+            ? "Đã gửi lệnh bắt đầu ghi tới agent"
             : action === "stop"
-              ? "Đã dừng ghi"
-              : "Đã khởi động lại ghi";
-        toast.success(`${label} (${camera.camera_code})`);
+              ? "Đã gửi lệnh dừng ghi tới agent"
+              : "Đã gửi lệnh khởi động lại tới agent";
+        toast.success(`${label} (${camera.camera_code}). Agent xử ~3-5s.`);
+      } else if (!res.ok) {
+        toast.error(data.message ?? data.error ?? `${action} thất bại`);
       }
     } finally {
       setBusy(null);
