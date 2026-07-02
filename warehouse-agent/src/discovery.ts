@@ -1,5 +1,6 @@
 import { SerialPort } from "serialport";
 import { signBody } from "./signing";
+import { describeFetchError } from "./fetch-error";
 
 /**
  * What we report up to the backend for one serial port. Field names match
@@ -105,7 +106,7 @@ export async function postDiscovery(params: {
     );
     return json;
   } catch (err) {
-    console.error(`[discovery] POST threw: ${(err as Error).message}`);
+    console.error(`[discovery] POST threw: ${describeFetchError(err)}`);
     return null;
   }
 }

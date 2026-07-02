@@ -14,6 +14,7 @@ import {
 } from "./commands";
 import { DesiredStore, type DesiredEntry } from "./desired-store";
 import type { SegmentIndex } from "./segment-index";
+import { describeFetchError } from "./fetch-error";
 
 /**
  * Retry policy (đã chốt Lát 2):
@@ -135,7 +136,7 @@ export class RecordingLifecycle {
           cameraIds,
         });
       } catch (err) {
-        this.logCredentialAttempt(attempt, (err as Error).message, cameraIds);
+        this.logCredentialAttempt(attempt, describeFetchError(err), cameraIds);
         await new Promise((r) => setTimeout(r, this.deps.credentialsRetryMs));
         continue;
       }
@@ -240,7 +241,7 @@ export class RecordingLifecycle {
     } catch (err) {
       return {
         ok: false,
-        reason: `credentials_fetch_failed: ${(err as Error).message}`,
+        reason: `credentials_fetch_failed: ${describeFetchError(err)}`,
         kind: "transient",
         stderrTail: "",
       };

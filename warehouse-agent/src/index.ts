@@ -1,3 +1,13 @@
+import tls from "node:tls";
+// Vercel edge POP hkg1 (và có thể các POP khác của Vercel/Cloudfront khu vực
+// APAC) reset socket khi Node OpenSSL đàm phán TLS 1.3 với một số bộ cipher
+// mặc định — biểu hiện: `fetch('https://*.vercel.app')` timeout hoặc
+// ECONNRESET NGAY sau ClientHello, trong khi curl.exe (schannel) cùng máy OK
+// và Node cùng version gọi google/github TLS 1.3 OK. Ép trần TLS 1.2 cho
+// toàn process khiến OpenSSL không gửi TLS 1.3 extensions → edge chấp nhận.
+// Không hạ security thực sự: TLS 1.2 với ECDHE-AES-GCM vẫn là baseline
+// hiện đại. Nếu sau này Vercel POP không còn reset, có thể bỏ dòng này.
+tls.DEFAULT_MAX_VERSION = "TLSv1.2";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadConfig, type AgentConfig, type ScannerPin } from "./config";
@@ -28,6 +38,7 @@ import { CLIPS_SUBDIR, probeCodec, testCameraConnection } from "./recording";
 import { promises as fsp } from "node:fs";
 import { existsSync } from "node:fs";
 import { EncodeGate } from "./encode-gate";
+import { describeFetchError } from "./fetch-error";
 
 /**
  * The agent runs three things on timers:
@@ -955,7 +966,7 @@ async function main(): Promise<void> {
         encodingBusy: encodeGate.isBusy(),
       });
     } catch (err) {
-      console.error(`[COMMAND-POLL-FAIL] ${(err as Error).message}`);
+      console.error(`[COMMAND-POLL-FAIL] ${describeFetchError(err)}`);
       return;
     }
     for (const cmd of commands) {
@@ -979,12 +990,16 @@ async function main(): Promise<void> {
 
   // Heartbeat so the backend dashboard knows the agent is alive.
   async function ping(): Promise<void> {
-    const r = await sendHeartbeat({
-      backendUrl: config.backendUrl,
-      agentCode: config.agentCode,
-      agentSecret: config.agentSecret,
-    });
-    if (!r.ok) console.error(`[HEARTBEAT-FAIL ${r.status}]`);
+    try {
+      const r = await sendHeartbeat({
+        backendUrl: config.backendUrl,
+        agentCode: config.agentCode,
+        agentSecret: config.agentSecret,
+      });
+      if (!r.ok) console.error(`[HEARTBEAT-FAIL ${r.status}]`);
+    } catch (err) {
+      console.error(`[HEARTBEAT-THREW] ${describeFetchError(err)}`);
+    }
   }
 
   // Boot: first discovery + first ping in parallel.

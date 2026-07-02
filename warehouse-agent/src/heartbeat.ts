@@ -11,15 +11,11 @@ export async function sendHeartbeat(params: {
     agentSecret: params.agentSecret,
     body,
   });
-  try {
-    const res = await fetch(`${params.backendUrl}/api/warehouse/heartbeat`, {
-      method: "POST",
-      headers,
-      body,
-      redirect: "manual",
-    });
-    return { ok: res.ok, status: res.status };
-  } catch {
-    return { ok: false, status: 0 };
-  }
+  const res = await fetch(`${params.backendUrl}/api/warehouse/heartbeat`, {
+    method: "POST",
+    headers,
+    body,
+    redirect: "manual",
+  });
+  return { ok: res.ok, status: res.status };
 }
