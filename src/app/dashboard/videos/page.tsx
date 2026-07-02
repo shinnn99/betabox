@@ -221,6 +221,15 @@ export default function VideosPage() {
     [rows],
   );
 
+  /**
+   * Agent offline duration cho toàn org — 1 agent per org (cọc #6
+   * project_camera_probe_tech_debt_cocs; sẽ đổi per-warehouse khi có
+   * kho thứ 2). Mọi row cùng org chia sẻ 1 số → lấy từ row đầu tiên.
+   * 0 khi không có row (chưa load hoặc list rỗng).
+   */
+  const agentOfflineSeconds = rows[0]?.agent_offline_seconds ?? 0;
+  const isAgentOffline = agentOfflineSeconds > AGENT_OFFLINE_THRESHOLD_SECONDS;
+
   const buildQuery = useCallback(
     (off: number) => {
       const params = new URLSearchParams();
@@ -235,11 +244,20 @@ export default function VideosPage() {
     [from, to, waybillSearch],
   );
 
+  /**
+   * load modes:
+   *   - "fresh": load lại trang đầu, hiện spinner. User bấm refresh hoặc
+   *     đổi filter.
+   *   - "more": load thêm trang kế (pagination).
+   *   - "silent": refetch trang đầu KHÔNG hiện spinner (không nháy màn).
+   *     Dùng cho auto-poll 15s + refresh khi modal ready. User không
+   *     thấy loading state — data cập nhật "âm thầm".
+   */
   const load = useCallback(
-    async (mode: "fresh" | "more") => {
-      const off = mode === "fresh" ? 0 : offset;
+    async (mode: "fresh" | "more" | "silent") => {
+      const off = mode === "more" ? offset : 0;
       if (mode === "fresh") setLoading(true);
-      else setLoadingMore(true);
+      else if (mode === "more") setLoadingMore(true);
 
       const res = await fetch(
         `/api/order-proof/scans?${buildQuery(off)}`,
@@ -247,15 +265,19 @@ export default function VideosPage() {
       );
       const data = await res.json();
       if (mode === "fresh") setLoading(false);
-      else setLoadingMore(false);
+      else if (mode === "more") setLoadingMore(false);
 
       if (!res.ok) {
-        toast.error(data.message ?? data.error ?? "Không tải được danh sách");
+        // Silent poll không show toast (không phiền user với lỗi mạng
+        // tạm thời — sẽ thử lại tick sau).
+        if (mode !== "silent") {
+          toast.error(data.message ?? data.error ?? "Không tải được danh sách");
+        }
         return;
       }
       const incoming = (data.scans ?? []) as ScanRow[];
       const more = Boolean(data.has_more);
-      if (mode === "fresh") {
+      if (mode === "fresh" || mode === "silent") {
         setRows(incoming);
         setOffset(incoming.length);
       } else {
@@ -271,6 +293,61 @@ export default function VideosPage() {
     void load("fresh");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [waybillSearch, from, to]);
+
+  /**
+   * Auto-poll list mỗi 15s để cập nhật:
+   *   - Kho online lại (badge offline biến mất).
+   *   - Clip vừa cắt/upload xong ở tab khác hoặc từ modal.
+   *   - Trạng thái processing → ready.
+   *
+   * Pause khi tab background (document.hidden) — không cần poll khi
+   * user không nhìn, tiết kiệm request + pin. Khi tab visible lại,
+   * tick NGAY (không chờ 15s).
+   *
+   * Skip khi modal đang mở — modal đã poll /watch riêng, list refetch
+   * cùng lúc gây race React state. Modal close → useEffect ở dưới
+   * refresh ngay nếu ready.
+   */
+  useEffect(() => {
+    if (openModal) return; // Skip khi modal mở
+    if (loading) return; // Skip lần load đầu (đã có fresh load)
+
+    const POLL_INTERVAL_MS = 15_000;
+
+    const tick = () => {
+      if (document.hidden) return;
+      void load("silent");
+    };
+
+    const timer = setInterval(tick, POLL_INTERVAL_MS);
+
+    // Khi tab quay lại visible → tick ngay, reset interval.
+    const onVisibilityChange = () => {
+      if (!document.hidden) {
+        tick();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [openModal, loading, load]);
+
+  /**
+   * Khi modal đóng, refresh ngay nếu clip vừa lên ready (không chờ
+   * poll 15s). Cụ thể: modal state=ready khi close = clip vừa cắt+
+   * upload xong → cell row đang hiện "Chưa có" / "Chưa lên cloud"
+   * cần đổi sang "Sẵn sàng" ngay.
+   *
+   * Tách flag riêng vì onClose callback chạy sau khi modal state đã
+   * mất — không đọc được watch.state ở lúc close. Dùng ref set trong
+   * modal khi state=ready, list đọc khi modal đóng.
+   */
+  const refreshOnModalClose = useCallback(() => {
+    void load("silent");
+  }, [load]);
 
   return (
     <DashboardLayout
@@ -292,6 +369,21 @@ export default function VideosPage() {
           setViewMode={setViewMode}
           onRefresh={() => load("fresh")}
         />
+
+        {isAgentOffline && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 flex items-center gap-3 text-sm text-amber-800">
+            <WifiOff className="h-5 w-5 shrink-0 text-amber-600" />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold">
+                Kho đang offline ({formatOfflineDuration(agentOfflineSeconds)})
+              </div>
+              <div className="text-xs text-amber-700 mt-0.5">
+                Agent kho không phản hồi. Clip vẫn xem được nếu đã lên cloud;
+                clip chưa lên cloud sẽ tự cắt+upload khi kho online lại.
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm">
           <div className="px-4 lg:px-5 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
@@ -362,7 +454,10 @@ export default function VideosPage() {
         <PlayerModal
           scan={openModal.scan}
           mode={openModal.mode}
-          onClose={() => setOpenModal(null)}
+          onClose={() => {
+            setOpenModal(null);
+            refreshOnModalClose();
+          }}
         />
       )}
     </DashboardLayout>
@@ -535,20 +630,10 @@ function GridView({
   );
 }
 
-// Badge "Kho offline" hiển thị khi agent_offline_seconds vượt ngưỡng.
-// Không đọc trực tiếp: gọi qua component để giữ style thống nhất.
-function OfflineBadge({ seconds }: { seconds: number }) {
-  if (seconds <= AGENT_OFFLINE_THRESHOLD_SECONDS) return null;
-  return (
-    <span
-      className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700"
-      title={`Agent kho không phản hồi ${formatOfflineDuration(seconds)}. Bấm nút để mở modal xem chi tiết trạng thái.`}
-    >
-      <WifiOff className="h-3 w-3" />
-      Kho offline
-    </span>
-  );
-}
+// Badge "Kho offline" per row đã bị xoá 2026-07-03: agent offline là
+// trạng thái TOÀN ORG (1 agent per org, cọc #6). Lặp 34 badge cho 34
+// row = nhiễu thị giác. Thay bằng 1 banner đầu trang (xem JSX chính
+// trong VideosPage) — 1 lần, đủ thông tin, không lặp.
 
 // Render badge + text mô tả cho một trạng thái clip. Không nút — nút do
 // caller quyết theo layout (list/grid).
@@ -765,7 +850,6 @@ function ScanRowView({
       <td className="px-3 py-2.5 text-right whitespace-nowrap">
         <div className="inline-flex flex-col items-end gap-1">
           <ScanActions scan={scan} onOpen={onOpen} />
-          <OfflineBadge seconds={scan.agent_offline_seconds} />
         </div>
       </td>
     </tr>
@@ -822,12 +906,9 @@ function ScanCardView({
         )}
       </button>
       <div className="p-2.5 space-y-1.5">
-        <div className="flex items-start justify-between gap-2">
-          <p className="font-mono text-xs font-semibold text-slate-800 truncate">
-            {scan.waybill_code}
-          </p>
-          <OfflineBadge seconds={scan.agent_offline_seconds} />
-        </div>
+        <p className="font-mono text-xs font-semibold text-slate-800 truncate">
+          {scan.waybill_code}
+        </p>
         <div className="flex items-center justify-between text-[10px] text-slate-500">
           <span>{new Date(scan.scanned_at).toLocaleString("vi-VN")}</span>
           {canPlay && (
