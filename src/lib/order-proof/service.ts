@@ -446,7 +446,7 @@ async function doGenerate(opts: {
   const { data: event, error: evErr } = await admin
     .from("packing_events")
     .select(
-      "id, organization_id, waybill_code, warehouse_id, station_id, staff_id, work_session_id, scanned_at, proof_camera_id",
+      "id, organization_id, waybill_code, warehouse_id, station_id, staff_id, work_session_id, scanned_at, proof_camera_id, work_ended_at",
     )
     .eq("organization_id", opts.organizationId)
     .eq("id", opts.packingEventId)
@@ -505,6 +505,7 @@ async function doGenerate(opts: {
       work_session_id: event.work_session_id,
       scanned_at: event.scanned_at,
       proof_camera_id: event.proof_camera_id,
+      work_ended_at: event.work_ended_at,
     },
     beforeFileQuery: async ({ cameraId, clipStart, clipEnd }) => {
       const { data: cam } = await admin

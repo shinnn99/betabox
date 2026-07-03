@@ -55,6 +55,28 @@ export interface BurnInParams {
   warningColor: string;
 }
 
+/**
+ * Chống nghi cắt ghép — dấu chèn tại gap giữa hai segment.
+ *
+ * Cloud (enqueue.ts) quyết dựa 3 config env:
+ *   MIN_GAP_TO_MARK_SECONDS (30s)      → gap ≥30s có dấu.
+ *   MIN_GAP_TO_BLACK_FULL_SECONDS (60) → gap ≥60s: kind="black_full".
+ *                                        gap 30-60s: kind="mark_short".
+ *   MARK_DURATION_SECONDS (2)          → độ dài mark_short.
+ *
+ * black_full: duration_seconds = ĐÚNG gap_seconds (phản ánh độ dài).
+ * mark_short: duration_seconds = 2s (đủ đọc "GAP 45 GIÂY", không phá nhịp).
+ *
+ * after_segment_index: chèn SAU segment index này trong concat. Agent
+ * đan xen [seg0, mark_after_0?, seg1, mark_after_1?, seg2, ...].
+ */
+export interface GapMark {
+  after_segment_index: number;
+  gap_seconds: number;
+  kind: "mark_short" | "black_full";
+  duration_seconds: number;
+}
+
 export interface CutClipParams {
   ffmpegBin: string;
   ffprobeBin: string;
@@ -69,6 +91,24 @@ export interface CutClipParams {
    * timestamp lên khung hình. Nếu null → dùng -c copy như 3a-2.
    */
   burnIn?: BurnInParams | null;
+  /**
+   * Chống nghi cắt ghép: dấu chèn tại điểm nối gap. Nếu absent hoặc
+   * rỗng → cắt như cũ (không dấu, tương thích payload agent version cũ).
+   */
+  marks?: GapMark[];
+  /**
+   * Resolution + fontPath cho render mark. Chỉ cần khi marks không rỗng.
+   * Font path tương tự BurnInParams.fontPath — bắt buộc có nếu marks có.
+   * Resolution: probe từ segment đầu (agent tự probe trước gọi cutClip),
+   * hoặc mặc định 1920x1080 nếu probe fail. Camera EZVIZ H1c mặc định
+   * 1920x1080 → an toàn.
+   */
+  markRenderConfig?: {
+    fontPath: string;
+    resolution: string; // "1920x1080"
+    fontColor: string;
+    warningColor: string;
+  };
 }
 
 export interface CutClipResult {
@@ -94,23 +134,302 @@ function buildConcatList(segments: CutSegmentInput[], recordingRoot: string): st
   );
 }
 
+/**
+ * Format gap_seconds thành label người đọc.
+ *   45      → "45 GIÂY"
+ *   75      → "1 PHÚT 15 GIÂY"
+ *   120     → "2 PHÚT"
+ *   3661    → "1 GIỜ 1 PHÚT" (hiếm nhưng có, cam offline lâu)
+ */
+function formatGapLabel(gapSeconds: number): string {
+  if (gapSeconds < 60) return `${gapSeconds} GIÂY`;
+  const totalMinutes = Math.floor(gapSeconds / 60);
+  const remainSec = gapSeconds % 60;
+  if (totalMinutes < 60) {
+    return remainSec > 0
+      ? `${totalMinutes} PHÚT ${remainSec} GIÂY`
+      : `${totalMinutes} PHÚT`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const remainMin = totalMinutes % 60;
+  return remainMin > 0 ? `${hours} GIỜ ${remainMin} PHÚT` : `${hours} GIỜ`;
+}
+
+/**
+ * Build drawtext filter cho video gap-mark. 3 dòng chồng ở giữa khung:
+ *   Dòng 1 (nhỏ):   "[!] KHOẢNG TRỐNG"
+ *   Dòng 2 (lớn):   "<N> GIÂY" hoặc "<N> PHÚT <M> GIÂY"
+ *   Dòng 3 (nhỏ):   "Camera mất kết nối tại đây"
+ *
+ * Nền đen tuyệt đối (video source `color=black`) + text màu cảnh báo.
+ * Font size scale theo height video (fontSizeRatio).
+ */
+function buildGapMarkFilter(
+  label: string,
+  fontPath: string,
+  warningColor: string,
+  fontColor: string,
+): string {
+  const fontPathEsc = fontPath.replaceAll("\\", "/").replaceAll(":", "\\:");
+  const size1 = "h*0.045"; // dòng 1 nhỏ
+  const size2 = "h*0.11";  // dòng 2 lớn (số/label chính)
+  const size3 = "h*0.035"; // dòng 3 nhỏ hơn
+  // Vị trí y: 3 dòng chồng nhau, group centered vertically.
+  // Tổng chiều cao ≈ size1*1.4 + size2*1.4 + size3 ≈ h*0.24.
+  // y_start = (h - group_h) / 2 = h*0.38.
+  const y1 = "h*0.38";
+  const y2 = `h*0.38 + ${size1}*1.4`;
+  const y3 = `h*0.38 + ${size1}*1.4 + ${size2}*1.4`;
+
+  const line1 = "[!] KHOẢNG TRỐNG";
+  const line2 = label;
+  const line3 = "Camera mất kết nối tại đây";
+
+  const drawtext = (text: string, size: string, y: string, color: string) => {
+    const escaped = text
+      .replaceAll("\\", "\\\\")
+      .replaceAll(":", "\\:")
+      .replaceAll("'", "\\'")
+      .replaceAll("%", "\\%");
+    return [
+      `fontfile='${fontPathEsc}'`,
+      `text='${escaped}'`,
+      `fontsize=${size}`,
+      `fontcolor=${color}`,
+      `borderw=3`,
+      `bordercolor=black`,
+      `x=(w-text_w)/2`,
+      `y=${y}`,
+    ].join(":");
+  };
+
+  return [
+    `drawtext=${drawtext(line1, size1, y1, warningColor)}`,
+    `drawtext=${drawtext(line2, size2, y2, warningColor)}`,
+    `drawtext=${drawtext(line3, size3, y3, fontColor)}`,
+  ].join(",");
+}
+
+/**
+ * Sinh 1 video mp4 gap-mark tại `outPath`. Nền đen + drawtext.
+ * Chọn cùng codec/pix_fmt/timescale với source clip để concat -c copy
+ * không phải reencode ở step gộp:
+ *   -c:v libx264 -pix_fmt yuv420p -video_track_timescale 90000
+ *
+ * Duration: đúng `durationSeconds` (frame gen theo `-t`, không cần
+ * decode video source).
+ */
+async function renderGapMark(params: {
+  ffmpegBin: string;
+  outPath: string;
+  durationSeconds: number;
+  label: string;
+  resolution: string;
+  fontPath: string;
+  fontColor: string;
+  warningColor: string;
+  timeoutMs: number;
+}): Promise<{ ok: boolean; errorMessage?: string }> {
+  const filter = buildGapMarkFilter(
+    params.label,
+    params.fontPath,
+    params.warningColor,
+    params.fontColor,
+  );
+  const args = [
+    "-hide_banner",
+    "-loglevel", "error",
+    "-y",
+    "-f", "lavfi",
+    "-i", `color=black:s=${params.resolution}:d=${params.durationSeconds}:r=25`,
+    "-vf", filter,
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", "23",
+    "-pix_fmt", "yuv420p",
+    "-video_track_timescale", "90000",
+    "-t", String(params.durationSeconds),
+    "-an",
+    "-movflags", "+faststart",
+    params.outPath,
+  ];
+
+  return new Promise((resolve) => {
+    let proc;
+    try {
+      proc = spawn(params.ffmpegBin, args, {
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      return resolve({ ok: false, errorMessage: (err as Error).message });
+    }
+    let errBuf = "";
+    proc.stdout?.on("data", () => {});
+    proc.stderr?.on("data", (c: Buffer) => {
+      errBuf = (errBuf + c.toString("utf8")).slice(-4000);
+    });
+    const t = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+    }, params.timeoutMs);
+    proc.on("error", (err) => {
+      clearTimeout(t);
+      resolve({ ok: false, errorMessage: err.message });
+    });
+    proc.on("close", (code) => {
+      clearTimeout(t);
+      if (code !== 0) {
+        return resolve({
+          ok: false,
+          errorMessage: `ffmpeg exit ${code}: ${errBuf.trim().slice(-300)}`,
+        });
+      }
+      resolve({ ok: true });
+    });
+  });
+}
+
+/**
+ * Xây concat list ĐAN XEN segments + marks. Mark chèn SAU segment
+ * `after_segment_index`. Chấp nhận nhiều mark sau cùng segment (theo
+ * thứ tự after_segment_index tăng dần).
+ *
+ * Ví dụ: segments=[s0,s1,s2], marks=[after 0, after 1] →
+ *   file s0
+ *   file mark_0.mp4
+ *   file s1
+ *   file mark_1.mp4
+ *   file s2
+ */
+function buildInterleavedConcatList(
+  segments: CutSegmentInput[],
+  segmentAbsPaths: string[], // đã resolve từ recordingRoot
+  markPaths: Map<number, string>, // after_segment_index → abs path
+): string {
+  const lines: string[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    const abs = segmentAbsPaths[i];
+    const escapedSeg = abs.replaceAll("'", "'\\''");
+    lines.push(`file '${escapedSeg}'`);
+    const markPath = markPaths.get(i);
+    if (markPath) {
+      const escapedMark = markPath.replaceAll("'", "'\\''");
+      lines.push(`file '${escapedMark}'`);
+    }
+  }
+  return lines.join("\n") + "\n";
+}
+
 export async function cutClip(params: CutClipParams): Promise<CutClipResult> {
   const started = Date.now();
   const outDir = path.dirname(params.outputAbsPath);
   await mkdir(outDir, { recursive: true });
 
+  // ------------------------------------------------------------------
+  // Render gap marks TRƯỚC concat (nếu có).
+  //
+  // Chống nghi cắt ghép: chèn mark_short 2s tại gap 30-60s (định vị) +
+  // màn đen full tại gap ≥60s (phản ánh độ dài). Cloud đã tính marks
+  // trong payload → agent chỉ render + đan xen concat.
+  //
+  // Nếu marks rỗng hoặc absent → cắt như cũ (tương thích payload cũ).
+  // ------------------------------------------------------------------
+  const marks = params.marks ?? [];
+  const markPaths = new Map<number, string>(); // after_segment_index → abs path
+  const renderedMarkFiles: string[] = []; // để cleanup cuối
+  let totalMarkDurationSeconds = 0;
+
+  if (marks.length > 0) {
+    if (!params.markRenderConfig) {
+      return {
+        ok: false,
+        errorMessage:
+          "marks_present_but_no_render_config: cloud gửi marks nhưng agent thiếu markRenderConfig (fontPath/resolution)",
+        fileSizeBytes: 0,
+        durationSeconds: 0,
+        durationDriftSeconds: 0,
+        stderrTail: "",
+        elapsedMs: Date.now() - started,
+      };
+    }
+    if (!existsSync(params.markRenderConfig.fontPath)) {
+      return {
+        ok: false,
+        errorMessage: `mark_font_missing: ${params.markRenderConfig.fontPath}`,
+        fileSizeBytes: 0,
+        durationSeconds: 0,
+        durationDriftSeconds: 0,
+        stderrTail: "",
+        elapsedMs: Date.now() - started,
+      };
+    }
+
+    for (const mark of marks) {
+      const markPath = `${params.outputAbsPath}.mark_${mark.after_segment_index}.mp4`;
+      const label = formatGapLabel(mark.gap_seconds);
+      const result = await renderGapMark({
+        ffmpegBin: params.ffmpegBin,
+        outPath: markPath,
+        durationSeconds: mark.duration_seconds,
+        label,
+        resolution: params.markRenderConfig.resolution,
+        fontPath: params.markRenderConfig.fontPath,
+        fontColor: params.markRenderConfig.fontColor,
+        warningColor: params.markRenderConfig.warningColor,
+        timeoutMs: Math.max(30_000, mark.duration_seconds * 5000),
+      });
+      if (!result.ok) {
+        // Cleanup marks đã render
+        for (const f of renderedMarkFiles) await unlink(f).catch(() => undefined);
+        return {
+          ok: false,
+          errorMessage: `render_mark_failed (after_seg=${mark.after_segment_index}, gap=${mark.gap_seconds}s): ${result.errorMessage}`,
+          fileSizeBytes: 0,
+          durationSeconds: 0,
+          durationDriftSeconds: 0,
+          stderrTail: "",
+          elapsedMs: Date.now() - started,
+        };
+      }
+      markPaths.set(mark.after_segment_index, markPath);
+      renderedMarkFiles.push(markPath);
+      totalMarkDurationSeconds += mark.duration_seconds;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Build concat list — đan xen nếu có marks, thẳng nếu không.
+  // ------------------------------------------------------------------
   const listPath = `${params.outputAbsPath}.concat.txt`;
-  await writeFile(listPath, buildConcatList(params.segments, params.recordingRoot), "utf8");
+  const segmentAbsPaths = params.segments.map((s) =>
+    path.join(params.recordingRoot, s.file_path),
+  );
+  const concatBody =
+    marks.length > 0
+      ? buildInterleavedConcatList(params.segments, segmentAbsPaths, markPaths)
+      : buildConcatList(params.segments, params.recordingRoot);
+  await writeFile(listPath, concatBody, "utf8");
+
+  // Cleanup helper — chạy cuối dù thành công hay thất bại.
+  const cleanupTmp = async () => {
+    await unlink(listPath).catch(() => undefined);
+    for (const f of renderedMarkFiles) await unlink(f).catch(() => undefined);
+  };
 
   // Offset trong concat stream ảo, tính từ started_at của segment
   // đầu tiên. `Date.parse`/`getTime()` hoạt động trên UTC millis —
   // TZ máy không ảnh hưởng.
+  //
+  // -t tổng: khi có marks, chèn thêm totalMarkDurationSeconds vào -t
+  // để clip cuối bao TRỌN cả segment + mark. Nếu không cộng, ffmpeg
+  // cắt clip tại target duration cũ → mất mark cuối hoặc segment cuối.
   const firstStart = Date.parse(params.segments[0].started_at);
   const ssSeconds = Math.max(0, (params.cutStart.getTime() - firstStart) / 1000);
-  const tSeconds = Math.max(
+  const targetDurationSeconds = Math.max(
     0,
     (params.cutEnd.getTime() - params.cutStart.getTime()) / 1000,
   );
+  const tSeconds = targetDurationSeconds + totalMarkDurationSeconds;
 
   // `-ss` đặt SAU `-i` (không phải trước). Đây là ca đặc biệt của
   // concat demuxer:
@@ -146,7 +465,7 @@ export async function cutClip(params: CutClipParams): Promise<CutClipResult> {
     // Fail-loud nếu font missing (BLOCK-GO-LIVE: bằng chứng không được
     // silent-fallback khác format).
     if (!existsSync(params.burnIn.fontPath)) {
-      await unlink(listPath).catch(() => undefined);
+      await cleanupTmp();
       return {
         ok: false,
         errorMessage: `font_missing: ${params.burnIn.fontPath}`,
@@ -217,8 +536,8 @@ export async function cutClip(params: CutClipParams): Promise<CutClipResult> {
       });
     });
   } catch (err) {
-    // Dọn concat list ngay khi lỗi spawn — không đợi caller.
-    await unlink(listPath).catch(() => undefined);
+    // Dọn concat list + marks tmp ngay khi lỗi spawn.
+    await cleanupTmp();
     return {
       ok: false,
       errorMessage: `spawn failed: ${(err as Error).message}`,
@@ -230,8 +549,8 @@ export async function cutClip(params: CutClipParams): Promise<CutClipResult> {
     };
   }
 
-  // Dọn concat list — thành công hay thất bại đều dọn (finally-style).
-  await unlink(listPath).catch(() => undefined);
+  // Dọn concat list + marks tmp — thành công hay thất bại đều dọn.
+  await cleanupTmp();
 
   let size = 0;
   try {

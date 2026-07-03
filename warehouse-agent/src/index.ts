@@ -413,6 +413,14 @@ async function main(): Promise<void> {
         covered_range?: { lower?: string; upper?: string };
         gaps?: unknown;
         total_gap_seconds?: number;
+        // Chống nghi cắt ghép: dấu chèn tại điểm nối gap. Cloud tính,
+        // agent render mp4 tmp + đan xen concat.
+        marks?: Array<{
+          after_segment_index: number;
+          gap_seconds: number;
+          kind: "mark_short" | "black_full";
+          duration_seconds: number;
+        }>;
       };
       if (
         !p.packing_event_id ||
@@ -599,6 +607,23 @@ async function main(): Promise<void> {
       const cutStartIso = p.cut_start;
       const cutEndIso = p.cut_end;
       const segments = p.segments;
+      const marks = p.marks ?? [];
+
+      // Chống nghi cắt ghép: chuẩn bị config render mark nếu payload
+      // có marks. Resolution mặc định 1920x1080 (EZVIZ H1c chuẩn); nếu
+      // camera khác resolution → khác resolution segment → concat -c copy
+      // sẽ ffmpeg complain. Nhưng gap-mark là ca hiếm (camera offline
+      // thật), chấp nhận reencode để nhất quán resolution nếu cần.
+      // 1920x1080 = default an toàn cho EZVIZ hiện có.
+      const markRenderConfig = marks.length > 0
+        ? {
+            fontPath: burnFontPath,
+            resolution: "1920x1080",
+            fontColor: config.burnFontColor,
+            warningColor: config.burnWarningColor,
+          }
+        : undefined;
+
       const cutResult = await encodeGate.run(() =>
         cutClip({
           ffmpegBin: config.ffmpegPath,
@@ -609,6 +634,8 @@ async function main(): Promise<void> {
           cutEnd: new Date(cutEndIso),
           segments,
           burnIn,
+          marks,
+          markRenderConfig,
         }),
       );
 

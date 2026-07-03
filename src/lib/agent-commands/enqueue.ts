@@ -16,6 +16,38 @@ const GOP_PAD_AFTER_SECONDS = 3;
 const GAP_DETECT_THRESHOLD_MS = 500;
 
 /**
+ * Chống nghi cắt ghép (gap pháp lý) — 2 tầng đánh dấu:
+ *
+ * TẦNG 1: định vị điểm gap (gap 30-60s)
+ *   Chèn dấu ngắn (mặc định 2s) tại đúng điểm nối — 2 frame đen +
+ *   text "GAP <N> GIÂY / <M> PHÚT". Định vị đúng chỗ, không phá nhịp
+ *   clip. Chống ca "clip nói có gap nhưng không chỉ chỗ nào".
+ *
+ * TẦNG 2: màn đen full (gap ≥60s)
+ *   Chèn màn đen ĐÚNG độ dài gap. Phản ánh đúng "camera mất bao lâu".
+ *
+ * Gap <30s: chỉ burn-in warning chung ("[!] VIDEO CÓ KHOẢNG TRỐNG (N PHÚT)"),
+ * không đánh dấu điểm — hiccup mạng ngắn coi là kỹ thuật vô hại.
+ *
+ * Ngưỡng chọn 2026-07-03 sau khi Hạnh cân UX-vs-pháp-lý:
+ *   30s: đủ tráo gói cực nhẹ, camera LAN có thể hiccup 15-30s nên
+ *        không lấy ngưỡng thấp hơn (tránh clip nhiều dấu vụn).
+ *   60s: hành vi tráo có ý định cần ≥1 phút → màn đen full bắt buộc.
+ *   2s dấu: đủ đọc text (50-60 frame), không dài như màn đen full.
+ *
+ * Config được qua env cho phép chỉnh theo tranh chấp thật.
+ */
+const MIN_GAP_TO_MARK_SECONDS = Number(
+  process.env.MIN_GAP_TO_MARK_SECONDS ?? 30,
+);
+const MIN_GAP_TO_BLACK_FULL_SECONDS = Number(
+  process.env.MIN_GAP_TO_BLACK_FULL_SECONDS ?? 60,
+);
+const MARK_DURATION_SECONDS = Number(
+  process.env.MARK_DURATION_SECONDS ?? 2,
+);
+
+/**
  * Producer cho kênh cloud → agent. Chèn job vào agent_commands.
  *
  * BLOCKS-GO-LIVE: producer CHƯA verify camera_recording_sessions.status
@@ -337,6 +369,7 @@ export async function enqueueCutClip(
       work_session_id: pe.work_session_id,
       scanned_at: pe.scanned_at,
       proof_camera_id: pe.proof_camera_id,
+      work_ended_at: pe.work_ended_at,
     },
   });
 
@@ -364,7 +397,12 @@ export async function enqueueCutClip(
   // covered_range = [min(started_at), max(ended_at)] của tập segments.
   // Khoảng cách target_start → covered_range.lower là khoảng KHÔNG có
   // video ở đầu (nếu target_start rơi vào gap). Tương tự cuối.
-  const gaps: Array<{ from_iso: string; to_iso: string; gap_seconds: number }> = [];
+  const gaps: Array<{
+    from_iso: string;
+    to_iso: string;
+    gap_seconds: number;
+    after_segment_index: number;
+  }> = [];
   let totalGapMs = 0;
   const sortedSegments = [...segments].sort(
     (a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime(),
@@ -382,6 +420,9 @@ export async function enqueueCutClip(
         from_iso: cur.ended_at,
         to_iso: next.started_at,
         gap_seconds: Math.round(diff / 1000),
+        // Chèn dấu SAU segment index này. Agent dùng để đan xen concat
+        // list: [seg0, mark_after_0, seg1, seg2, mark_after_2, seg3].
+        after_segment_index: i,
       });
     }
   }
@@ -429,6 +470,32 @@ export async function enqueueCutClip(
   const workStartedIso = (pe.work_started_at ?? pe.scanned_at) as string;
   const workEndedIso = (pe.work_ended_at ?? null) as string | null;
 
+  // Tính marks[] — chỉ những gap ≥ ngưỡng dấu. Mỗi mark là "chèn gì
+  // vào đâu": kind (mark_short/black_full), duration_seconds, và
+  // after_segment_index (agent biết chèn sau segment nào trong concat).
+  //
+  // KHÔNG chèn mark cho gap head/tail (missedHead/missedTail) — đó là
+  // window rơi vào ngoài coverage segment, agent sẽ trim cutStart/cutEnd
+  // theo segments thật (không có gì để chèn giữa). Chỉ mark gap NỘI BỘ
+  // giữa hai segment (chống nghi cắt ghép giấu diếm giữa clip).
+  interface GapMark {
+    after_segment_index: number;
+    gap_seconds: number;
+    kind: "mark_short" | "black_full";
+    duration_seconds: number;
+  }
+  const marks: GapMark[] = gaps
+    .filter((g) => g.gap_seconds >= MIN_GAP_TO_MARK_SECONDS)
+    .map((g) => {
+      const isFull = g.gap_seconds >= MIN_GAP_TO_BLACK_FULL_SECONDS;
+      return {
+        after_segment_index: g.after_segment_index,
+        gap_seconds: g.gap_seconds,
+        kind: isFull ? "black_full" : "mark_short",
+        duration_seconds: isFull ? g.gap_seconds : MARK_DURATION_SECONDS,
+      };
+    });
+
   const payload = {
     packing_event_id: pe.id,
     camera_id: resolved.cameraId,
@@ -452,6 +519,11 @@ export async function enqueueCutClip(
     },
     gaps,
     total_gap_seconds: Math.round(totalGapMs / 1000),
+    // Chống nghi cắt ghép (2 tầng): dấu 2s tại gap 30-60s (định vị) +
+    // màn đen full-length ở gap ≥60s (phản ánh độ dài). Agent version
+    // cũ không đọc marks[] → cắt như cũ, không lỗi. Config MIN_GAP_*
+    // ở env, mặc định 30s/60s/2s.
+    marks,
   };
 
   const { data, error } = await admin

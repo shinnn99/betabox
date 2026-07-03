@@ -19,11 +19,14 @@ import { createAdminClient } from "@/lib/supabase/admin";
 //     with end_reason flagged so audit can see we rejected the next scan.
 
 export type EndReason =
+  | "work_ended"
+  | "work_ended_extended_to_min"
   | "next_scan"
   | "session_end"
   | "default_post"
   | "default_post_invalid_next_scan"
-  | "default_post_invalid_session_end";
+  | "default_post_invalid_session_end"
+  | "default_post_invalid_work_ended";
 
 export interface ResolveResult {
   ok: boolean;
@@ -69,6 +72,26 @@ export interface SessionEndInfo {
 const FALLBACK_PRE = 10;
 const FALLBACK_BEFORE_NEXT = 2;
 const FALLBACK_DEFAULT_POST = 60;
+
+/**
+ * Buffer sau `work_ended_at` — nhét thêm N giây để bắt trọn hành động
+ * cuối (dán tem, xoay gói, đưa vào rổ). Không lớn — 5s là đủ cho "cái
+ * hành động tiếp theo là bấm quét đơn kế".
+ */
+const WORK_ENDED_POST_BUFFER_SECONDS = 5;
+
+/**
+ * Ngưỡng độ dài tối thiểu của clip khi ưu tiên `work_ended_at`. Nếu
+ * work_duration < ngưỡng này (VD RPC set work_ended_at ngay khi scan
+ * kế đến 3s sau) → clip quá ngắn để đủ bằng chứng đóng gói. Extend
+ * tới `scanned_at + MIN_CLIP_DURATION` bằng cách dùng default_post
+ * làm sàn.
+ *
+ * 15s không cứng — chỉ để tránh clip dài <10s không thấy hành động
+ * đóng gói nào. Nếu Hạnh gặp ca lỗi ngược lại (clip quá dài do work
+ * cực nhanh), giảm số này.
+ */
+const MIN_CLIP_DURATION_SECONDS = 15;
 
 // Hard ceilings to defend against a typo / wrong unit in
 // warehouses.packing_timing_config (e.g. someone enters minutes instead
@@ -139,6 +162,18 @@ interface PackingEventInput {
   work_session_id?: string | null;
   scanned_at: string;
   proof_camera_id: string | null;
+  /**
+   * Fact "đơn này ĐÓNG XONG lúc nào" — set bởi RPC process_waybill_scan
+   * khi scan kế đến (= nextScan.scanned_at), hoặc bởi trigger auto-close
+   * cho đơn cuối session (= session.ended_at HOẶC scanned_at + 60s).
+   *
+   * MẠNH HƠN nextScan/sessionEnd để đóng clip vì nó là "kết luận của đơn
+   * NÀY", không phải "đơn kế bắt đầu" hay "ca kết thúc".
+   *
+   * Có thể null với đơn chưa đóng (timing_status='open') — lúc đó fallback
+   * xuống nextScan/sessionEnd.
+   */
+  work_ended_at?: string | null;
 }
 
 // Find the first scan after `current` that should mark the end of the
@@ -289,55 +324,94 @@ export async function resolveClipBounds(opts: {
     timing = readTimingConfig(wh?.packing_timing_config);
   }
 
-  // 2) Find the closing boundary. Priority:
-  //   a) Next VALID scan within the same work_session > station > staff.
-  //   b) If none, the operator's session.ended_at (= shift checkout).
-  //   c) If neither, fall back to default_post.
-  // This mirrors how packing_events.work_duration_seconds is computed by
-  // the DB trigger, so "T/g đóng đơn" agrees with the clip duration.
-  const nextScan = await findNextScanWithinBoundary({
-    organizationId: opts.organizationId,
-    current: packingEvent,
-  });
-  const sessionEnd = nextScan
-    ? null
-    : await findSessionEndForEvent({
-        organizationId: opts.organizationId,
-        current: packingEvent,
-      });
+  // 2) Find the closing boundary. Priority (MẠNH → YẾU):
+  //   a) work_ended_at + WORK_ENDED_POST_BUFFER (fact "đơn này đóng xong").
+  //      MẠNH NHẤT vì đây là kết luận của chính đơn NÀY, không phải suy
+  //      từ đơn kế/ca kết thúc. Được set bởi RPC process_waybill_scan.
+  //   b) Next VALID scan within same work_session > station > staff.
+  //   c) session.ended_at (shift checkout).
+  //   d) default_post.
+  //
+  // Bug lịch sử (2026-07-03): trước khi (a) tồn tại, đơn cuối session
+  // không có scan kế → resolver dùng session_end. Với session 3 tiếng,
+  // đơn 60s bị cắt clip 3 GIỜ. Rà DB thấy 1 clip 2m27s cho đơn 60s
+  // với total_gap_seconds=442 (7 phút gap trong cut window 3h). Fix:
+  // ưu tiên work_ended_at khi có, session_end thành fallback cho ca đơn
+  // chưa đóng (open).
+  //
+  // Chỉ query nextScan/sessionEnd khi CẦN (không có work_ended_at hoặc
+  // ca invalid work_ended_at), tiết kiệm 2 DB round-trip cho ca thường.
+  const workEndedIso = packingEvent.work_ended_at;
 
   // 3) Compute window.
   const clipStart = new Date(scannedAt.getTime() - timing.pre * 1000);
   let clipEnd: Date;
   let endReason: EndReason;
-  if (nextScan) {
-    const candidate = new Date(
-      new Date(nextScan.scanned_at).getTime() - timing.beforeNext * 1000,
-    );
-    // Reject pathological next_scan where the resulting end would be at
-    // or before the scan we're trying to clip — this can happen if two
-    // valid scans land within `before_next_seconds` of each other.
-    if (candidate.getTime() <= scannedAt.getTime()) {
+  let nextScan: NextScanInfo | null = null;
+  let sessionEnd: SessionEndInfo | null = null;
+
+  if (workEndedIso) {
+    const workEndedMs = new Date(workEndedIso).getTime();
+    // Guard: work_ended_at phải > scanned_at (không rơi vào quá khứ do
+    // clock skew / row cũ). Nếu invalid → fallback xuống next scan.
+    if (!Number.isFinite(workEndedMs) || workEndedMs <= scannedAt.getTime()) {
+      // Nhánh này gần như không xảy ra (RPC luôn set >= scanned_at),
+      // nhưng bảo thủ: fallback thay vì crash / clip 0s.
       clipEnd = new Date(scannedAt.getTime() + timing.defaultPost * 1000);
-      endReason = "default_post_invalid_next_scan";
+      endReason = "default_post_invalid_work_ended";
     } else {
-      clipEnd = candidate;
-      endReason = "next_scan";
-    }
-  } else if (sessionEnd) {
-    const candidate = new Date(sessionEnd.ended_at);
-    // A session that ended before this scan (clock skew or a stale
-    // row) must not close the clip; fall back to default_post.
-    if (candidate.getTime() <= scannedAt.getTime()) {
-      clipEnd = new Date(scannedAt.getTime() + timing.defaultPost * 1000);
-      endReason = "default_post_invalid_session_end";
-    } else {
-      clipEnd = candidate;
-      endReason = "session_end";
+      const candidate = new Date(
+        workEndedMs + WORK_ENDED_POST_BUFFER_SECONDS * 1000,
+      );
+      // Extend nếu clip quá ngắn (work đóng cực nhanh, VD 3s do RPC set
+      // ngay khi scan kế đến). Sàn = scanned_at + MIN_CLIP_DURATION.
+      const minEndMs = scannedAt.getTime() + MIN_CLIP_DURATION_SECONDS * 1000;
+      if (candidate.getTime() < minEndMs) {
+        clipEnd = new Date(minEndMs);
+        endReason = "work_ended_extended_to_min";
+      } else {
+        clipEnd = candidate;
+        endReason = "work_ended";
+      }
     }
   } else {
-    clipEnd = new Date(scannedAt.getTime() + timing.defaultPost * 1000);
-    endReason = "default_post";
+    // Đơn chưa đóng (timing_status='open') → không có work_ended_at.
+    // Fallback logic cũ: next scan → session end → default post.
+    nextScan = await findNextScanWithinBoundary({
+      organizationId: opts.organizationId,
+      current: packingEvent,
+    });
+    sessionEnd = nextScan
+      ? null
+      : await findSessionEndForEvent({
+          organizationId: opts.organizationId,
+          current: packingEvent,
+        });
+
+    if (nextScan) {
+      const candidate = new Date(
+        new Date(nextScan.scanned_at).getTime() - timing.beforeNext * 1000,
+      );
+      if (candidate.getTime() <= scannedAt.getTime()) {
+        clipEnd = new Date(scannedAt.getTime() + timing.defaultPost * 1000);
+        endReason = "default_post_invalid_next_scan";
+      } else {
+        clipEnd = candidate;
+        endReason = "next_scan";
+      }
+    } else if (sessionEnd) {
+      const candidate = new Date(sessionEnd.ended_at);
+      if (candidate.getTime() <= scannedAt.getTime()) {
+        clipEnd = new Date(scannedAt.getTime() + timing.defaultPost * 1000);
+        endReason = "default_post_invalid_session_end";
+      } else {
+        clipEnd = candidate;
+        endReason = "session_end";
+      }
+    } else {
+      clipEnd = new Date(scannedAt.getTime() + timing.defaultPost * 1000);
+      endReason = "default_post";
+    }
   }
 
   // 4) Resolve camera (snapshot first, fallback resolver for legacy).
