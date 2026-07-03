@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { BUCKET_NAME } from "@/lib/watch/config";
+import { readAgentLiveness } from "@/lib/watch/agent-liveness";
+import { enqueueCutClip } from "@/lib/agent-commands/enqueue";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -104,6 +106,36 @@ export async function POST(_req: Request, ctx: RouteContext) {
     .eq("organization_id", pe.organization_id)
     .in("type", ["cut_clip", "upload_clip"])
     .filter("payload->>packing_event_id", "eq", packingEventId);
+
+  // Enqueue command MỚI với force_recut=true — agent xóa file cũ trước
+  // khi check idempotent. Chống ca "file cũ SAI (cắt window 3h cũ)
+  // được tái sử dụng vô hạn" quan sát 2026-07-03.
+  //
+  // Không dựa vào /watch tick tiếp theo enqueue lại — làm ngay ở đây
+  // để retry có tác dụng NGAY, không phải đợi 2s poll modal.
+  //
+  // Cần agent online để enqueue. Nếu offline → skip; /watch tick tiếp
+  // theo (khi agent lên lại) sẽ enqueue thường (không force_recut).
+  // Trade-off: chỉ retry-force khi agent online — chấp nhận được vì
+  // offline thì cắt cũng không chạy được, retry sau agent lên là hợp lý.
+  const liveness = await readAgentLiveness(admin, pe.organization_id);
+  if (liveness.agent_id && !liveness.is_offline) {
+    try {
+      await enqueueCutClip({
+        organizationId: pe.organization_id,
+        agentId: liveness.agent_id,
+        packingEventId,
+        forceRecut: true,
+      });
+    } catch (err) {
+      // Không throw — retry-wipe đã thành công, chỉ enqueue-force fail.
+      // /watch tick tiếp theo enqueue thường sẽ chạy (không force nhưng
+      // ít nhất row đã sạch, hoạt động idempotent).
+      console.warn(
+        `[watch/retry] enqueue force_recut failed for pe=${packingEventId}: ${(err as Error).message}`,
+      );
+    }
+  }
 
   return NextResponse.json({ ok: true, action: "reset_will_reprocess" });
 }

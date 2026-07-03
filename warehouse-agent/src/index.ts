@@ -421,6 +421,9 @@ async function main(): Promise<void> {
           kind: "mark_short" | "black_full";
           duration_seconds: number;
         }>;
+        // Cọc #8 force_recut: user bấm [Thử lại] → xóa file cũ trước
+        // idempotent check. Chống ca file cũ SAI được tái sử dụng.
+        force_recut?: boolean;
       };
       if (
         !p.packing_event_id ||
@@ -450,6 +453,30 @@ async function main(): Promise<void> {
       const outputRel = `${CLIPS_SUBDIR}/${p.packing_event_id}.mp4`;
       const outputAbs = resolve(recordingRoot, outputRel);
       const clipName = `${p.packing_event_id}.mp4`;
+
+      // Cọc #8 force_recut: user bấm [Thử lại] → xóa file cũ trước
+      // idempotent check. Cần thiết khi:
+      // - File cũ SAI window (resolver bug cắt 3h, sau fix cần cắt lại 75s).
+      // - File cũ cắt lỗi (thiếu segment, ffmpeg fail middle).
+      // - packing_events.work_ended_at update sau lần cut cũ → window đổi.
+      //
+      // Auto-poll enqueue (force_recut undefined/false) giữ idempotent
+      // tái sử dụng — chỉ retry-driven mới force.
+      if (p.force_recut === true && existsSync(outputAbs)) {
+        try {
+          await fsp.unlink(outputAbs);
+          console.log(
+            `[clip-cutter] force_recut removed old clip packing_event=${p.packing_event_id}`,
+          );
+        } catch (err) {
+          // unlink fail — file bị lock hay permission? Log rồi tiếp
+          // (idempotent check dưới sẽ vẫn thấy file → gửi done cũ, tệ
+          // nhưng không crash).
+          console.warn(
+            `[clip-cutter] force_recut unlink failed packing_event=${p.packing_event_id}: ${(err as Error).message}`,
+          );
+        }
+      }
 
       // Idempotent: nếu clip đã tồn tại + probe data hợp lệ → gửi `done`
       // với data probe (KHÔNG `skipped`).

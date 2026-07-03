@@ -139,6 +139,22 @@ export interface EnqueueCutClipArgs {
   organizationId: string;
   agentId: string;
   packingEventId: string;
+  /**
+   * Cọc #8 project_camera_probe_tech_debt_cocs — force_recut.
+   *
+   * User bấm [Thử lại] → retry endpoint xóa row+bucket+command cũ VÀ
+   * enqueue command mới với force_recut=true. Agent nhận flag này →
+   * xóa file `_clips/{pe_id}.mp4` cũ TRƯỚC khi check idempotent.
+   *
+   * Vì sao cần: file cũ có thể SAI (cắt theo window cũ sau khi
+   * resolver fix, hoặc cắt lỗi trước đó). Nếu không force, agent thấy
+   * file cũ có → skip idempotent với data file cũ → retry vô tác dụng.
+   *
+   * Auto-poll enqueue (không phải retry) giữ nguyên default (undefined
+   * = false), idempotent tái sử dụng file cũ hợp lệ. Chỉ [Thử lại]
+   * mới force.
+   */
+  forceRecut?: boolean;
 }
 
 export interface EnqueueCutClipResult {
@@ -524,6 +540,10 @@ export async function enqueueCutClip(
     // cũ không đọc marks[] → cắt như cũ, không lỗi. Config MIN_GAP_*
     // ở env, mặc định 30s/60s/2s.
     marks,
+    // Cọc #8 force_recut: agent xóa `_clips/{pe_id}.mp4` cũ trước khi
+    // check idempotent. Chỉ set khi user bấm [Thử lại] — auto-poll
+    // enqueue để undefined = idempotent tái sử dụng file cũ hợp lệ.
+    force_recut: args.forceRecut === true ? true : undefined,
   };
 
   const { data, error } = await admin
