@@ -1104,6 +1104,10 @@ async function main(): Promise<void> {
   // Heartbeat so the backend dashboard knows the agent is alive.
   // sendHeartbeat đã retry 3 lần với backoff — chỉ đến đây khi tất cả
   // fail. Log qua rate limiter (lần đầu + tổng kết mỗi 5m).
+  //
+  // NTP guard: sendHeartbeat đo drift qua /api/warehouse/time-check
+  // trước POST. Log warning khi drift > 30s để user biết. Rate limit
+  // qua fetchLogLimiter (không spam mỗi 30s).
   async function ping(): Promise<void> {
     try {
       const r = await sendHeartbeat({
@@ -1112,6 +1116,27 @@ async function main(): Promise<void> {
         agentSecret: config.agentSecret,
       });
       if (!r.ok) console.error(`[HEARTBEAT-FAIL ${r.status}]`);
+      // Log drift khi > ngưỡng. 30s = default backend badge threshold.
+      // Chia key theo bucket để log lại nếu drift đổi cấp độ (30s →
+      // 300s là bug nặng hơn, đáng log riêng).
+      if (r.driftSeconds !== null && r.driftSeconds > 30) {
+        const bucket =
+          r.driftSeconds > 3600 ? "over_1h" :
+          r.driftSeconds > 300 ? "over_5m" :
+          "over_30s";
+        const verdict = fetchLogLimiter.tick(`ntp-drift:${bucket}`);
+        if (verdict.kind === "log_first") {
+          console.warn(
+            `[NTP-DRIFT] agent clock lệch ~${r.driftSeconds}s so với server. ` +
+            `Kiểm tra Windows Time Service: w32tm /query /status. ` +
+            `Nếu bị tắt: w32tm /config /manualpeerlist:"pool.ntp.org" /syncfromflags:manual /reliable:yes /update && w32tm /resync`,
+          );
+        } else if (verdict.kind === "log_summary") {
+          console.warn(
+            `[NTP-DRIFT] still lệch (${bucket}): ${verdict.count + 1} lần trong 5m — check w32tm`,
+          );
+        }
+      }
     } catch (err) {
       const desc = describeFetchError(err);
       const codeMatch = desc.match(/code=(\w+)/);

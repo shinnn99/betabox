@@ -44,6 +44,13 @@ export interface ScanEventPublic {
   // warehouse thì sai-nhẹ, xử theo cọc #6 project_camera_probe_tech_debt_cocs).
   // List dùng field này render badge "Kho offline" khi > 30s.
   agent_offline_seconds: number;
+  /**
+   * NTP guard drift agent-vs-server (seconds). NULL khi agent chưa
+   * report (agent version cũ chưa deploy NTP check). List hiện banner
+   * "Agent lệch giờ" khi > 30. Bằng chứng pháp lý cần clock chính xác
+   * cho timestamp burn-in trên clip.
+   */
+  agent_time_drift_seconds: number | null;
 }
 
 export interface ScanClipSummary {
@@ -188,6 +195,7 @@ async function attachClipsToEvents(
   // cột — để badge list và state /watch KHÔNG lệch ở ranh giới ngưỡng.
   const liveness = await readAgentLiveness(admin, organizationId);
   const agentOfflineSeconds = liveness.offline_duration_seconds;
+  const agentTimeDriftSeconds = liveness.time_drift_seconds;
 
   return events.map((e) => ({
     id: e.id,
@@ -203,6 +211,7 @@ async function attachClipsToEvents(
     camera: first(e.camera),
     clip: clipByEvent.get(e.id) ?? null,
     agent_offline_seconds: agentOfflineSeconds,
+    agent_time_drift_seconds: agentTimeDriftSeconds,
   }));
 }
 

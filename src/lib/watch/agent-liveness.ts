@@ -32,9 +32,25 @@ export interface AgentLiveness {
   last_seen_at: string | null;
   is_offline: boolean;
   offline_duration_seconds: number;
+  /**
+   * NTP guard: agent tự đo clock drift với server (endpoint
+   * /api/warehouse/time-check), gửi qua heartbeat. Backend lưu vào
+   * warehouse_agents.time_drift_seconds. UI hiện banner cảnh báo khi
+   * > NTP_DRIFT_ALERT_THRESHOLD (30s).
+   *
+   * NULL = agent chưa từng report (chưa deploy version mới, hoặc mới
+   * bật). Không phải "OK" — UI phân biệt "chưa biết" vs "biết rồi và OK".
+   */
+  time_drift_seconds: number | null;
 }
 
 const OFFLINE_INFINITY_SECONDS = 999_999_999;
+
+/**
+ * Ngưỡng cảnh báo NTP drift. Cùng con số agent log warning + backend
+ * badge. Đặt ở đây để list và detail cùng chân lý — không chép.
+ */
+export const NTP_DRIFT_ALERT_THRESHOLD_SECONDS = 30;
 
 export async function readAgentLiveness(
   admin: ReturnType<typeof createAdminClient>,
@@ -42,14 +58,18 @@ export async function readAgentLiveness(
 ): Promise<AgentLiveness> {
   const { data } = await admin
     .from("warehouse_agents")
-    .select("id, last_seen_at")
+    .select("id, last_seen_at, time_drift_seconds")
     .eq("organization_id", organizationId)
     .eq("status", "active")
     .order("last_seen_at", { ascending: false, nullsFirst: false })
     .limit(1);
 
   const agent = (data ?? [])[0] as
-    | { id: string; last_seen_at: string | null }
+    | {
+        id: string;
+        last_seen_at: string | null;
+        time_drift_seconds: number | null;
+      }
     | undefined;
 
   if (!agent) {
@@ -58,6 +78,7 @@ export async function readAgentLiveness(
       last_seen_at: null,
       is_offline: true,
       offline_duration_seconds: OFFLINE_INFINITY_SECONDS,
+      time_drift_seconds: null,
     };
   }
   if (!agent.last_seen_at) {
@@ -66,6 +87,7 @@ export async function readAgentLiveness(
       last_seen_at: null,
       is_offline: true,
       offline_duration_seconds: OFFLINE_INFINITY_SECONDS,
+      time_drift_seconds: agent.time_drift_seconds,
     };
   }
   const lastSeenMs = new Date(agent.last_seen_at).getTime();
@@ -79,5 +101,6 @@ export async function readAgentLiveness(
     last_seen_at: agent.last_seen_at,
     is_offline: offlineDurationSeconds > AGENT_OFFLINE_THRESHOLD_SECONDS,
     offline_duration_seconds: offlineDurationSeconds,
+    time_drift_seconds: agent.time_drift_seconds,
   };
 }

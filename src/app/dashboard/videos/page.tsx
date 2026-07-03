@@ -89,9 +89,11 @@ interface ScanRow {
   camera: { id: string; camera_code: string; name: string } | null;
   clip: ClipSummary | null;
   agent_offline_seconds: number;
+  agent_time_drift_seconds: number | null;
 }
 
 const BUCKET_TTL_HOURS = 72;
+const NTP_DRIFT_ALERT_THRESHOLD_SECONDS = 30;
 
 // clipBucketValid — cùng công thức với `clipBucketValid` ở service.ts
 // (bài học nguồn-sự-thật-duy-nhất, nhưng đây là client, không import
@@ -229,6 +231,15 @@ export default function VideosPage() {
    */
   const agentOfflineSeconds = rows[0]?.agent_offline_seconds ?? 0;
   const isAgentOffline = agentOfflineSeconds > AGENT_OFFLINE_THRESHOLD_SECONDS;
+
+  // NTP drift banner — hiện khi agent lệch giờ > 30s. Không phụ thuộc
+  // offline: agent có thể online nhưng clock sai (Windows Time bị tắt).
+  // Bằng chứng pháp lý cần timestamp burn-in đúng, nên đây là cảnh báo
+  // NẶNG (đỏ) không phải amber như offline.
+  const agentTimeDriftSeconds = rows[0]?.agent_time_drift_seconds ?? null;
+  const isAgentClockDrifted =
+    agentTimeDriftSeconds !== null &&
+    agentTimeDriftSeconds > NTP_DRIFT_ALERT_THRESHOLD_SECONDS;
 
   const buildQuery = useCallback(
     (off: number) => {
@@ -369,6 +380,25 @@ export default function VideosPage() {
           setViewMode={setViewMode}
           onRefresh={() => load("fresh")}
         />
+
+        {isAgentClockDrifted && agentTimeDriftSeconds !== null && (
+          <div className="bg-rose-50 border border-rose-200 rounded-2xl px-4 py-3 flex items-start gap-3 text-sm text-rose-900">
+            <AlertTriangle className="h-5 w-5 shrink-0 text-rose-600 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold">
+                Agent kho lệch giờ hệ thống (~{formatOfflineDuration(agentTimeDriftSeconds)})
+              </div>
+              <div className="text-xs text-rose-800 mt-1">
+                Clip bằng chứng có <b>timestamp cháy trên hình</b> — nếu giờ máy kho sai, timestamp clip sẽ sai theo và mất giá trị pháp lý khi tranh chấp.
+              </div>
+              <div className="text-xs text-rose-700 mt-1.5 font-mono bg-rose-100 px-2 py-1 rounded">
+                Chạy trên máy kho (Admin PowerShell):<br/>
+                w32tm /config /manualpeerlist:&quot;pool.ntp.org&quot; /syncfromflags:manual /reliable:yes /update<br/>
+                w32tm /resync
+              </div>
+            </div>
+          </div>
+        )}
 
         {isAgentOffline && (
           <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 flex items-center gap-3 text-sm text-amber-800">

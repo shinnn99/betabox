@@ -9,6 +9,7 @@ const PUBLIC_API_PREFIXES = [
   "/api/warehouse/scans",
   "/api/warehouse/heartbeat",
   "/api/warehouse/discovery",
+  "/api/warehouse/time-check",
   "/api/warehouse/maintenance/close-stale-sessions",
   // Cloud → Agent command channel: HMAC-authenticated, không có
   // session cookie. Phải bypass proxy nếu không sẽ bị redirect
