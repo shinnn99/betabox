@@ -9,7 +9,18 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "list-ports": "tsx src/list-ports.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build:test-pkg": "tsc src/test-pkg-minimal.ts --outDir dist-test --target es2022 --module commonjs --esModuleInterop --skipLibCheck && pkg dist-test/test-pkg-minimal.js --targets node22-win-x64 --output dist-exe/test-serialport.exe --config package.json",
+    "build:exe": "npm run build && pkg dist/index.js --targets node22-win-x64 --output dist-exe/betacom-agent.exe --config package.json"
+  },
+  "pkg": {
+    "assets": [
+      "node_modules/@serialport/bindings-cpp/prebuilds/win32-x64/**/*",
+      "assets/fonts/*.ttf"
+    ],
+    "targets": [
+      "node22-win-x64"
+    ]
   },
   "dependencies": {
     "@serialport/parser-delimiter": "^12.0.0",
@@ -19,6 +30,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "@yao-pkg/pkg": "^6.21.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0"
   }

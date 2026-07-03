@@ -1,4 +1,7 @@
 node_modules/
 dist/
+dist-exe/
+dist-test/
+dist-package/
 .env
 data/*.jsonl

@@ -8,7 +8,7 @@ import tls from "node:tls";
 // Không hạ security thực sự: TLS 1.2 với ECDHE-AES-GCM vẫn là baseline
 // hiện đại. Nếu sau này Vercel POP không còn reset, có thể bỏ dòng này.
 tls.DEFAULT_MAX_VERSION = "TLSv1.2";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadConfig, type AgentConfig, type ScannerPin } from "./config";
 import { sendScan, type ScanPayload } from "./sender";
@@ -65,9 +65,23 @@ import { probeTargets, reportProbes } from "./camera-probe";
  */
 async function main(): Promise<void> {
   const config = loadConfig();
-  const queue = new ScanQueue(resolve(__dirname, "..", "data", "pending-scans.jsonl"));
+
+  // pkg-aware path: khi chạy trong exe (`process.pkg` truthy), __dirname
+  // trỏ tới snapshot filesystem (read-only) — không ghi được. Data queue
+  // phải đặt cạnh exe thật (`process.execPath`) để persist.
+  //
+  // Khi chạy dev (tsx / node), __dirname trỏ tới dist/, giữ như cũ.
+  //
+  // Font bundle (readonly, chỉ đọc): luôn dùng __dirname vì pkg đã bundle
+  // vào snapshot, agent chỉ cần read.
+  const isPackaged = "pkg" in process;
+  const dataDir = isPackaged
+    ? resolve(dirname(process.execPath), "data")
+    : resolve(__dirname, "..", "data");
+
+  const queue = new ScanQueue(resolve(dataDir, "pending-scans.jsonl"));
   const desiredStore = new DesiredStore(
-    resolve(__dirname, "..", "data", "desired-recording.json"),
+    resolve(dataDir, "desired-recording.json"),
   );
   const recordingRoot = resolve(process.cwd(), config.recordingDir);
   const segmentIndex = new SegmentIndex({
@@ -77,7 +91,7 @@ async function main(): Promise<void> {
     recordingRoot,
     segmentWatchPollMs: config.segmentWatchPollMs,
     recoveryScanDays: config.recoveryScanDays,
-    queuePath: resolve(__dirname, "..", "data", "pending-segment-reports.jsonl"),
+    queuePath: resolve(dataDir, "pending-segment-reports.jsonl"),
   });
   // 3b-2: 1-in-flight encode gate. Chỉ 1 flag, dùng cho poll body
   // (encoding_busy) + wrap runCutClip. Không có queue local.
@@ -1161,9 +1175,40 @@ async function main(): Promise<void> {
   await fsp.mkdir(clipsDir, { recursive: true });
 
   // Font path cho burn-in (3b-1). Path tuyệt đối, độc lập cwd.
-  // Fail-loud nếu font missing được kiểm ở clip-cutter, không kiểm
-  // ở đây — chỉ resolve path một lần.
-  const burnFontPath = resolve(__dirname, "..", "assets", "fonts", "NotoSans-Bold.ttf");
+  //
+  // pkg-aware: khi chạy exe, __dirname trỏ /snapshot/warehouse-agent/dist
+  // (pkg virtual filesystem). ffmpeg (external process) KHÔNG đọc được
+  // /snapshot/... — phải extract font ra file tạm cạnh exe.
+  //
+  // Dev mode: __dirname là folder thật, ffmpeg đọc được trực tiếp.
+  let burnFontPath: string;
+  if (isPackaged) {
+    // Extract font từ snapshot ra folder cạnh exe (chỉ 1 lần lúc boot).
+    const fontBundledPath = resolve(__dirname, "..", "assets", "fonts", "NotoSans-Bold.ttf");
+    const fontRealPath = resolve(dirname(process.execPath), "assets", "fonts", "NotoSans-Bold.ttf");
+    await fsp.mkdir(dirname(fontRealPath), { recursive: true });
+    // Chỉ copy nếu file real chưa tồn tại hoặc mtime khác (agent update).
+    try {
+      const srcStat = await fsp.stat(fontBundledPath);
+      let needCopy = true;
+      try {
+        const dstStat = await fsp.stat(fontRealPath);
+        if (dstStat.size === srcStat.size) needCopy = false;
+      } catch {
+        // dst not exists
+      }
+      if (needCopy) {
+        const fontBuf = await fsp.readFile(fontBundledPath);
+        await fsp.writeFile(fontRealPath, fontBuf);
+        console.log(`[boot] extracted font to ${fontRealPath}`);
+      }
+    } catch (err) {
+      console.error(`[boot] font extraction failed: ${(err as Error).message}`);
+    }
+    burnFontPath = fontRealPath;
+  } else {
+    burnFontPath = resolve(__dirname, "..", "assets", "fonts", "NotoSans-Bold.ttf");
+  }
   try {
     const removed = await cleanupOrphanConcatFiles(clipsDir);
     if (removed > 0) {
