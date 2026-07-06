@@ -117,11 +117,14 @@ export async function GET() {
   }
 
   // Batch recording status per camera. Đọc DB-only theo agent-pattern:
-  // session.status + session.last_heartbeat_at + agent.last_seen_at. Ba
+  // session.status + session.last_heartbeat_at + agent.last_seen_at. Bốn
   // nhánh khớp /api/cameras/[id]/recording/status ui_state:
   //   - status=recording + heartbeat tươi + agent online → recording
   //   - status=recording + heartbeat stale hoặc agent offline
   //       → agent_disconnected (KHÔNG error — agent hiccup vẫn ghi)
+  //   - status=connection_lost → agent_disconnected (B2 CRIT-2: reaper
+  //     đã flip vì mất heartbeat > 15 phút; ffmpeg có thể vẫn ghi ở kho;
+  //     poll rescue sẽ kéo về recording khi agent reconnect)
   //   - status=stopped → stopped
   //   - status=error → error
   // Trước đây cross-check `isAlive(cameraId)` với process map local trên
@@ -183,7 +186,7 @@ export async function GET() {
     const seen = new Set<string>();
     for (const s of (sessions ?? []) as Array<{
       camera_id: string;
-      status: "recording" | "stopped" | "error";
+      status: "recording" | "stopped" | "error" | "connection_lost";
       last_heartbeat_at: string | null;
     }>) {
       if (seen.has(s.camera_id)) continue;
@@ -191,7 +194,11 @@ export async function GET() {
       let uiState: "recording" | "agent_disconnected" | "stopped" | "error";
       if (s.status === "stopped") uiState = "stopped";
       else if (s.status === "error") uiState = "error";
-      else {
+      else if (s.status === "connection_lost") {
+        // B2 CRIT-2: reaper flip → agent_disconnected (ffmpeg có thể vẫn
+        // ghi, poll rescue sẽ kéo về recording khi agent reconnect).
+        uiState = "agent_disconnected";
+      } else {
         const hbAgeMs = s.last_heartbeat_at
           ? now - Date.parse(s.last_heartbeat_at)
           : Infinity;

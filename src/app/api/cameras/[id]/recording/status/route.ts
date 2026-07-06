@@ -8,6 +8,9 @@ import {
   getLatestSession,
 } from "@/lib/camera/recording-service";
 import { getCameraRow } from "@/lib/camera/service";
+import { deriveUiState as deriveUiStateCore, type RecordingUiState } from "@/lib/recording/ui-state";
+
+export type { RecordingUiState };
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -53,38 +56,20 @@ const AGENT_ONLINE_STALE_MS = Number(
   process.env.AGENT_ONLINE_STALE_MS ?? 60_000,
 );
 
-export type RecordingUiState =
-  | "recording"
-  | "agent_disconnected"
-  | "stopped"
-  | "error"
-  | "unknown";
-
 function deriveUiState(input: {
   sessionStatus: string | null;
   sessionHeartbeatAt: string | null;
   agentLastSeenAt: string | null;
   now: number;
 }): RecordingUiState {
-  if (!input.sessionStatus) return "unknown";
-  if (input.sessionStatus === "stopped") return "stopped";
-  if (input.sessionStatus === "error") return "error";
-  if (input.sessionStatus === "recording") {
-    const hbAgeMs = input.sessionHeartbeatAt
-      ? input.now - Date.parse(input.sessionHeartbeatAt)
-      : Infinity;
-    const agentAgeMs = input.agentLastSeenAt
-      ? input.now - Date.parse(input.agentLastSeenAt)
-      : Infinity;
-    if (
-      hbAgeMs > SESSION_HEARTBEAT_STALE_MS ||
-      agentAgeMs > AGENT_ONLINE_STALE_MS
-    ) {
-      return "agent_disconnected";
-    }
-    return "recording";
-  }
-  return "unknown";
+  return deriveUiStateCore({
+    sessionStatus: input.sessionStatus,
+    sessionHeartbeatAt: input.sessionHeartbeatAt,
+    agentLastSeenAt: input.agentLastSeenAt,
+    now: input.now,
+    sessionHeartbeatStaleMs: SESSION_HEARTBEAT_STALE_MS,
+    agentOnlineStaleMs: AGENT_ONLINE_STALE_MS,
+  });
 }
 
 export async function GET(_req: Request, { params }: RouteContext) {

@@ -164,14 +164,18 @@ export async function POST(req: Request) {
   // = danh sách session ffmpeg thực sự sống trên máy agent. Cloud dùng
   // để KHẲNG ĐỊNH session vẫn đang ghi — không chỉ cập nhật
   // last_heartbeat_at mà còn ĐÍNH CHÍNH trạng thái nếu có route/sweep
-  // nào trước đó flip nhầm session sang 'error'. Trước đây update chỉ
-  // áp cho status='recording' → nếu session bị bẻ sang 'error' thì
-  // heartbeat không kéo về được, DB nói dối mãi. Giờ:
-  //   - status='recording' hoặc 'error' → kéo về 'recording', xóa
-  //     stopped_at, xóa error_message, cập nhật last_heartbeat_at.
+  // nào trước đó flip nhầm session sang 'error' hoặc 'connection_lost'. Giờ:
+  //   - status='recording' hoặc 'error' hoặc 'connection_lost' → kéo về
+  //     'recording', xóa stopped_at, xóa error_message, cập nhật
+  //     last_heartbeat_at.
   //   - status='stopped' → KHÔNG đụng (user chủ động dừng, agent sẽ
   //     nhận stop_recording command và tự dừng ffmpeg; đính chính về
   //     recording sẽ đá lại quyết định của user).
+  //
+  // B2 CRIT-2 rescue: 'connection_lost' được thêm để khi kho mất WAN lâu
+  // (>15 phút), reaper flip session sang 'connection_lost' (không stopped_at)
+  // → khi mạng về, agent poll → rescue kéo về 'recording' tự động. Không
+  // cần user can thiệp.
   const activeRecordings = parseAgentState(parsedBody);
   if (activeRecordings.length > 0) {
     const sessionIds = activeRecordings.map((r) => r.session_id);
@@ -185,11 +189,11 @@ export async function POST(req: Request) {
       })
       .in("id", sessionIds)
       .eq("organization_id", agent.organization_id)
-      .in("status", ["recording", "error"]);
+      .in("status", ["recording", "error", "connection_lost"]);
     if (sessErr) {
-      // Business-critical: rescue session error→recording fail = dashboard
-      // hiển thị sai state. Log để ops thấy; không throw để poll response
-      // vẫn trả commands (agent tiếp tục chạy).
+      // Business-critical: rescue session error/connection_lost→recording
+      // fail = dashboard hiển thị sai state. Log để ops thấy; không throw
+      // để poll response vẫn trả commands (agent tiếp tục chạy).
       console.error(
         `[poll-commands] rescue session update failed agent=${agent.id} count=${sessionIds.length} code=${sessErr.code ?? "?"} message=${sessErr.message}`,
       );
