@@ -99,10 +99,15 @@ export async function recognizeStaffQr(
   }
 
   // Best-effort touch. Don't block on it; logging-only failure.
-  await admin
+  const { error: touchErr } = await admin
     .from("staff_qr_credentials")
     .update({ last_used_at: new Date().toISOString() })
     .eq("id", cred.id);
+  if (touchErr) {
+    console.warn(
+      `[staff-qr] last_used_at touch failed cred=${cred.id} code=${touchErr.code ?? "?"} message=${touchErr.message}`,
+    );
+  }
 
   return {
     kind: "recognized",

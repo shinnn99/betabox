@@ -139,7 +139,7 @@ export async function POST(req: Request) {
     // Keep runtime state fresh for the matched device. current_port may
     // have changed since boot — that's exactly why we're doing this.
     if (match) {
-      await admin
+      const { error: devErr } = await admin
         .from("station_devices")
         .update({
           current_port: p.path,
@@ -149,11 +149,16 @@ export async function POST(req: Request) {
         })
         .eq("id", match.device_id)
         .eq("organization_id", agent.organization_id);
+      if (devErr) {
+        console.error(
+          `[discovery] device match update failed agent=${agent.id} device=${match.device_id} code=${devErr.code ?? "?"} message=${devErr.message}`,
+        );
+      }
     }
   }
 
   const nowIso = new Date().toISOString();
-  await admin
+  const { error: agentErr2 } = await admin
     .from("warehouse_agents")
     .update({
       last_seen_at: nowIso,
@@ -161,6 +166,11 @@ export async function POST(req: Request) {
       last_discovered_at: nowIso,
     })
     .eq("id", agent.id);
+  if (agentErr2) {
+    console.error(
+      `[discovery] agent last_discovered update failed agent=${agent.id} code=${agentErr2.code ?? "?"} message=${agentErr2.message}`,
+    );
+  }
 
   // Mark as disconnected any scanner that was previously bound to THIS
   // agent but didn't show up in the current snapshot. Scoped to this
@@ -181,10 +191,15 @@ export async function POST(req: Request) {
     .map((d) => d.id);
 
   if (toDisconnect.length > 0) {
-    await admin
+    const { error: discErr } = await admin
       .from("station_devices")
       .update({ connection_status: "disconnected" })
       .in("id", toDisconnect);
+    if (discErr) {
+      console.warn(
+        `[discovery] disconnect marker update failed agent=${agent.id} count=${toDisconnect.length} code=${discErr.code ?? "?"} message=${discErr.message}`,
+      );
+    }
   }
 
   // Tell the agent which scanner device_codes already have a stored

@@ -42,11 +42,19 @@ export async function issueAndStoreStaffQr(
 ): Promise<QrIssue> {
   const admin = createAdminClient();
 
-  await admin
+  const { error: revokeErr } = await admin
     .from("staff_qr_credentials")
     .update({ status: "revoked", revoked_at: new Date().toISOString() })
     .eq("staff_id", staffId)
     .eq("status", "active");
+  if (revokeErr) {
+    // Business-critical: revoke fail → insert QR mới sẽ conflict unique
+    // index uniq_active_qr_per_staff → error 500 mơ hồ. Throw rõ để caller
+    // handle.
+    throw new Error(
+      `qr revoke previous failed staff=${staffId} code=${revokeErr.code ?? "?"} message=${revokeErr.message}`,
+    );
+  }
 
   const issued = await issueStaffQr(organizationId, staffId);
 

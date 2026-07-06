@@ -106,7 +106,10 @@ export async function DELETE(_req: Request, { params }: RouteContext) {
   }
 
   // Close any active device assignment pointing at this station.
-  await admin
+  // Business-critical: assignment vẫn active + station archived → sync sai.
+  // Fail-fast: nếu assignment cascade close fail, return 500 KHÔNG tiến hành
+  // archive station (giữ state atomic).
+  const { error: assignErr } = await admin
     .from("station_device_assignments")
     .update({
       unassigned_at: new Date().toISOString(),
@@ -115,6 +118,12 @@ export async function DELETE(_req: Request, { params }: RouteContext) {
     .eq("organization_id", ctx.organizationId)
     .eq("station_id", id)
     .is("unassigned_at", null);
+  if (assignErr) {
+    return NextResponse.json(
+      { error: "assignment_close_failed", message: assignErr.message },
+      { status: 500 },
+    );
+  }
 
   const { error } = await admin
     .from("packing_stations")

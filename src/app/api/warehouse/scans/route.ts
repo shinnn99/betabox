@@ -395,17 +395,22 @@ export async function POST(req: Request) {
 
   // Touch last_seen_at. Don't fail the request if it errors.
   const nowIso = new Date().toISOString();
-  await admin
+  const { error: seenErr } = await admin
     .from("warehouse_agents")
     .update({ last_seen_at: nowIso })
     .eq("id", agent.id);
+  if (seenErr) {
+    console.warn(
+      `[scans] last_seen_at update failed agent=${agent.id} code=${seenErr.code ?? "?"} message=${seenErr.message}`,
+    );
+  }
 
   // Opportunistic device-runtime update: when a serial scan carries identity,
   // remember which port the scanner is on right now and mark it connected.
   // We don't overwrite a populated device_identity here — pairing decisions
   // belong to the dedicated assignment endpoint. Just keep runtime fresh.
   if (parsed.source === "serial") {
-    await admin
+    const { error: devErr } = await admin
       .from("station_devices")
       .update({
         current_port: parsed.port,
@@ -416,6 +421,11 @@ export async function POST(req: Request) {
       .eq("organization_id", agent.organization_id)
       .eq("device_code", parsed.scanner_device_code)
       .eq("device_type", "scanner");
+    if (devErr) {
+      console.error(
+        `[scans] scanner runtime update failed agent=${agent.id} device_code=${parsed.scanner_device_code} code=${devErr.code ?? "?"} message=${devErr.message}`,
+      );
+    }
   }
 
   return NextResponse.json({

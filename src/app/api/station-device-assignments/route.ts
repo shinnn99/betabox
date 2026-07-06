@@ -117,12 +117,21 @@ export async function POST(req: Request) {
   // Cross-tenant guard: filter organization_id để attacker biết device_id
   // org khác không thể unassign device đó (dù device_id đã verify org ở
   // trên, giữ filter phòng thủ nhiều-tầng).
-  await admin
+  const { error: devCloseErr } = await admin
     .from("station_device_assignments")
     .update({ unassigned_at: now, status: "ended" })
     .eq("organization_id", ctx.organizationId)
     .eq("device_id", deviceId)
     .is("unassigned_at", null);
+  if (devCloseErr) {
+    return NextResponse.json(
+      {
+        error: "assignment_close_previous_failed",
+        message: devCloseErr.message,
+      },
+      { status: 500 },
+    );
+  }
 
   // Rule: at most one active device PER (station, device_type). A packing
   // station typically needs both a scanner and a camera, so we only retire
@@ -130,12 +139,21 @@ export async function POST(req: Request) {
   //
   // Cross-tenant guard: filter organization_id trước station_id để attacker
   // biết station_id org khác không enumerate được device assignments.
-  const { data: stationActive } = await admin
+  const { data: stationActive, error: stationActiveErr } = await admin
     .from("station_device_assignments")
     .select("id, station_devices!inner ( device_type )")
     .eq("organization_id", ctx.organizationId)
     .eq("station_id", stationId)
     .is("unassigned_at", null);
+  if (stationActiveErr) {
+    return NextResponse.json(
+      {
+        error: "station_active_lookup_failed",
+        message: stationActiveErr.message,
+      },
+      { status: 500 },
+    );
+  }
 
   const sameTypeIds = ((stationActive ?? []) as Array<{
     id: string;
@@ -153,11 +171,20 @@ export async function POST(req: Request) {
     // Cross-tenant guard: sameTypeIds đã lọc org qua stationActive query,
     // nhưng thêm filter phòng thủ để defense-in-depth (nếu tương lai
     // stationActive query bị sửa nhầm bỏ org filter, chỗ này vẫn chặn).
-    await admin
+    const { error: sameTypeErr } = await admin
       .from("station_device_assignments")
       .update({ unassigned_at: now, status: "ended" })
       .eq("organization_id", ctx.organizationId)
       .in("id", sameTypeIds);
+    if (sameTypeErr) {
+      return NextResponse.json(
+        {
+          error: "assignment_close_sametype_failed",
+          message: sameTypeErr.message,
+        },
+        { status: 500 },
+      );
+    }
   }
 
   const { data, error } = await admin
