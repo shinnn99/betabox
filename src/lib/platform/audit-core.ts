@@ -4,6 +4,12 @@
  *
  * `audit.ts` chỉ còn wrapper createAdminClient + writer implement, phần
  * logic transform + destruct .error ở đây → test được không cần Supabase.
+ *
+ * B1.2: thêm immutable snapshot fields để bảo toàn identity information
+ * khi actor/target bị xóa (FK SET NULL ở migration 20260707160000). Caller
+ * PHẢI supply snapshot tại thời điểm audit event; nếu snapshot = undefined,
+ * helper KHÔNG tự derive (không muốn tạo dữ liệu giả). Snapshot null =
+ * không có thông tin xác định.
  */
 
 export interface PlatformAuditEntry {
@@ -14,6 +20,14 @@ export interface PlatformAuditEntry {
   targetType?: string | null;
   targetId?: string | null;
   metadata?: Record<string, unknown> | null;
+  /**
+   * B1.2 immutable snapshot fields — caller supply tại thời điểm audit
+   * event. Nếu không supply, snapshot = null (mất khả năng điều tra khi
+   * actor/target bị xóa). Không tự derive.
+   */
+  actorEmailSnapshot?: string | null;
+  actorRoleSnapshot?: string | null;
+  targetOrganizationNameSnapshot?: string | null;
 }
 
 export interface PlatformAuditResult {
@@ -38,6 +52,12 @@ export function buildAuditRow(
     target_type: entry.targetType ?? null,
     target_id: entry.targetId ?? null,
     metadata: entry.metadata ?? null,
+    // B1.2 snapshot fields — snapshot tại thời điểm event.
+    actor_email_snapshot:
+      entry.actorEmailSnapshot ?? entry.actorEmail ?? null,
+    actor_role_snapshot: entry.actorRoleSnapshot ?? null,
+    target_organization_name_snapshot:
+      entry.targetOrganizationNameSnapshot ?? null,
   };
 }
 

@@ -9,6 +9,12 @@ export interface AuditEntry {
   targetType?: string;
   targetId?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * B1.2 immutable snapshot fields. Caller supply tại thời điểm audit
+   * event; nếu không supply, snapshot = null hoặc self-copy phù hợp.
+   * Bảo toàn identity information khi FK SET NULL (org bị xóa).
+   */
+  organizationNameSnapshot?: string | null;
 }
 
 /**
@@ -23,6 +29,10 @@ export interface AuditEntry {
  * fail-closed nghiệp vụ chính (audit fail không được rollback business
  * write đã xảy ra). Log message + code ra console, KHÔNG log metadata
  * raw (chống rò dữ liệu tenant vào Vercel logs cross-tenant).
+ *
+ * B1.2: ghi snapshot organization_id_snapshot (self-copy) + optional
+ * organization_name_snapshot. Bảo toàn identity khi FK SET NULL sau org
+ * bị xóa (migration 20260707160000).
  */
 export async function audit(entry: AuditEntry): Promise<void> {
   const admin = createAdminClient();
@@ -34,6 +44,9 @@ export async function audit(entry: AuditEntry): Promise<void> {
     target_type: entry.targetType ?? null,
     target_id: entry.targetId ?? null,
     metadata: entry.metadata ?? {},
+    // B1.2 snapshot fields
+    organization_id_snapshot: entry.organizationId,
+    organization_name_snapshot: entry.organizationNameSnapshot ?? null,
   });
   if (error) {
     console.error(

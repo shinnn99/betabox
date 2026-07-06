@@ -46,6 +46,8 @@ export async function POST(req: NextRequest) {
   }
 
   // Audit start impersonation TRƯỚC khi set cookie — fail-closed.
+  // B1.2: pass snapshot (actor email/role + target org name) để bảo toàn
+  // identity nếu actor/target bị xóa sau này (FK SET NULL).
   const auditRes = await logPlatformAudit({
     actorUserId: ctx.userId,
     actorEmail: ctx.email,
@@ -54,6 +56,9 @@ export async function POST(req: NextRequest) {
     targetType: "organization",
     targetId: orgId,
     metadata: { target_org_name: org.name },
+    actorEmailSnapshot: ctx.email,
+    actorRoleSnapshot: ctx.platformRole,
+    targetOrganizationNameSnapshot: org.name,
   });
   if (!auditRes.ok) {
     // Không có audit = không được phép impersonate. User thấy 503 để retry.
@@ -87,7 +92,20 @@ export async function DELETE() {
   const cookieStore = await cookies();
   const currentOrgId = cookieStore.get(IMPERSONATE_COOKIE)?.value || null;
 
+  // B1.2: lookup org name để snapshot (best-effort, không block thoát).
+  let orgNameSnapshot: string | null = null;
+  if (currentOrgId) {
+    const admin = createAdminClient();
+    const { data: org } = await admin
+      .from("organizations")
+      .select("name")
+      .eq("id", currentOrgId)
+      .maybeSingle();
+    orgNameSnapshot = org?.name ?? null;
+  }
+
   // Ghi audit (không fail-closed — xem comment header).
+  // B1.2: pass snapshot.
   await logPlatformAudit({
     actorUserId: ctx.userId,
     actorEmail: ctx.email,
@@ -95,6 +113,9 @@ export async function DELETE() {
     action: "platform.org.impersonate.stop",
     targetType: currentOrgId ? "organization" : null,
     targetId: currentOrgId,
+    actorEmailSnapshot: ctx.email,
+    actorRoleSnapshot: ctx.platformRole,
+    targetOrganizationNameSnapshot: orgNameSnapshot,
   });
 
   cookieStore.set(IMPERSONATE_COOKIE, "", {
