@@ -199,9 +199,13 @@ export async function POST(req: Request) {
           ? typeof body.result?.message === "string"
             ? body.result.message
             : "Kết nối camera thành công."
-          : body.error_message ?? "Kết nối thất bại.",
+          : humanizeTestFailure(body.error_message),
         tested_via: "agent",
       };
+      if (!success && body.error_message) {
+        // Giữ chuỗi lỗi kỹ thuật để debug sau này, tách khỏi message hiển thị.
+        testResult.raw_error = body.error_message;
+      }
       if (typeof body.result?.duration_ms === "number") {
         testResult.duration_ms = body.result.duration_ms;
       }
@@ -221,4 +225,42 @@ export async function POST(req: Request) {
   }
 
   return NextResponse.json({ ok: true });
+}
+
+/**
+ * Dịch chuỗi lỗi kỹ thuật từ agent thành thông báo tiếng Việt dễ hiểu cho
+ * user. Agent gửi dạng `test_failed: <reason>` với reason là các code như:
+ *   - exit_null / exit_null:...  → ffprobe bị SIGKILL do timeout 10s
+ *     (camera không trả về gì) → coi là camera offline / mạng không tới.
+ *   - exit_1: <stderr tail>       → ffprobe exit code 1 — thường là RTSP
+ *     401 (sai username/password) hoặc 404 (sai path).
+ *   - proc_error: ...             → lỗi tiến trình OS (hiếm).
+ *   - spawn_error: ...            → không spawn được ffprobe (ffprobe binary
+ *     mất hoặc corrupt).
+ *
+ * Nếu không map được, trả về câu hướng dẫn chung + giữ raw_error trong DB
+ * để debug qua log.
+ */
+function humanizeTestFailure(errMsg: string | null): string {
+  if (!errMsg) return "Kết nối thất bại. Kiểm tra camera và mạng nội bộ.";
+  const s = errMsg.toLowerCase();
+  if (s.includes("exit_null")) {
+    return "Camera không phản hồi trong 10 giây. Kiểm tra: camera có bật không, IP có đúng không, mạng LAN tới được không (thử ping IP).";
+  }
+  if (s.includes("401") || s.includes("unauthorized")) {
+    return "Sai username hoặc mật khẩu camera. Vào Chỉnh sửa để đổi lại thông tin đăng nhập.";
+  }
+  if (s.includes("404") || s.includes("not found")) {
+    return "Sai đường dẫn RTSP (RTSP path). Vào Chỉnh sửa và kiểm tra lại field RTSP path.";
+  }
+  if (s.includes("connection refused")) {
+    return "Camera từ chối kết nối (port RTSP đóng). Kiểm tra port 554 trên camera, hoặc port đã đổi trong cấu hình camera.";
+  }
+  if (s.includes("timeout") || s.includes("timed out")) {
+    return "Kết nối quá lâu chưa xong. Camera có thể quá xa/mạng yếu, thử test lại.";
+  }
+  if (s.includes("spawn_error") || s.includes("enoent")) {
+    return "Agent gặp lỗi nội bộ (ffprobe). Báo Betacom để kiểm tra máy kho.";
+  }
+  return "Không kết nối được camera. Kiểm tra camera có bật, đúng IP/port/RTSP path, và cùng mạng LAN với máy kho.";
 }

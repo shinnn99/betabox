@@ -12,6 +12,7 @@ import {
   Search,
 } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
+import Select from "@/components/ui/Select";
 import { Modal, Field } from "@/components/warehouse-config/Modal";
 
 export interface Camera {
@@ -430,21 +431,21 @@ function ManualForm({
       {mode === "edit" && (
         <Field
           label="Trạng thái"
-          hint="Không hoạt động = tạm ngưng, agent không probe, không cho bấm Bắt đầu ghi."
+          hint="Tạm ngưng = agent không probe, không cho Bắt đầu ghi."
         >
-          <select
+          <Select
             value={form.status}
-            onChange={(e) =>
+            onChange={(v) =>
               setForm({
                 ...form,
-                status: e.target.value as "active" | "inactive",
+                status: v as "active" | "inactive",
               })
             }
-            className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm bg-white"
-          >
-            <option value="active">Đang hoạt động</option>
-            <option value="inactive">Tạm ngưng</option>
-          </select>
+            options={[
+              { value: "active", label: "Đang hoạt động" },
+              { value: "inactive", label: "Tạm ngưng" },
+            ]}
+          />
         </Field>
       )}
 
