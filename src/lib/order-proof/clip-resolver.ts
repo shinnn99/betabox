@@ -96,19 +96,17 @@ const WORK_ENDED_POST_BUFFER_SECONDS = 5;
 const MIN_CLIP_DURATION_SECONDS = 15;
 
 /**
- * Ngưỡng độ dài TỐI ĐA của clip. Chặn ca:
- *   - RPC set work_ended_at cách quá xa scanned_at (VD timing_status
- *     'capped_timeout' cap 1 tiếng nhưng đơn thật đóng trong 3 phút).
- *   - nextScan/sessionEnd rơi vào ca đặc biệt (nhân viên đi WC, giao ca).
+ * Trần độ dài clip — 10 phút. Trùng nghiệp vụ `max_order_seconds` mặc định
+ * ở `warehouses.packing_timing_config`: đơn xử lý tối đa 10 phút, clip
+ * cũng không được kéo dài hơn 10 phút tính từ `scanned_at`.
  *
- * Đơn đóng thường 30s–2 phút, đơn khó (hàng nặng, gói kỹ) 5 phút. Vượt
- * 300s = chắc chắn có gì bất thường — cap để không vỡ storage limit (Supabase
- * bucket 500 MB, clip 5 phút H.264 ~50 MB, còn dư nhiều).
+ * Ưu tiên khi có `work_duration_seconds` hợp lý (≤ MAX): dùng nó.
+ * Nếu duration null hoặc vượt MAX: cap ở MAX.
  *
- * Ưu tiên khi có `work_duration_seconds` hợp lý (< MAX): dùng nó (kết luận
- * business "đơn thực đóng bao lâu"). Nếu duration null/vượt MAX: cap ở MAX.
+ * Pre-roll `video_pre_seconds` nằm TRƯỚC scanned_at nên tổng độ dài file
+ * mp4 có thể lớn hơn MAX một chút (VD 10 phút 10s với pre 10s).
  */
-const MAX_CLIP_DURATION_SECONDS = 300;
+const MAX_CLIP_DURATION_SECONDS = 600;
 
 // Hard ceilings to defend against a typo / wrong unit in
 // warehouses.packing_timing_config (e.g. someone enters minutes instead
@@ -192,18 +190,17 @@ interface PackingEventInput {
    */
   work_ended_at?: string | null;
   /**
-   * "Đơn thực đóng bao nhiêu giây" — set bởi RPC cùng với work_ended_at.
-   * Với timing_status='capped_timeout', duration này khác (work_ended_at -
-   * scanned_at) — RPC set work_ended_at = scanned_at + cap (VD 3600s) nhưng
-   * duration = giá trị business thực (VD 180s). Ưu tiên dùng duration khi
-   * cap dài hơn business thực để clip không cắt cả tiếng.
+   * "Đơn xử lý bao nhiêu giây" — set bởi RPC cùng với work_ended_at.
+   * Với timing_status='capped_timeout' RPC cap duration ở `max_order_seconds`
+   * (mặc định 600s) — dùng số này làm end time để clip không kéo dài quá
+   * ngưỡng nghiệp vụ khi 2 lượt quét cách nhau lâu.
    */
   work_duration_seconds?: number | null;
   /**
    * Kết quả close đơn: 'finalized_by_next_scan' | 'finalized_by_checkout' |
    * 'capped_timeout' | 'open' | 'not_applicable'. Dùng để chọn end time:
-   * capped_timeout = KHÔNG tin work_ended_at (RPC set = scanned_at + cap
-   * không phản ánh đơn thật đóng), dùng work_duration_seconds nếu có.
+   * capped_timeout = KHÔNG dùng work_ended_at (= scan kế thật, cách quá xa),
+   * dùng `scanned_at + work_duration_seconds` (đã cap ở max_order_seconds).
    */
   timing_status?: string | null;
 }
@@ -393,17 +390,15 @@ export async function resolveClipBounds(opts: {
       endReason = "default_post_invalid_work_ended";
     } else {
       // Chọn end candidate theo timing_status:
-      //   capped_timeout → KHÔNG tin work_ended_at (RPC set = scanned_at
-      //     + 1 tiếng không phản ánh đơn thật đóng). Dùng
-      //     work_duration_seconds nếu hợp lý, fallback MAX_CLIP_DURATION.
-      //   khác → dùng work_ended_at như trước.
+      //   capped_timeout → work_ended_at = scan kế thật (cách quá xa), bỏ.
+      //     Dùng `scanned_at + work_duration_seconds` (RPC đã cap ở
+      //     max_order_seconds). Nếu duration invalid → cap ở MAX.
+      //   khác → dùng work_ended_at.
       let candidateMs: number;
       const isCapped = packingEvent.timing_status === "capped_timeout";
       const dur = packingEvent.work_duration_seconds;
       const durValid = typeof dur === "number" && dur > 0 && dur <= MAX_CLIP_DURATION_SECONDS;
       if (isCapped) {
-        // capped_timeout: work_ended_at = scanned_at + cap; không dùng.
-        // Ưu tiên duration business thực; nếu duration invalid → cap ở MAX.
         candidateMs = durValid
           ? scannedAt.getTime() + dur * 1000 + WORK_ENDED_POST_BUFFER_SECONDS * 1000
           : scannedAt.getTime() + MAX_CLIP_DURATION_SECONDS * 1000;
@@ -412,8 +407,8 @@ export async function resolveClipBounds(opts: {
       }
 
       // Cap cứng ở MAX_CLIP_DURATION bất kể nhánh nào — phòng ca
-      // work_ended_at vượt max do bug RPC hoặc timing_status
-      // 'finalized_by_next_scan' nhưng scan kế đến rất muộn.
+      // work_ended_at vượt max (scan kế đến rất muộn với
+      // timing_status='finalized_by_next_scan').
       const maxEndMs = scannedAt.getTime() + MAX_CLIP_DURATION_SECONDS * 1000;
       if (candidateMs > maxEndMs) {
         clipEnd = new Date(maxEndMs);
@@ -471,9 +466,9 @@ export async function resolveClipBounds(opts: {
     }
   }
 
-  // Cap chung cuối cùng — áp cho MỌI nhánh (kể cả work_ended_at đã cap
-  // ở trên, để phòng bug thoát khi cả 2 tầng cap sai). Sản phẩm bằng
-  // chứng cần clip <= 5 phút để không vỡ storage limit 500 MB.
+  // Cap chung cuối cùng — áp cho MỌI nhánh (belt-and-suspenders, phòng
+  // bug thoát khi tầng cap trên tính sai). Trần trùng với nghiệp vụ
+  // `max_order_seconds` mặc định 10 phút.
   const maxClipEndMs = scannedAt.getTime() + MAX_CLIP_DURATION_SECONDS * 1000;
   if (clipEnd.getTime() > maxClipEndMs) {
     clipEnd = new Date(maxClipEndMs);
