@@ -10,22 +10,21 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * 3c: agent xin signed upload URL để đẩy clip lên bucket tạm.
+ * Agent xin signed upload URL để đẩy clip lên bucket tạm.
  *
- * Agent KHÔNG giữ Supabase key. Backend giữ, cấp URL upload một lần
- * cho path cố định (agent không ghi bừa đường dẫn). URL có hạn ngắn
- * (~2h — mặc định của Supabase createSignedUploadUrl).
- *
- * Multi-tenant guard:
- *   - Verify agent HMAC.
- *   - Verify packing_event_id thuộc org agent.
- *   - Backend TỰ tính bucket path (`<org_id>/<pe_id>.mp4`) — không
- *     lấy từ payload agent. Agent không thể ghi ra path khác.
+ * Safe-retry S6 2026-07-06:
+ *   - Nhận `clip_id` (identity generation).
+ *   - Bucket path v2: `{org}/{pe}/{clip_id}.mp4`. Backend tự tính, KHÔNG
+ *     lấy từ payload agent.
+ *   - Verify clip thuộc org agent + status='pending' (generation đang xử lý).
+ *   - `upsert: false` — mỗi generation upload đúng 1 lần vào path riêng
+ *     nên retry-with-same-clip-id không thể ghi đè path khác.
  */
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface RequestBody {
+  clip_id: string;
   packing_event_id: string;
 }
 
@@ -36,11 +35,11 @@ type ParseOutcome =
 function parseBody(raw: unknown): ParseOutcome {
   if (!raw || typeof raw !== "object") return { ok: false, error: "invalid_body" };
   const r = raw as Record<string, unknown>;
+  const clipId = typeof r.clip_id === "string" ? r.clip_id.trim() : "";
+  if (!UUID_RE.test(clipId)) return { ok: false, error: "clip_id_invalid" };
   const pe = typeof r.packing_event_id === "string" ? r.packing_event_id.trim() : "";
-  if (!pe || !UUID_RE.test(pe)) {
-    return { ok: false, error: "packing_event_id_invalid" };
-  }
-  return { ok: true, body: { packing_event_id: pe } };
+  if (!UUID_RE.test(pe)) return { ok: false, error: "packing_event_id_invalid" };
+  return { ok: true, body: { clip_id: clipId, packing_event_id: pe } };
 }
 
 export async function POST(req: Request) {
@@ -87,25 +86,37 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: verdict.error }, { status: verdict.status });
   }
 
-  // Multi-tenant: packing_event thuộc org agent?
-  const { data: pe } = await admin
-    .from("packing_events")
-    .select("id, organization_id")
-    .eq("id", body.packing_event_id)
-    .eq("organization_id", agent.organization_id)
+  // Verify clip thuộc org agent + pe khớp payload + đang ở pending.
+  const { data: clip } = await admin
+    .from("order_proof_clips")
+    .select("id, organization_id, packing_event_id, status")
+    .eq("id", body.clip_id)
     .maybeSingle();
-  if (!pe) {
+  if (!clip) {
+    return NextResponse.json({ error: "clip_not_found" }, { status: 404 });
+  }
+  if (clip.organization_id !== agent.organization_id) {
+    return NextResponse.json({ error: "clip_cross_org" }, { status: 403 });
+  }
+  if (clip.packing_event_id !== body.packing_event_id) {
+    return NextResponse.json({ error: "clip_pe_mismatch" }, { status: 400 });
+  }
+  if (clip.status !== "pending") {
     return NextResponse.json(
-      { error: "packing_event_not_in_org" },
-      { status: 403 },
+      { error: "clip_not_pending", status: clip.status },
+      { status: 409 },
     );
   }
 
-  const bucketPath = bucketPathFor(agent.organization_id, body.packing_event_id);
+  const bucketPath = bucketPathFor(
+    agent.organization_id,
+    body.packing_event_id,
+    body.clip_id,
+  );
 
   const { data: signed, error: signedErr } = await admin.storage
     .from(BUCKET_NAME)
-    .createSignedUploadUrl(bucketPath, { upsert: true });
+    .createSignedUploadUrl(bucketPath, { upsert: false });
 
   if (signedErr || !signed) {
     return NextResponse.json(

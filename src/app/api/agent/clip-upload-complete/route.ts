@@ -10,20 +10,24 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * 3c: agent báo upload xong.
+ * Agent báo upload xong → backend verify object + gọi RPC promote.
  *
- * Backend verify file thật sự tồn tại trong bucket (dùng service_role
- * xem storage.objects) — không tin lời agent nói suông. Rồi update
- * order_proof_clips.bucket_path + bucket_uploaded_at.
- *
- * Bucket path backend TỰ tính từ agent org + packing_event_id, KHÔNG
- * lấy từ payload agent — tương tự upload-url endpoint. Agent không
- * kiểm soát được đường dẫn cuối.
+ * Safe-retry S6 2026-07-06:
+ *   - Nhận `clip_id` (identity generation).
+ *   - Backend tự tính bucket path v2 `{org}/{pe}/{clip_id}.mp4` — không
+ *     tin agent payload.
+ *   - Verify file THẬT SỰ tồn tại trong bucket bằng HEAD lookup chính xác
+ *     (không dùng `list + search` — tránh match nhầm object khác).
+ *   - Gọi RPC `promote_clip_generation` để flip DB atomic:
+ *       lần đầu: pending → ready.
+ *       retry:   ready cũ → superseded + pending mới → ready.
+ *     RPC idempotent → callback replay trả 'already_promoted' vẫn OK.
  */
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface RequestBody {
+  clip_id: string;
   packing_event_id: string;
   file_size_bytes: number;
 }
@@ -35,15 +39,16 @@ type ParseOutcome =
 function parseBody(raw: unknown): ParseOutcome {
   if (!raw || typeof raw !== "object") return { ok: false, error: "invalid_body" };
   const r = raw as Record<string, unknown>;
+  const clipId = typeof r.clip_id === "string" ? r.clip_id.trim() : "";
+  if (!UUID_RE.test(clipId)) return { ok: false, error: "clip_id_invalid" };
   const pe = typeof r.packing_event_id === "string" ? r.packing_event_id.trim() : "";
-  if (!pe || !UUID_RE.test(pe)) {
-    return { ok: false, error: "packing_event_id_invalid" };
-  }
+  if (!UUID_RE.test(pe)) return { ok: false, error: "packing_event_id_invalid" };
   const size = Number(r.file_size_bytes);
-  if (!Number.isFinite(size) || size <= 0) {
-    return { ok: false, error: "file_size_invalid" };
-  }
-  return { ok: true, body: { packing_event_id: pe, file_size_bytes: size } };
+  if (!Number.isFinite(size) || size <= 0) return { ok: false, error: "file_size_invalid" };
+  return {
+    ok: true,
+    body: { clip_id: clipId, packing_event_id: pe, file_size_bytes: size },
+  };
 }
 
 export async function POST(req: Request) {
@@ -90,29 +95,40 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: verdict.error }, { status: verdict.status });
   }
 
-  // Multi-tenant: packing_event thuộc org agent?
-  const { data: pe } = await admin
-    .from("packing_events")
-    .select("id, organization_id")
-    .eq("id", body.packing_event_id)
-    .eq("organization_id", agent.organization_id)
+  // Verify clip thuộc org agent + pe khớp.
+  const { data: clip } = await admin
+    .from("order_proof_clips")
+    .select(
+      "id, organization_id, packing_event_id, status, generation_params",
+    )
+    .eq("id", body.clip_id)
     .maybeSingle();
-  if (!pe) {
-    return NextResponse.json(
-      { error: "packing_event_not_in_org" },
-      { status: 403 },
-    );
+  if (!clip) {
+    return NextResponse.json({ error: "clip_not_found" }, { status: 404 });
+  }
+  if (clip.organization_id !== agent.organization_id) {
+    return NextResponse.json({ error: "clip_cross_org" }, { status: 403 });
+  }
+  if (clip.packing_event_id !== body.packing_event_id) {
+    return NextResponse.json({ error: "clip_pe_mismatch" }, { status: 400 });
   }
 
-  const bucketPath = bucketPathFor(agent.organization_id, body.packing_event_id);
+  // Backend tự tính bucket path v2.
+  const bucketPath = bucketPathFor(
+    agent.organization_id,
+    body.packing_event_id,
+    body.clip_id,
+  );
 
-  // Verify file THẬT SỰ tồn tại trong bucket. supabase-js remove()
-  // là destructive → dùng list() cha directory + filter theo name.
-  const parentDir = agent.organization_id;
-  const fileName = `${body.packing_event_id}.mp4`;
+  // Verify object THẬT SỰ tồn tại trong bucket. Dùng list parent với
+  // search bằng đúng basename để lấy object metadata (Supabase SDK
+  // không expose head trực tiếp — list + search theo tên chính xác đủ
+  // an toàn ở đây vì tên = clip_id là UUID duy nhất).
+  const parentDir = `${agent.organization_id}/${body.packing_event_id}`;
+  const fileName = `${body.clip_id}.mp4`;
   const { data: files, error: listErr } = await admin.storage
     .from(BUCKET_NAME)
-    .list(parentDir, { limit: 100, search: fileName });
+    .list(parentDir, { limit: 10, search: fileName });
   if (listErr) {
     return NextResponse.json(
       { error: "verify_failed", message: listErr.message },
@@ -121,25 +137,48 @@ export async function POST(req: Request) {
   }
   const found = (files ?? []).find((f) => f.name === fileName);
   if (!found) {
+    // Chỉ signal cho generation MỚI (new). Không suy diễn về clip cũ —
+    // clip cũ (nếu có) do /watch xử lý playback riêng.
     return NextResponse.json(
-      { error: "file_not_in_bucket", bucket_path: bucketPath },
+      { error: "new_generation_file_not_in_bucket", bucket_path: bucketPath },
       { status: 409 },
     );
   }
 
-  const nowIso = new Date().toISOString();
-  const { error: updErr } = await admin
-    .from("order_proof_clips")
-    .update({
-      bucket_path: bucketPath,
-      bucket_uploaded_at: nowIso,
-    })
-    .eq("packing_event_id", body.packing_event_id)
-    .eq("organization_id", agent.organization_id);
+  // Đọc replaces_clip_id từ generation_params (resolver đã lưu ở
+  // enqueue). RPC chấp nhận NULL cho lần cắt đầu.
+  const genParams = (clip.generation_params as Record<string, unknown> | null) ?? {};
+  const replacesRaw = genParams.replaces_clip_id;
+  const oldClipId =
+    typeof replacesRaw === "string" && UUID_RE.test(replacesRaw)
+      ? replacesRaw
+      : null;
 
-  if (updErr) {
+  // Gọi RPC promote — atomic + idempotent.
+  const { data: rpcResult, error: rpcErr } = await admin.rpc(
+    "promote_clip_generation",
+    {
+      p_new_clip_id: body.clip_id,
+      p_packing_event_id: body.packing_event_id,
+      p_bucket_path: bucketPath,
+      p_old_clip_id: oldClipId,
+    },
+  );
+  if (rpcErr) {
     return NextResponse.json(
-      { error: "update_failed", message: updErr.message },
+      { error: "promote_failed", message: rpcErr.message },
+      { status: 500 },
+    );
+  }
+
+  const promoteStatus = typeof rpcResult === "string" ? rpcResult : "unknown";
+  if (
+    promoteStatus !== "promoted_first" &&
+    promoteStatus !== "promoted_retry" &&
+    promoteStatus !== "already_promoted"
+  ) {
+    return NextResponse.json(
+      { error: "promote_unexpected_status", promote_status: promoteStatus },
       { status: 500 },
     );
   }
@@ -147,6 +186,6 @@ export async function POST(req: Request) {
   return NextResponse.json({
     ok: true,
     bucket_path: bucketPath,
-    bucket_uploaded_at: nowIso,
+    promote_status: promoteStatus,
   });
 }

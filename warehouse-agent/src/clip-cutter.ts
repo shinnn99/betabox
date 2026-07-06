@@ -210,6 +210,100 @@ export async function cutClip(params: CutClipParams): Promise<CutClipResult> {
   };
 }
 
+/**
+ * Codec guard (safe-retry S5 2026-07-06): CHỈ H.264.
+ *
+ * Kiến trúc chốt "camera ghi H.264 từ đầu" nên codec khác = bất thường.
+ * Không tự động reencode (chốt) — raise fail rõ ràng để ops điều tra.
+ *
+ * ffprobe trả 2 field khác nhau cho H.264:
+ *   stream.codec_name       → "h264"     (định danh codec)
+ *   stream.codec_tag_string → "avc1"     (fourcc tag trong container mp4)
+ *
+ * Hợp lệ khi: codec_name = 'h264' HOẶC codec_tag_string = 'avc1'.
+ *
+ * Danh sách fail rõ ràng (kỳ vọng camera phát): hevc/h265, mjpeg,
+ * vp8/vp9/av1, hoặc empty/probe failed.
+ */
+export interface ProbedCodec {
+  /** stream.codec_name lowercase, VD "h264", "hevc". null nếu không có video stream. */
+  codecName: string | null;
+  /** stream.codec_tag_string lowercase, VD "avc1", "hev1". null nếu ffprobe không expose. */
+  codecTag: string | null;
+  /** True khi ffprobe chạy xong không lỗi (dù có video stream hay không). */
+  probed: boolean;
+}
+
+export function isBrowserSafeCodec(probed: ProbedCodec): boolean {
+  const name = probed.codecName?.toLowerCase() ?? null;
+  const tag = probed.codecTag?.toLowerCase() ?? null;
+  return name === "h264" || tag === "avc1";
+}
+
+/**
+ * Probe codec name + tag của video stream đầu tiên trong 1 file.
+ * Trả cả 2 field vì ffprobe có build khác nhau — vài build ưu tiên
+ * codec_tag_string (mp4 container) thay vì codec_name.
+ */
+export async function probeFileVideoCodec(
+  bin: string,
+  filePath: string,
+): Promise<ProbedCodec> {
+  return new Promise((resolve) => {
+    let proc;
+    try {
+      proc = spawn(
+        bin,
+        [
+          "-v", "error",
+          "-select_streams", "v:0",
+          "-show_entries", "stream=codec_name,codec_tag_string",
+          "-of", "default=noprint_wrappers=1",
+          filePath,
+        ],
+        { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch {
+      return resolve({ codecName: null, codecTag: null, probed: false });
+    }
+    let out = "";
+    proc.stdout?.on("data", (c: Buffer) => {
+      out += c.toString("utf8");
+    });
+    proc.stderr?.on("data", () => {});
+    const t = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+    }, 10_000);
+    proc.on("error", () => {
+      clearTimeout(t);
+      resolve({ codecName: null, codecTag: null, probed: false });
+    });
+    proc.on("close", (code) => {
+      clearTimeout(t);
+      if (code !== 0) return resolve({ codecName: null, codecTag: null, probed: false });
+      // Parse key=value output. VD:
+      //   codec_name=h264
+      //   codec_tag_string=avc1
+      let codecName: string | null = null;
+      let codecTag: string | null = null;
+      for (const line of out.split(/\r?\n/)) {
+        const idx = line.indexOf("=");
+        if (idx <= 0) continue;
+        const key = line.slice(0, idx).trim();
+        const val = line.slice(idx + 1).trim().toLowerCase();
+        if (!val) continue;
+        if (key === "codec_name") codecName = val;
+        else if (key === "codec_tag_string") codecTag = val;
+      }
+      resolve({ codecName, codecTag, probed: true });
+    });
+  });
+}
+
 export async function probeDurationSeconds(bin: string, filePath: string): Promise<number | null> {
   return new Promise((resolve) => {
     let proc;
@@ -267,8 +361,181 @@ export async function checkSegmentsExist(params: {
 }
 
 /**
- * Dọn `.concat.txt` orphan lúc boot — nếu agent crash giữa cắt clip,
- * file .concat.txt có thể còn sót trong _clips. Rẻ, gọi từ boot.
+ * Boot cleanup (S10 safe-retry 2026-07-06).
+ *
+ * Xử 3 loại file tồn đọng trong _clips:
+ *   - `.concat.txt` orphan → xóa mọi cái (rẻ, không có ý nghĩa gì).
+ *   - `.stale` marker (json) + `.tmp.mp4` cùng name →
+ *     đây là generation ĐÃ ready (bucket + DB) nhưng local rename fail.
+ *     Recovery: rename tmp → canonical `{pe_id}.mp4`, xóa .stale + .bak.
+ *   - `.tmp.mp4` KHÔNG có .stale marker + tuổi > `staleThresholdMs` →
+ *     temp mồ côi (agent crash giữa cut). Xóa.
+ *   - `.bak.mp4` tuổi > threshold → bak mồ côi, xóa.
+ *
+ * Recovery `.stale`: KHÔNG áp threshold — chạy recovery ngay lập tức
+ * bất kể tuổi (marker ghi rõ tmp thuộc generation nào).
+ */
+export interface CleanupResult {
+  concat_removed: number;
+  stale_recovered: number;
+  stale_recovery_failed: number;
+  tmp_orphan_removed: number;
+  bak_orphan_removed: number;
+}
+
+const CLIP_STALE_MARKER_SUFFIX = ".stale";
+const CLIP_TMP_SUFFIX = ".tmp.mp4";
+const CLIP_BAK_SUFFIX = ".bak.mp4";
+const CLIP_CONCAT_SUFFIX = ".concat.txt";
+
+export async function cleanupOrphanClipArtifacts(
+  clipsDir: string,
+  staleThresholdMs = 24 * 60 * 60 * 1000,
+): Promise<CleanupResult> {
+  const fs = await import("node:fs/promises");
+  const out: CleanupResult = {
+    concat_removed: 0,
+    stale_recovered: 0,
+    stale_recovery_failed: 0,
+    tmp_orphan_removed: 0,
+    bak_orphan_removed: 0,
+  };
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(clipsDir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  const now = Date.now();
+
+  // PASS 1: recovery `.stale` markers. Đọc trước để không sweep nhầm
+  // các .tmp mà .stale chỉ tới.
+  const staleFiles = entries.filter(
+    (e) => e.isFile() && e.name.endsWith(CLIP_STALE_MARKER_SUFFIX),
+  );
+  const recoveredTmpNames = new Set<string>();
+
+  for (const staleEntry of staleFiles) {
+    const staleAbs = path.join(clipsDir, staleEntry.name);
+    // Tmp file tương ứng: cắt .stale suffix
+    const tmpName = staleEntry.name.slice(0, -CLIP_STALE_MARKER_SUFFIX.length);
+    const tmpAbs = path.join(clipsDir, tmpName);
+
+    let markerContent: {
+      clip_id?: string;
+      packing_event_id?: string;
+    } | null = null;
+    try {
+      const raw = await fs.readFile(staleAbs, "utf8");
+      markerContent = JSON.parse(raw);
+    } catch (err) {
+      console.warn(
+        `[clip-cleanup] read .stale marker failed ${staleEntry.name}: ${(err as Error).message}`,
+      );
+      out.stale_recovery_failed++;
+      continue;
+    }
+
+    const peId = markerContent?.packing_event_id;
+    if (!peId || !/^[0-9a-f-]{36}$/i.test(peId)) {
+      console.warn(
+        `[clip-cleanup] .stale marker thiếu packing_event_id hợp lệ: ${staleEntry.name}`,
+      );
+      out.stale_recovery_failed++;
+      continue;
+    }
+
+    if (!existsSync(tmpAbs)) {
+      // Tmp mất — recovery không làm được. Xóa marker mồ côi.
+      console.warn(
+        `[clip-cleanup] .stale marker có nhưng tmp mất: ${staleEntry.name}`,
+      );
+      await fs.unlink(staleAbs).catch(() => undefined);
+      out.stale_recovery_failed++;
+      continue;
+    }
+
+    const canonicalAbs = path.join(clipsDir, `${peId}.mp4`);
+    try {
+      // Nếu canonical hiện tại tồn tại (clip cũ), unlink trước.
+      // Safe-retry: DB đã trỏ bucket, canonical này là clip cũ đã
+      // superseded → xóa an toàn.
+      if (existsSync(canonicalAbs)) {
+        await fs.unlink(canonicalAbs);
+      }
+      await fs.rename(tmpAbs, canonicalAbs);
+      await fs.unlink(staleAbs).catch(() => undefined);
+      // Xóa .bak nếu có (cùng command_id prefix)
+      // Format `.bak.mp4`: `{pe}.{cmd}.bak.mp4`. Marker name trước
+      // .stale: `{pe}.{cmd}.tmp.mp4`. Suy ra bak: swap tmp → bak.
+      const bakName = tmpName.replace(CLIP_TMP_SUFFIX, CLIP_BAK_SUFFIX);
+      const bakAbs = path.join(clipsDir, bakName);
+      if (existsSync(bakAbs)) {
+        await fs.unlink(bakAbs).catch(() => undefined);
+      }
+      recoveredTmpNames.add(tmpName);
+      out.stale_recovered++;
+      console.log(
+        `[clip-cleanup] recovered stale generation: pe=${peId} tmp=${tmpName} → canonical`,
+      );
+    } catch (err) {
+      console.error(
+        `[clip-cleanup] stale recovery failed pe=${peId}: ${(err as Error).message}`,
+      );
+      out.stale_recovery_failed++;
+    }
+  }
+
+  // PASS 2: sweep orphans (concat, tmp không có marker, bak không recovery).
+  for (const e of entries) {
+    if (!e.isFile()) continue;
+    const abs = path.join(clipsDir, e.name);
+
+    if (e.name.endsWith(CLIP_CONCAT_SUFFIX)) {
+      await fs.unlink(abs).catch(() => undefined);
+      out.concat_removed++;
+      continue;
+    }
+
+    if (e.name.endsWith(CLIP_TMP_SUFFIX)) {
+      if (recoveredTmpNames.has(e.name)) continue; // đã rename ở PASS 1
+      // KHÔNG sweep nếu .stale marker cùng name còn tồn tại (recovery
+      // fail — giữ để ops xem lại thủ công).
+      const staleAbs = `${abs}${CLIP_STALE_MARKER_SUFFIX}`;
+      if (existsSync(staleAbs)) continue;
+      // Không marker → temp mồ côi. Chỉ xóa nếu tuổi > threshold.
+      try {
+        const st = await fs.stat(abs);
+        if (now - st.mtimeMs > staleThresholdMs) {
+          await fs.unlink(abs).catch(() => undefined);
+          out.tmp_orphan_removed++;
+        }
+      } catch {
+        // stat lỗi — bỏ qua
+      }
+      continue;
+    }
+
+    if (e.name.endsWith(CLIP_BAK_SUFFIX)) {
+      try {
+        const st = await fs.stat(abs);
+        if (now - st.mtimeMs > staleThresholdMs) {
+          await fs.unlink(abs).catch(() => undefined);
+          out.bak_orphan_removed++;
+        }
+      } catch {
+        // stat lỗi — bỏ qua
+      }
+      continue;
+    }
+  }
+
+  return out;
+}
+
+/**
+ * @deprecated 2026-07-06: dùng cleanupOrphanClipArtifacts.
+ * Giữ signature cũ cho backward compat trong 1 vòng deploy.
  */
 export async function cleanupOrphanConcatFiles(clipsDir: string): Promise<number> {
   const fs = await import("node:fs/promises");

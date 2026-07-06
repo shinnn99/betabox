@@ -109,26 +109,21 @@ export interface EnqueueCutClipArgs {
   agentId: string;
   packingEventId: string;
   /**
-   * Cọc #8 project_camera_probe_tech_debt_cocs — force_recut.
+   * Safe-retry 2026-07-06: khi user bấm [Thử lại] và hiện có clip ready
+   * cần bảo toàn, endpoint retry truyền ID clip cũ vào đây. Agent nhìn
+   * flag này để KHÔNG idempotent-reuse file canonical cũ — luôn cắt
+   * generation mới vào temp file, chỉ promote sau khi upload+verify OK.
    *
-   * User bấm [Thử lại] → retry endpoint xóa row+bucket+command cũ VÀ
-   * enqueue command mới với force_recut=true. Agent nhận flag này →
-   * xóa file `_clips/{pe_id}.mp4` cũ TRƯỚC khi check idempotent.
-   *
-   * Vì sao cần: file cũ có thể SAI (cắt theo window cũ sau khi
-   * resolver fix, hoặc cắt lỗi trước đó). Nếu không force, agent thấy
-   * file cũ có → skip idempotent với data file cũ → retry vô tác dụng.
-   *
-   * Auto-poll enqueue (không phải retry) giữ nguyên default (undefined
-   * = false), idempotent tái sử dụng file cũ hợp lệ. Chỉ [Thử lại]
-   * mới force.
+   * null/undefined = lần cắt đầu (chưa có ready) hoặc recovery.
    */
-  forceRecut?: boolean;
+  replacesClipId?: string | null;
 }
 
 export interface EnqueueCutClipResult {
   ok: true;
   command_id: string;
+  /** ID row order_proof_clips (status='pending') vừa pre-insert. */
+  clip_id: string;
   is_partial: boolean;
   segment_count: number;
 }
@@ -441,7 +436,14 @@ export async function enqueueCutClip(
   // packing_events lấy trực tiếp — nguồn chân lý ở DB, không cần copy
   // qua agent_commands.
 
-  const payload = {
+  // Safe-retry H4: pre-insert row pending + enqueue agent_command trong
+  // 1 transaction qua RPC atomic. Loại race "command đã insert nhưng
+  // response mạng mất → xóa pending → command mồ côi trỏ clip_id đã bị xóa".
+  //
+  // Payload command KHÔNG chứa clip_id ở đây — RPC tự merge sau khi tạo
+  // clip_id, đảm bảo consistency.
+  const commandPayloadWithoutClipId = {
+    replaces_clip_id: args.replacesClipId ?? null,
     packing_event_id: pe.id,
     camera_id: resolved.cameraId,
     waybill_code: pe.waybill_code,
@@ -455,9 +457,6 @@ export async function enqueueCutClip(
       ended_at: s.ended_at,
       duration_seconds: s.duration_seconds,
     })),
-    // is_partial + covered_range + gaps + total_gap_seconds là GHI
-    // NHẬN DỮ LIỆU — feed vào order_proof_clips để panel dashboard
-    // hiện "clip thiếu N giây". Không vẽ gì lên video (chốt 2026-07-05).
     partial_coverage: isPartial,
     covered_range: {
       lower: new Date(coveredStartMs).toISOString(),
@@ -465,28 +464,57 @@ export async function enqueueCutClip(
     },
     gaps,
     total_gap_seconds: Math.round(totalGapMs / 1000),
-    // Cọc #8 force_recut: agent xóa `_clips/{pe_id}.mp4` cũ trước khi
-    // check idempotent. Chỉ set khi user bấm [Thử lại] — auto-poll
-    // enqueue để undefined = idempotent tái sử dụng file cũ hợp lệ.
-    force_recut: args.forceRecut === true ? true : undefined,
+    audit: {
+      end_reason: resolved.endReason,
+      next_scan_boundary: resolved.nextScan?.boundary ?? null,
+      next_scan_scanned_at: resolved.nextScan?.scanned_at ?? null,
+      session_end_ended_at: resolved.sessionEnd?.ended_at ?? null,
+      pre_seconds: resolved.preSeconds,
+      before_next_seconds: resolved.beforeNextSeconds,
+      default_post_seconds: resolved.defaultPostSeconds,
+      replaces_clip_id: args.replacesClipId ?? null,
+    },
   };
 
-  const { data, error } = await admin
-    .from("agent_commands")
-    .insert({
-      organization_id: args.organizationId,
-      agent_id: args.agentId,
-      type: "cut_clip",
-      payload,
+  const generationParams = {
+    end_reason: resolved.endReason,
+    next_scan_boundary: resolved.nextScan?.boundary ?? null,
+    next_scan_scanned_at: resolved.nextScan?.scanned_at ?? null,
+    session_end_ended_at: resolved.sessionEnd?.ended_at ?? null,
+    pre_seconds: resolved.preSeconds,
+    before_next_seconds: resolved.beforeNextSeconds,
+    default_post_seconds: resolved.defaultPostSeconds,
+    replaces_clip_id: args.replacesClipId ?? null,
+  };
+
+  const { data: rpcRow, error: rpcErr } = await admin
+    .rpc("enqueue_clip_generation", {
+      p_organization_id: args.organizationId,
+      p_packing_event_id: pe.id,
+      p_camera_id: resolved.cameraId,
+      p_waybill_code: pe.waybill_code,
+      p_agent_id: args.agentId,
+      p_clip_started_at: resolved.clipStart.toISOString(),
+      p_clip_ended_at: resolved.clipEnd.toISOString(),
+      p_is_partial: isPartial,
+      p_source_files: sortedSegments.map((s) => ({
+        file_path: s.file_path,
+        started_at: s.started_at,
+        ended_at: s.ended_at,
+      })),
+      p_generation_params: generationParams,
+      p_command_payload: commandPayloadWithoutClipId,
     })
-    .select("id")
-    .single();
-  if (error || !data) {
-    throw new Error(`enqueue cut_clip failed: ${error?.message}`);
+    .single<{ clip_id: string; command_id: string; result_status: string }>();
+
+  if (rpcErr || !rpcRow) {
+    throw new Error(`enqueue_clip_generation RPC failed: ${rpcErr?.message}`);
   }
+
   return {
     ok: true,
-    command_id: data.id,
+    command_id: rpcRow.command_id,
+    clip_id: rpcRow.clip_id,
     is_partial: isPartial,
     segment_count: sortedSegments.length,
   };

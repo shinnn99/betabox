@@ -304,6 +304,13 @@ export interface PostClipResultParams {
   backendUrl: string;
   agentCode: string;
   agentSecret: string;
+  /**
+   * Safe-retry S5 2026-07-06: clip_id là identity generation. Backend
+   * cập nhật row `order_proof_clips` theo id, KHÔNG upsert theo pe_id.
+   * NULL chỉ cho path legacy (agent version cũ chưa deploy) — sẽ được
+   * loại bỏ khi bỏ dead route 2026-07-17.
+   */
+  clipId: string | null;
   packingEventId: string;
   cameraId: string;
   waybillCode: string;
@@ -327,6 +334,7 @@ export async function postClipCutResult(
   params: PostClipResultParams,
 ): Promise<{ ok: boolean; status: number }> {
   const body = JSON.stringify({
+    clip_id: params.clipId,
     packing_event_id: params.packingEventId,
     camera_id: params.cameraId,
     waybill_code: params.waybillCode,
@@ -372,9 +380,13 @@ export async function fetchClipUploadUrl(params: {
   backendUrl: string;
   agentCode: string;
   agentSecret: string;
+  clipId: string;
   packingEventId: string;
 }): Promise<{ ok: true; signedUrl: string; bucketPath: string } | { ok: false; error: string; status: number }> {
-  const body = JSON.stringify({ packing_event_id: params.packingEventId });
+  const body = JSON.stringify({
+    clip_id: params.clipId,
+    packing_event_id: params.packingEventId,
+  });
   const headers = signBody({
     agentCode: params.agentCode,
     agentSecret: params.agentSecret,
@@ -412,10 +424,12 @@ export async function notifyClipUploadComplete(params: {
   backendUrl: string;
   agentCode: string;
   agentSecret: string;
+  clipId: string;
   packingEventId: string;
   fileSizeBytes: number;
 }): Promise<{ ok: boolean; status: number; error?: string }> {
   const body = JSON.stringify({
+    clip_id: params.clipId,
     packing_event_id: params.packingEventId,
     file_size_bytes: params.fileSizeBytes,
   });

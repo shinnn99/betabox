@@ -1190,15 +1190,47 @@ function ModalBody({ watch }: { watch: ReturnType<typeof useWatchClipState> }) {
   }
 
   if (watch.state === "ready" && watch.signedUrl) {
+    // Safe-retry state kép: nếu đang regenerate, hiện badge phía trên
+    // video. Video vẫn phát clip cũ bình thường. Nếu regeneration_error,
+    // hiện cảnh báo cho user biết retry vừa fail nhưng video hiện tại
+    // vẫn được giữ.
     return (
-      <video
-        src={watch.signedUrl}
-        controls
-        autoPlay
-        playsInline
-        preload="metadata"
-        className="w-full aspect-video bg-black"
-      />
+      <div className="relative">
+        {watch.regenerating && (
+          <div className="absolute top-2 left-2 right-2 z-10 rounded-lg bg-blue-500/90 text-white text-xs px-3 py-2 inline-flex items-center gap-2 shadow-lg">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span>
+              Đang tạo lại video (
+              {watch.regenerationState === "encoding" ? "cắt" : "tải lên"}
+              )... {watch.elapsedSeconds}s
+            </span>
+          </div>
+        )}
+        {watch.regenerationError && !watch.regenerating && (
+          <div className="absolute top-2 left-2 right-2 z-10 rounded-lg bg-amber-500/90 text-white text-xs px-3 py-2 shadow-lg flex items-start gap-3">
+            <div className="flex-1">
+              <div className="font-semibold mb-0.5">
+                Tạo lại thất bại, video hiện tại vẫn được giữ.
+              </div>
+              <div className="text-white/85">{watch.regenerationError}</div>
+            </div>
+            <button
+              onClick={() => void watch.retry()}
+              className="shrink-0 px-2 py-1 rounded bg-white/20 hover:bg-white/30 text-white text-[11px] font-semibold"
+            >
+              Thử lại
+            </button>
+          </div>
+        )}
+        <video
+          src={watch.signedUrl}
+          controls
+          autoPlay
+          playsInline
+          preload="metadata"
+          className="w-full aspect-video bg-black"
+        />
+      </div>
     );
   }
 
@@ -1207,16 +1239,6 @@ function ModalBody({ watch }: { watch: ReturnType<typeof useWatchClipState> }) {
       <ProgressBox
         title="Đang tải clip, vui lòng đợi..."
         message="Agent kho đang cắt clip từ segment gốc. Thường mất 10–30s."
-        elapsedSeconds={watch.elapsedSeconds}
-      />
-    );
-  }
-
-  if (watch.state === "preparing_upload") {
-    return (
-      <ProgressBox
-        title="Đang tải clip, vui lòng đợi..."
-        message="Clip đã cắt, agent đang đồng bộ lên cloud. Thường mất vài giây."
         elapsedSeconds={watch.elapsedSeconds}
       />
     );
@@ -1251,18 +1273,6 @@ function ModalBody({ watch }: { watch: ReturnType<typeof useWatchClipState> }) {
       <MessageBox
         title="Cắt clip thất bại"
         message={watch.errorMessage ?? "Không rõ lý do."}
-        actionLabel="Thử lại"
-        onAction={watch.retry}
-        icon={AlertTriangle}
-      />
-    );
-  }
-
-  if (watch.state === "upload_failed") {
-    return (
-      <MessageBox
-        title="Đồng bộ cloud thất bại"
-        message={watch.errorMessage ?? "Agent không tải được clip lên cloud."}
         actionLabel="Thử lại"
         onAction={watch.retry}
         icon={AlertTriangle}

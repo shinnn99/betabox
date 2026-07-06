@@ -42,26 +42,26 @@ const OFFLINE_POLL_INTERVAL_MS = 20000;
 export type WatchClipState =
   | "idle"
   | "preparing_cut"
-  | "preparing_upload"
   | "ready"
   | "failed"
-  | "upload_failed"
   | "warehouse_offline"
   | "offline_giveup"
   | "network_error";
 
+export type RegenerationState = "encoding" | "uploading";
+
 interface WatchApiResponse {
   state:
     | "preparing_cut"
-    | "preparing_upload"
     | "ready"
     | "failed"
-    | "upload_failed"
     | "warehouse_offline"
-    | "offline_giveup"
-    | "unknown";
+    | "offline_giveup";
   signed_url?: string;
   expires_at?: string;
+  regenerating?: boolean;
+  regeneration_state?: RegenerationState;
+  regeneration_error?: string;
   error?: string;
   offline_duration_seconds?: number;
 }
@@ -72,6 +72,11 @@ export interface UseWatchClipStateResult {
   errorMessage: string | null;
   offlineDurationSeconds: number | null;
   elapsedSeconds: number;
+  /** Safe-retry: đang regenerate song song với ready cũ. */
+  regenerating: boolean;
+  regenerationState: RegenerationState | null;
+  /** Safe-retry: lần regenerate cuối cùng failed nhưng ready cũ vẫn còn. */
+  regenerationError: string | null;
   start: () => void;
   retry: () => Promise<void>;
   stop: () => void;
@@ -85,6 +90,12 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
     number | null
   >(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenerationState, setRegenerationState] =
+    useState<RegenerationState | null>(null);
+  const [regenerationError, setRegenerationError] = useState<string | null>(
+    null,
+  );
 
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startedAtRef = useRef<number | null>(null);
@@ -120,18 +131,31 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
         setState("ready");
         setErrorMessage(null);
         setOfflineDurationSeconds(null);
-        stop();
+        // Safe-retry: state kép — nếu backend báo đang regenerate,
+        // TIẾP TỤC poll để bắt được ready mới sau khi promote. UI
+        // vẫn phát signed_url cũ trong lúc chờ.
+        if (data.regenerating) {
+          setRegenerating(true);
+          setRegenerationState(data.regeneration_state ?? null);
+          setRegenerationError(null);
+          schedule(ACTIVE_POLL_INTERVAL_MS, () => void tick());
+          return;
+        }
+        setRegenerating(false);
+        setRegenerationState(null);
+        // Nếu regeneration_error đến (retry vừa fail nhưng ready cũ
+        // vẫn còn), hiện cảnh báo — KHÔNG stop poll để user thấy
+        // ngay khi họ retry lại.
+        setRegenerationError(data.regeneration_error ?? null);
+        // Stop poll cho state ready terminal (không có regenerating,
+        // không có regeneration_error). Nếu regeneration_error có,
+        // GIỮ poll để user bấm retry lại.
+        if (!data.regeneration_error) stop();
         return;
       }
       if (data.state === "failed") {
         setState("failed");
         setErrorMessage(data.error ?? "unknown");
-        stop();
-        return;
-      }
-      if (data.state === "upload_failed") {
-        setState("upload_failed");
-        setErrorMessage(data.error ?? "upload_failed");
         stop();
         return;
       }
@@ -150,18 +174,12 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
       if (data.state === "preparing_cut") {
         setState("preparing_cut");
         setOfflineDurationSeconds(null);
+        setRegenerating(false);
+        setRegenerationState(null);
         schedule(ACTIVE_POLL_INTERVAL_MS, () => void tick());
         return;
       }
-      if (data.state === "preparing_upload") {
-        setState("preparing_upload");
-        setOfflineDurationSeconds(null);
-        schedule(ACTIVE_POLL_INTERVAL_MS, () => void tick());
-        return;
-      }
-      // unknown → tick lại active (server chưa quyết state → cho một
-      // nhịp nữa, không stop). Đây là hố an toàn: nếu backend bổ sung
-      // state mới mà quên map, hook không treo — vẫn poll.
+      // Backend state không nằm trong union — poll tiếp cho an toàn.
       schedule(ACTIVE_POLL_INTERVAL_MS, () => void tick());
     } catch (err) {
       if (!activeRef.current) return;
@@ -180,41 +198,60 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
     setErrorMessage(null);
     setSignedUrl(null);
     setOfflineDurationSeconds(null);
+    setRegenerating(false);
+    setRegenerationState(null);
+    setRegenerationError(null);
     startedAtRef.current = Date.now();
     setElapsedSeconds(0);
     void tick();
   }, [tick]);
 
   const retry = useCallback(async () => {
-    // Server xóa row + bucket → tick kế thấy unknown → enqueue cut lại.
-    // User-driven, không auto-retry server-side (chống loop).
+    // Safe-retry S7: server KHÔNG wipe row + bucket cũ. Endpoint retry
+    // enqueue generation MỚI song song với ready cũ (nếu có). /watch
+    // tick kế sẽ thấy state kép ready + regenerating=true.
     try {
-      await fetch(`/api/order-proof/${peId}/watch/retry`, {
+      const res = await fetch(`/api/order-proof/${peId}/watch/retry`, {
         method: "POST",
         cache: "no-store",
       });
+      // 409 agent_offline → không kick tick vì server không enqueue được.
+      if (res.status === 409) {
+        setRegenerationError("Kho đang offline, thử lại sau khi có kết nối.");
+        return;
+      }
     } catch (err) {
       console.warn("retry failed:", err);
     }
     if (!activeRef.current) return;
-    // Reset state như start(), nhưng KHÔNG check pollTimerRef —
-    // retry được gọi từ state terminal (failed/upload_failed), timer
-    // đã stop rồi.
-    stop();
-    setState("preparing_cut");
-    setErrorMessage(null);
-    setSignedUrl(null);
-    setOfflineDurationSeconds(null);
+    // Reset elapsed (mới bắt đầu chờ). Nếu đang ở state ready + regenerating,
+    // KHÔNG mất signed_url — tick kế /watch sẽ trả ready + regenerating=true
+    // với cùng URL cũ.
     startedAtRef.current = Date.now();
     setElapsedSeconds(0);
-    void tick();
-  }, [peId, tick, stop]);
+    setRegenerationError(null);
+    // Nếu đang state terminal (failed/offline_giveup), khôi phục poll.
+    if (
+      state === "failed" ||
+      state === "offline_giveup" ||
+      state === "network_error"
+    ) {
+      setState("preparing_cut");
+      setSignedUrl(null);
+      setErrorMessage(null);
+      setOfflineDurationSeconds(null);
+    }
+    // Kick tick ngay — nếu poll đang chạy (state ready + regen), schedule
+    // gọi tick sớm, không double-tick vì schedule tự clearTimeout.
+    schedule(0, () => void tick());
+  }, [peId, tick, schedule, state]);
 
-  // Elapsed timer khi đang preparing. KHÔNG chạy khi warehouse_offline
-  // (offline_duration_seconds từ server) hoặc terminal (không còn ý
-  // nghĩa "đã chờ bao lâu").
+  // Elapsed timer khi đang preparing hoặc đang regenerating.
   useEffect(() => {
-    if (state !== "preparing_cut" && state !== "preparing_upload") return;
+    const shouldTick =
+      state === "preparing_cut" ||
+      (state === "ready" && regenerating);
+    if (!shouldTick) return;
     const id = setInterval(() => {
       if (startedAtRef.current) {
         setElapsedSeconds(
@@ -223,7 +260,7 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
       }
     }, 1000);
     return () => clearInterval(id);
-  }, [state]);
+  }, [state, regenerating]);
 
   // Cleanup khi component unmount hoặc peId đổi.
   useEffect(() => {
@@ -243,6 +280,9 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
     errorMessage,
     offlineDurationSeconds,
     elapsedSeconds,
+    regenerating,
+    regenerationState,
+    regenerationError,
     start,
     retry,
     stop,

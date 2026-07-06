@@ -84,10 +84,20 @@ export const OFFLINE_POLL_GIVEUP_MINUTES = Number(
 );
 
 /**
- * Path trong bucket cho clip của một packing_event.
- * <org_id>/<packing_event_id>.mp4 — org_id ở đầu để RLS policy tương
- * lai (nếu siết) có thể filter theo prefix.
+ * Path bucket cho clip.
+ *
+ * Cấu trúc mới (safe-retry 2026-07-06): `{org}/{pe}/{clip_id}.mp4`.
+ * Mỗi generation có clip_id riêng nên retry upload không đè object cũ →
+ * clip cũ còn nguyên trên bucket cho tới khi cron TTL dọn (72h).
+ *
+ * Cấu trúc cũ `{org}/{pe}.mp4` vẫn hoạt động vì code đọc `bucket_path`
+ * từ DB, không tự dựng lại — coexistence. KHÔNG tự tính path để LOOKUP.
+ * Chỉ dùng hàm này khi TẠO clip mới (enqueue/upload/verify path mới).
  */
-export function bucketPathFor(orgId: string, packingEventId: string): string {
-  return `${orgId}/${packingEventId}.mp4`;
+export function bucketPathFor(
+  orgId: string,
+  packingEventId: string,
+  clipId: string,
+): string {
+  return `${orgId}/${packingEventId}/${clipId}.mp4`;
 }

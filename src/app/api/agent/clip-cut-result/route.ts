@@ -9,39 +9,34 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Agent báo kết quả cắt clip. Cloud upsert row vào order_proof_clips
- * (một row per packing_event_id).
+ * Agent báo kết quả cắt clip.
  *
- * Trạng thái map:
- *   status='ready'  = clip cắt xong, phát được. Có thể is_partial=true
- *                     nếu khoảng target chứa gap.
- *   status='failed' = cắt lỗi (segments thiếu, ffmpeg fail, ...).
+ * Safe-retry S5 2026-07-06:
+ *   - Update theo `clip_id` (identity generation), KHÔNG upsert theo pe_id.
+ *   - Row `order_proof_clips` được pre-insert ở enqueue (H4 RPC atomic);
+ *     endpoint này CHỈ UPDATE, KHÔNG INSERT/DELETE.
+ *   - `bucket_path` KHÔNG set ở đây — chỉ set qua RPC `promote_clip_generation`
+ *     tại endpoint `clip-upload-complete` (S6).
+ *
+ * Outcome map:
+ *   'encoding' — cập nhật `progress_state='encoding'` (status vẫn 'pending').
+ *   'done'     — cập nhật clip metadata (duration, size, generation_params).
+ *                KHÔNG chuyển status='ready' ở đây; ready = promote qua RPC.
+ *                Agent gọi outcome='done' TRƯỚC khi upload complete (sau
+ *                khi cắt+probe xong) → row có metadata nhưng status vẫn
+ *                pending, chờ promote.
+ *   'failed'   — cập nhật `status='failed'` + `error_message`. Row vẫn
+ *                giữ (superseded nếu retry sau).
+ *
+ * Cross-tenant guard: clip phải thuộc org của agent.
  */
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/**
- * Outcome map từ agent → row `order_proof_clips`:
- *   'encoding' — agent bắt đầu cắt: upsert `status='pending',
- *                progress_state='encoding'`. UI hiện "đang cắt clip".
- *                (Tên `encoding` giữ vì DB CHECK constraint chốt giá
- *                trị này; thực chất là copy-stream 1-3s sau chốt
- *                2026-07-05, không phải reencode.)
- *   'done'     — cắt xong: upsert `status='ready'`. Bao cả ca
- *                idempotent-reuse (agent thấy file cũ hợp lệ, gửi
- *                `generation_params.idempotent_reuse=true`).
- *   'failed'   — cắt lỗi: upsert `status='failed'`.
- *
- * Backend TỰ set `progress_state=null` khi outcome final — agent không
- * cần gửi tường minh (mỗi field một nơi quyết).
- *
- * 'skipped' cũ (idempotent hit không insert row) đã bỏ 2026-07-06: agent
- * giờ luôn upsert row `done` với `idempotent_reuse=true` — bảo đảm row
- * tồn tại cho /watch, đóng nguồn bug 32-command-done-0-row.
- */
 type Outcome = "done" | "failed" | "encoding";
 
 interface ResultBody {
+  clip_id: string;
   packing_event_id: string;
   camera_id: string;
   waybill_code: string;
@@ -67,6 +62,9 @@ function parseBody(raw: unknown): ParseOutcome {
   if (!raw || typeof raw !== "object") return { ok: false, error: "invalid_body" };
   const r = raw as Record<string, unknown>;
 
+  const clipId = typeof r.clip_id === "string" ? r.clip_id.trim() : "";
+  if (!UUID_RE.test(clipId)) return { ok: false, error: "clip_id_invalid" };
+
   const packingEventId = typeof r.packing_event_id === "string" ? r.packing_event_id.trim() : "";
   if (!UUID_RE.test(packingEventId)) return { ok: false, error: "packing_event_id_invalid" };
 
@@ -77,17 +75,14 @@ function parseBody(raw: unknown): ParseOutcome {
   if (!waybillCode) return { ok: false, error: "waybill_code_required" };
 
   const outcomeRaw = typeof r.outcome === "string" ? r.outcome.trim() : "";
-  if (
-    outcomeRaw !== "done" &&
-    outcomeRaw !== "failed" &&
-    outcomeRaw !== "encoding"
-  ) {
+  if (outcomeRaw !== "done" && outcomeRaw !== "failed" && outcomeRaw !== "encoding") {
     return { ok: false, error: "outcome_invalid" };
   }
 
   return {
     ok: true,
     body: {
+      clip_id: clipId,
       packing_event_id: packingEventId,
       camera_id: cameraId,
       waybill_code: waybillCode,
@@ -169,118 +164,109 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: verdict.error }, { status: verdict.status });
   }
 
-  // Verify packing_event thuộc org agent.
-  const { data: pe } = await admin
-    .from("packing_events")
-    .select("id, organization_id")
-    .eq("id", body.packing_event_id)
-    .eq("organization_id", agent.organization_id)
+  // Verify clip thuộc org của agent + pe khớp payload.
+  const { data: clip } = await admin
+    .from("order_proof_clips")
+    .select("id, organization_id, packing_event_id, status")
+    .eq("id", body.clip_id)
     .maybeSingle();
-  if (!pe) {
-    return NextResponse.json({ error: "packing_event_not_in_org" }, { status: 403 });
+  if (!clip) {
+    return NextResponse.json({ error: "clip_not_found" }, { status: 404 });
+  }
+  if (clip.organization_id !== agent.organization_id) {
+    return NextResponse.json({ error: "clip_cross_org" }, { status: 403 });
+  }
+  if (clip.packing_event_id !== body.packing_event_id) {
+    return NextResponse.json({ error: "clip_pe_mismatch" }, { status: 400 });
   }
 
-  const nowIso = new Date().toISOString();
+  const generationParamsMerged = {
+    ...body.generation_params,
+    duration_drift_seconds: body.duration_drift_seconds,
+  };
 
-  // 3b-2: outcome='encoding' → row báo "đang xử lý", status vòng đời
-  // là 'pending' (chưa xong), progress_state='encoding' (chi tiết).
-  // KHÔNG xóa row cũ (retry với cùng packing_event_id chỉ update).
+  // ============ ENCODING: cập nhật progress_state ============
   if (body.outcome === "encoding") {
-    // Upsert bằng delete + insert như flow hiện tại vẫn hoạt động,
-    // nhưng ở đây row chưa có clip data đầy đủ → chỉ insert row đơn
-    // giản. Nếu row cũ ready/failed từ lần trước cho cùng
-    // packing_event_id, delete để bắt đầu lại vòng đời mới.
-    await admin
+    const { error: updErr } = await admin
       .from("order_proof_clips")
-      .delete()
-      .eq("packing_event_id", body.packing_event_id)
-      .eq("organization_id", agent.organization_id);
-    const encodingRow: Record<string, unknown> = {
-      organization_id: agent.organization_id,
-      packing_event_id: body.packing_event_id,
-      camera_id: body.camera_id,
-      waybill_code: body.waybill_code,
-      status: "pending",
-      progress_state: "encoding",
-      cut_mode:
-        body.generation_params &&
-        typeof (body.generation_params as Record<string, unknown>).cut_mode === "string"
-          ? ((body.generation_params as Record<string, unknown>).cut_mode as string)
-          : "reencode",
-      generation_params: body.generation_params,
-      source_files: body.source_files,
-    };
-    const { error: insErr } = await admin.from("order_proof_clips").insert(encodingRow);
-    if (insErr) {
+      .update({
+        progress_state: "encoding",
+        source_files: body.source_files,
+        generation_params: generationParamsMerged,
+      })
+      .eq("id", body.clip_id)
+      .eq("status", "pending");
+    if (updErr) {
       return NextResponse.json(
-        { error: "insert_failed", message: insErr.message },
+        { error: "update_failed", message: updErr.message },
         { status: 500 },
       );
     }
     return NextResponse.json({ ok: true, action: "encoding" });
   }
 
-  const status = body.outcome === "done" ? "ready" : "failed";
-
-  // Build tstzrange literal cho covered_range (Postgres cần string
-  // format '[iso,iso)' — half-open interval, chuẩn cho khoảng thời
-  // gian). Chỉ set nếu cả hai đầu có.
-  let coveredRange: string | null = null;
-  if (body.covered_range_lower && body.covered_range_upper) {
-    coveredRange = `[${body.covered_range_lower},${body.covered_range_upper})`;
+  // ============ DONE: cập nhật clip metadata, KHÔNG chuyển ready ============
+  //
+  // Cut completion only records generation metadata.
+  // The clip becomes ready only after bucket upload verification and
+  // promotion via RPC promote_clip_generation (endpoint clip-upload-complete).
+  //
+  // Out-of-order callback: nếu `done` đến SAU khi `clip-upload-complete`
+  // đã promote xong (row = 'ready'), ta VẪN cho phép update metadata
+  // trên row ready. TUYỆT ĐỐI KHÔNG chuyển row ready về pending.
+  // Guard qua `.in("status", ["pending", "ready"])` + KHÔNG đụng `status`
+  // field trong update payload.
+  if (body.outcome === "done") {
+    let coveredRange: string | null = null;
+    if (body.covered_range_lower && body.covered_range_upper) {
+      coveredRange = `[${body.covered_range_lower},${body.covered_range_upper})`;
+    }
+    const { error: updErr } = await admin
+      .from("order_proof_clips")
+      .update({
+        clip_path: body.clip_path,
+        clip_name: body.clip_name,
+        clip_started_at: body.clip_started_at,
+        clip_ended_at: body.clip_ended_at,
+        clip_size_bytes: body.file_size_bytes,
+        duration_seconds: body.duration_seconds,
+        source_files: body.source_files,
+        cut_mode:
+          typeof body.generation_params.cut_mode === "string"
+            ? (body.generation_params.cut_mode as string)
+            : "copy",
+        generation_params: generationParamsMerged,
+        is_partial: body.is_partial,
+        covered_range: coveredRange,
+        progress_state: null,
+      })
+      .eq("id", body.clip_id)
+      .in("status", ["pending", "ready"]);
+    if (updErr) {
+      return NextResponse.json(
+        { error: "update_failed", message: updErr.message },
+        { status: 500 },
+      );
+    }
+    return NextResponse.json({ ok: true, action: "done_metadata_updated" });
   }
 
-  const row: Record<string, unknown> = {
-    organization_id: agent.organization_id,
-    packing_event_id: body.packing_event_id,
-    camera_id: body.camera_id,
-    waybill_code: body.waybill_code,
-    clip_path: body.clip_path,
-    clip_name: body.clip_name,
-    clip_started_at: body.clip_started_at,
-    clip_ended_at: body.clip_ended_at,
-    clip_size_bytes: body.file_size_bytes,
-    duration_seconds: body.duration_seconds,
-    source_files: body.source_files,
-    status,
-    error_message: body.outcome === "failed" ? body.error_message : null,
-    cut_mode:
-      body.generation_params &&
-      typeof (body.generation_params as Record<string, unknown>).cut_mode === "string"
-        ? ((body.generation_params as Record<string, unknown>).cut_mode as string)
-        : "copy",
-    generation_params: {
-      ...body.generation_params,
-      duration_drift_seconds: body.duration_drift_seconds,
-    },
-    generated_at: body.outcome === "done" ? nowIso : null,
-    is_partial: body.is_partial,
-    covered_range: coveredRange,
-    // 3b-2: backend TỰ set progress_state=null cho outcome final,
-    // KHÔNG lấy từ agent. Mỗi field một nơi quyết.
-    progress_state: null,
-  };
-
-  // Không có unique constraint theo packing_event_id ở tầng DB (chỉ
-  // có partial unique where status='ready'). Xoá row cũ (bất kể
-  // status) rồi insert mới — 3a-2 mỗi packing_event_id có tối đa 1
-  // row do agent ghi. Route Next.js cũ có thể vẫn insert row với
-  // cùng packing_event_id (cắt song song), nhưng đó là chuyện của
-  // BLOCKS-GO-LIVE ở enqueue.ts — 3a-2 chỉ chịu trách nhiệm về row
-  // do agent tạo.
-  await admin
+  // ============ FAILED: chuyển status='failed' + error_message ============
+  const { error: updErr } = await admin
     .from("order_proof_clips")
-    .delete()
-    .eq("packing_event_id", body.packing_event_id)
-    .eq("organization_id", agent.organization_id);
-
-  const { error: insErr } = await admin.from("order_proof_clips").insert(row);
-  if (insErr) {
+    .update({
+      status: "failed",
+      error_message: body.error_message,
+      generation_params: generationParamsMerged,
+      progress_state: null,
+    })
+    .eq("id", body.clip_id)
+    .eq("status", "pending");
+  if (updErr) {
     return NextResponse.json(
-      { error: "insert_failed", message: insErr.message },
+      { error: "update_failed", message: updErr.message },
       { status: 500 },
     );
   }
-
-  return NextResponse.json({ ok: true, action: status });
+  return NextResponse.json({ ok: true, action: "failed" });
 }

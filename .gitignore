@@ -49,6 +49,9 @@ warehouse-agent/recordings/
 # Scratch/temp slice files accidentally created in repo root.
 *.tmp_slice*
 
+# Supabase CLI cache (version pins, ephemeral state).
+supabase/.temp/
+
 # vercel
 .vercel
 

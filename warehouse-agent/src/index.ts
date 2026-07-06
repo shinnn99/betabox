@@ -31,9 +31,11 @@ import { RecordingLifecycle } from "./recording-lifecycle";
 import { SegmentIndex } from "./segment-index";
 import {
   checkSegmentsExist,
-  cleanupOrphanConcatFiles,
+  cleanupOrphanClipArtifacts,
   cutClip,
+  isBrowserSafeCodec,
   probeDurationSeconds,
+  probeFileVideoCodec,
   type CutSegmentInput,
 } from "./clip-cutter";
 import { CLIPS_SUBDIR, probeCodec, testCameraConnection } from "./recording";
@@ -414,6 +416,8 @@ async function main(): Promise<void> {
 
     if (command.type === "cut_clip") {
       const p = command.payload as {
+        clip_id?: string;
+        replaces_clip_id?: string | null;
         packing_event_id?: string;
         camera_id?: string;
         waybill_code?: string;
@@ -426,11 +430,18 @@ async function main(): Promise<void> {
         covered_range?: { lower?: string; upper?: string };
         gaps?: unknown;
         total_gap_seconds?: number;
-        // Cọc #8 force_recut: user bấm [Thử lại] → xóa file cũ trước
-        // idempotent check. Chống ca file cũ SAI được tái sử dụng.
-        force_recut?: boolean;
+        audit?: {
+          end_reason?: string | null;
+          next_scan_boundary?: string | null;
+          next_scan_scanned_at?: string | null;
+          session_end_ended_at?: string | null;
+          pre_seconds?: number | null;
+          before_next_seconds?: number | null;
+          default_post_seconds?: number | null;
+        };
       };
       if (
+        !p.clip_id ||
         !p.packing_event_id ||
         !p.camera_id ||
         !p.waybill_code ||
@@ -447,139 +458,82 @@ async function main(): Promise<void> {
           agentSecret: config.agentSecret,
           commandId: command.id,
           status: "failed",
-          error: "cut_clip payload missing required fields",
+          error: "cut_clip payload missing required fields (need clip_id + others)",
         });
         return;
       }
       console.log(
-        `[COMMAND CUT_CLIP] ${command.id} packing_event=${p.packing_event_id} segments=${p.segments.length} partial=${p.partial_coverage ?? false}`,
+        `[COMMAND CUT_CLIP] ${command.id} clip=${p.clip_id} pe=${p.packing_event_id} segments=${p.segments.length} replaces=${p.replaces_clip_id ?? "null"}`,
       );
 
-      const outputRel = `${CLIPS_SUBDIR}/${p.packing_event_id}.mp4`;
-      const outputAbs = resolve(recordingRoot, outputRel);
+      // Safe-retry pipeline S4:
+      //   1. Cắt vào temp file `{pe}.{command_id}.tmp.mp4`.
+      //   2. ffprobe validate duration.
+      //   3. Codec guard: chỉ h264/avc1 (Q5 chốt).
+      //   4. Fetch signed URL (backend tính path v2 theo clip_id).
+      //   5. PUT temp file lên bucket.
+      //   6. Notify upload-complete → backend verify + gọi RPC promote.
+      //   7. Local promote: rename canonical → .bak (nếu tồn tại), rename tmp → canonical.
+      //   8. Xóa .bak sau khi thành công.
+      //   Nếu bất kỳ bước 1-7 fail: xóa tmp, GIỮ canonical, callback failed.
+      //
+      // Codec guard replaces_clip_id: khi có replaces_clip_id, agent
+      // BẮT BUỘC cắt mới vào tmp — KHÔNG idempotent-reuse canonical
+      // cũ (chốt Q5). Auto-poll enqueue lần đầu (replaces_clip_id=null,
+      // canonical không tồn tại) cũng đi qua tmp pipeline như retry.
+      // Nghĩa là ta không dùng idempotent-reuse trong safe path.
+      // Trade-off (chốt 2026-07-06 Q4): dùng chung 1 path đồng nhất,
+      // không tối ưu lần đầu, dễ verify và audit.
+
+      const canonicalRel = `${CLIPS_SUBDIR}/${p.packing_event_id}.mp4`;
+      const canonicalAbs = resolve(recordingRoot, canonicalRel);
+      const tmpRel = `${CLIPS_SUBDIR}/${p.packing_event_id}.${command.id}.tmp.mp4`;
+      const tmpAbs = resolve(recordingRoot, tmpRel);
+      const bakRel = `${CLIPS_SUBDIR}/${p.packing_event_id}.${command.id}.bak.mp4`;
+      const bakAbs = resolve(recordingRoot, bakRel);
       const clipName = `${p.packing_event_id}.mp4`;
 
-      // Cọc #8 force_recut: user bấm [Thử lại] → xóa file cũ trước
-      // idempotent check. Cần thiết khi:
-      // - File cũ SAI window (resolver bug cắt 3h, sau fix cần cắt lại 75s).
-      // - File cũ cắt lỗi (thiếu segment, ffmpeg fail middle).
-      // - packing_events.work_ended_at update sau lần cut cũ → window đổi.
-      //
-      // Auto-poll enqueue (force_recut undefined/false) giữ idempotent
-      // tái sử dụng — chỉ retry-driven mới force.
-      if (p.force_recut === true && existsSync(outputAbs)) {
-        try {
-          await fsp.unlink(outputAbs);
-          console.log(
-            `[clip-cutter] force_recut removed old clip packing_event=${p.packing_event_id}`,
-          );
-        } catch (err) {
-          // unlink fail — file bị lock hay permission? Log rồi tiếp
-          // (idempotent check dưới sẽ vẫn thấy file → gửi done cũ, tệ
-          // nhưng không crash).
-          console.warn(
-            `[clip-cutter] force_recut unlink failed packing_event=${p.packing_event_id}: ${(err as Error).message}`,
-          );
-        }
-      }
-
-      // Idempotent: nếu clip đã tồn tại + probe data hợp lệ → gửi `done`
-      // với data probe (KHÔNG `skipped`).
-      //
-      // Trước (2026-07-03): dùng `skipped` với giả định "cloud giữ row
-      // cũ". Rà DB thấy 0 row nhưng 32 command done trong 10 phút cho
-      // 1 pe_id — vòng lặp: agent skip idempotent → cloud không update
-      // DB (outcome=skipped early-return) → /watch thấy chưa có row →
-      // enqueue lại → agent skip → ...
-      //
-      // Fix (C): probe duration + size từ file có sẵn → gửi outcome=done
-      // với data thật. Backend insert row status=ready → /watch tick sau
-      // thấy ready + enqueue upload → hết loop.
-      //
-      // Trước tick sau, `hasRecentEnqueuedCut` cooldown 60s ở /watch chặn
-      // dội bất kể lý do — lưới cho ca report fail (mạng).
       const targetDurationS = (Date.parse(p.target_end) - Date.parse(p.target_start)) / 1000;
-      if (existsSync(outputAbs)) {
-        try {
-          const st = await fsp.stat(outputAbs);
-          if (st.size > 0) {
-            const probedDuration = await probeDurationSeconds(config.ffprobePath, outputAbs);
-            if (probedDuration !== null && probedDuration > 0) {
-              const drift = Math.abs(targetDurationS - probedDuration);
-              await postClipCutResult({
-                backendUrl: config.backendUrl,
-                agentCode: config.agentCode,
-                agentSecret: config.agentSecret,
-                packingEventId: p.packing_event_id,
-                cameraId: p.camera_id,
-                waybillCode: p.waybill_code,
-                outcome: "done",
-                clipPath: outputRel,
-                clipName,
-                clipStartedAt: p.cut_start,
-                clipEndedAt: p.cut_end,
-                durationSeconds: probedDuration,
-                durationDriftSeconds: drift,
-                fileSizeBytes: st.size,
-                isPartial: p.partial_coverage ?? false,
-                coveredRangeLower: p.covered_range?.lower ?? null,
-                coveredRangeUpper: p.covered_range?.upper ?? null,
-                sourceFiles: p.segments.map((s) => s.file_path),
-                generationParams: {
-                  cut_mode: "copy",
-                  idempotent_reuse: true,
-                  total_gap_seconds: p.total_gap_seconds ?? 0,
-                },
-              });
-              await reportCommandResult({
-                backendUrl: config.backendUrl,
-                agentCode: config.agentCode,
-                agentSecret: config.agentSecret,
-                commandId: command.id,
-                status: "done",
-                result: {
-                  idempotent_reuse: true,
-                  clip_path: outputRel,
-                  file_size_bytes: st.size,
-                  duration_seconds: probedDuration,
-                },
-              });
-              console.log(
-                `[clip-cutter] idempotent-reuse packing_event=${p.packing_event_id} size=${st.size} duration=${probedDuration}s`,
-              );
-              return;
-            }
-            // Probe fail hoặc duration <= 0 → file có mà không đọc được.
-            // Coi như file hỏng, cắt lại (fall through).
+
+      // Local cleanup helper cho fail path: xóa tmp/bak nếu tồn tại,
+      // canonical KHÔNG BAO GIỜ đụng ở fail path.
+      const cleanupTmp = async () => {
+        await fsp.unlink(tmpAbs).catch(() => {});
+      };
+      const restoreBak = async () => {
+        if (existsSync(bakAbs)) {
+          try {
+            await fsp.rename(bakAbs, canonicalAbs);
             console.warn(
-              `[clip-cutter] existing file probe failed packing_event=${p.packing_event_id} size=${st.size} — recutting`,
+              `[clip-cutter] restored canonical from bak: pe=${p.packing_event_id}`,
+            );
+          } catch (err) {
+            console.error(
+              `[clip-cutter] CRITICAL: bak restore failed pe=${p.packing_event_id}: ${(err as Error).message}. ` +
+                `Manual recovery: rename ${bakAbs} → ${canonicalAbs}`,
             );
           }
-        } catch {
-          // stat lỗi — cắt lại
         }
-      }
+      };
 
-      // Kiểm segments tồn tại trên ổ trước khi build concat.
-      const exists = await checkSegmentsExist({
-        recordingRoot,
-        segments: p.segments,
-      });
-      if (!exists.ok) {
-        console.warn(
-          `[clip-cutter] segments_missing_on_disk packing_event=${p.packing_event_id} missing=${exists.missing.join(", ")}`,
-        );
+      // Common fail path: post cut result failed + report command failed.
+      const failCommand = async (
+        errorMessage: string,
+        extraGenerationParams: Record<string, unknown> = {},
+      ) => {
+        await cleanupTmp();
         await postClipCutResult({
           backendUrl: config.backendUrl,
           agentCode: config.agentCode,
           agentSecret: config.agentSecret,
-          packingEventId: p.packing_event_id,
-          cameraId: p.camera_id,
-          waybillCode: p.waybill_code,
+          clipId: p.clip_id!,
+          packingEventId: p.packing_event_id!,
+          cameraId: p.camera_id!,
+          waybillCode: p.waybill_code!,
           outcome: "failed",
-          errorMessage: `segments_missing_on_disk: ${exists.missing.join(", ")}`,
-          sourceFiles: p.segments.map((s) => s.file_path),
-          generationParams: { missing: exists.missing },
+          errorMessage,
+          sourceFiles: p.segments!.map((s) => s.file_path),
+          generationParams: { ...(p.audit ?? {}), ...extraGenerationParams },
         });
         await reportCommandResult({
           backendUrl: config.backendUrl,
@@ -587,33 +541,32 @@ async function main(): Promise<void> {
           agentSecret: config.agentSecret,
           commandId: command.id,
           status: "failed",
-          error: `segments_missing_on_disk: ${exists.missing.join(", ")}`,
+          error: errorMessage,
         });
+      };
+
+      // === STEP 1: Check segments tồn tại ===
+      const exists = await checkSegmentsExist({
+        recordingRoot,
+        segments: p.segments,
+      });
+      if (!exists.ok) {
+        console.warn(
+          `[clip-cutter] segments_missing_on_disk clip=${p.clip_id} missing=${exists.missing.join(", ")}`,
+        );
+        await failCommand(
+          `segments_missing_on_disk: ${exists.missing.join(", ")}`,
+          { missing: exists.missing },
+        );
         return;
       }
 
-      // Cut = copy-stream 100% clip (chốt 2026-07-05). Video thuần,
-      // vài giây/clip 10 phút. Không burn, không overlay, không mark.
-      // Thông tin đơn (mã vận đơn, kho, bàn, nhân viên, camera, giờ)
-      // hiển thị ở panel dashboard cạnh video, không đè lên hình.
-      // is_partial + covered_range vẫn ghi vào order_proof_clips để
-      // panel hiện "clip thiếu N giây" — cảnh báo gap ở dữ liệu, không
-      // ở video.
-      //
-      // Gate 1-in-flight (encodeGate): trước phải chống 2 cut_clip
-      // reencode song song ngốn CPU; giờ copy-stream nhẹ (I/O-bound),
-      // gate không còn cần thiết nhưng GIỮ để chống race spawn ffmpeg
-      // + đọc segment (share file) — rẻ, không hại.
-      //
-      // outcome='encoding' báo cloud upsert row progress_state='encoding'.
-      // Tên "encoding" giữ vì DB CHECK constraint chốt giá trị này —
-      // đổi tên = migration 2 bước + phối hợp deploy, không đáng cho
-      // internal wire. Thực chất giờ là "đang cắt copy-stream 1-3s",
-      // không phải reencode. UI dashboard đã hiện đúng "Đang cắt clip".
+      // === STEP 2: Signal 'encoding' (cloud update progress_state) ===
       await postClipCutResult({
         backendUrl: config.backendUrl,
         agentCode: config.agentCode,
         agentSecret: config.agentSecret,
+        clipId: p.clip_id,
         packingEventId: p.packing_event_id,
         cameraId: p.camera_id,
         waybillCode: p.waybill_code,
@@ -622,10 +575,11 @@ async function main(): Promise<void> {
         generationParams: {
           cut_mode: "copy",
           burn_in: false,
+          ...(p.audit ?? {}),
         },
       });
 
-      // Gán biến local để giữ narrowing khi vào closure encodeGate.run.
+      // === STEP 3: Cut vào TMP file (không đụng canonical) ===
       const cutStartIso = p.cut_start;
       const cutEndIso = p.cut_end;
       const segments = p.segments;
@@ -635,7 +589,7 @@ async function main(): Promise<void> {
           ffmpegBin: config.ffmpegPath,
           ffprobeBin: config.ffprobePath,
           recordingRoot,
-          outputAbsPath: outputAbs,
+          outputAbsPath: tmpAbs,
           cutStart: new Date(cutStartIso),
           cutEnd: new Date(cutEndIso),
           segments,
@@ -644,44 +598,290 @@ async function main(): Promise<void> {
 
       if (!cutResult.ok) {
         console.error(
-          `[clip-cutter] cut failed packing_event=${p.packing_event_id} :: ${cutResult.errorMessage}`,
+          `[clip-cutter] cut failed clip=${p.clip_id} :: ${cutResult.errorMessage}`,
         );
+        await failCommand(cutResult.errorMessage ?? "cut_clip failed", {
+          stderr_tail: cutResult.stderrTail.slice(-500),
+          elapsed_ms: cutResult.elapsedMs,
+        });
+        return;
+      }
+
+      // === STEP 4: Codec guard — CHỈ H.264 (codec_name='h264' hoặc codec_tag_string='avc1') ===
+      const codecProbe = await probeFileVideoCodec(config.ffprobePath, tmpAbs);
+      if (!isBrowserSafeCodec(codecProbe)) {
+        const display = codecProbe.codecName ?? codecProbe.codecTag ?? "unknown";
+        console.error(
+          `[clip-cutter] codec guard failed clip=${p.clip_id} name=${codecProbe.codecName ?? "null"} tag=${codecProbe.codecTag ?? "null"}`,
+        );
+        await failCommand(`unsupported_output_codec: ${display}`, {
+          output_codec_name: codecProbe.codecName,
+          output_codec_tag: codecProbe.codecTag,
+          codec_probed: codecProbe.probed,
+        });
+        return;
+      }
+
+      console.log(
+        `[clip-cutter] tmp cut ok clip=${p.clip_id} size=${cutResult.fileSizeBytes} ` +
+          `duration=${cutResult.durationSeconds.toFixed(2)}s ` +
+          `codec_name=${codecProbe.codecName} codec_tag=${codecProbe.codecTag} ` +
+          `elapsed=${cutResult.elapsedMs}ms`,
+      );
+
+      // === STEP 5: Fetch signed upload URL (backend tính path v2 từ clip_id) ===
+      const urlResult = await fetchClipUploadUrl({
+        backendUrl: config.backendUrl,
+        agentCode: config.agentCode,
+        agentSecret: config.agentSecret,
+        clipId: p.clip_id,
+        packingEventId: p.packing_event_id,
+      });
+      if (!urlResult.ok) {
+        console.error(
+          `[clip-cutter] fetchClipUploadUrl failed clip=${p.clip_id}: ${urlResult.error} http=${urlResult.status}`,
+        );
+        await failCommand(`signed_url_fetch_failed: ${urlResult.error}`);
+        return;
+      }
+
+      // === STEP 6: PUT tmp lên bucket ===
+      let fileBuf: Buffer;
+      try {
+        fileBuf = await fsp.readFile(tmpAbs);
+      } catch (err) {
+        await failCommand(`read_tmp_failed: ${(err as Error).message}`);
+        return;
+      }
+      const uploadStart = Date.now();
+      try {
+        const putRes = await fetch(urlResult.signedUrl, {
+          method: "PUT",
+          headers: { "Content-Type": "video/mp4" },
+          body: fileBuf,
+          redirect: "manual",
+        });
+        if (!putRes.ok) {
+          let bodyText = "";
+          try {
+            bodyText = await putRes.text();
+          } catch {
+            // ignore
+          }
+          throw new Error(`http_${putRes.status}: ${bodyText.slice(0, 200)}`);
+        }
+      } catch (err) {
+        await failCommand(`upload_put_failed: ${(err as Error).message}`);
+        return;
+      }
+      const uploadElapsedMs = Date.now() - uploadStart;
+
+      // === STEP 7: Notify upload-complete → backend verify + RPC promote ===
+      // Backend endpoint clip-upload-complete gọi promote_clip_generation
+      // trong tx: nếu OK → row DB đã promote (ready + bucket_path v2).
+      // Nếu fail → giữ nguyên trạng thái pending, agent tự cleanup tmp.
+      const notify = await notifyClipUploadComplete({
+        backendUrl: config.backendUrl,
+        agentCode: config.agentCode,
+        agentSecret: config.agentSecret,
+        clipId: p.clip_id,
+        packingEventId: p.packing_event_id,
+        fileSizeBytes: cutResult.fileSizeBytes,
+      });
+      if (!notify.ok) {
+        console.error(
+          `[clip-cutter] notify_complete failed clip=${p.clip_id}: ${notify.error}`,
+        );
+        // Không tự xóa object đã upload — TTL 72h sẽ dọn nếu promote không xảy ra.
+        await failCommand(`notify_complete_failed: ${notify.error}`);
+        return;
+      }
+
+      // === STEP 8: Local promote canonical với rollback ===
+      // A) Nếu canonical hiện tại tồn tại → rename → .bak.
+      // B) Rename tmp → canonical.
+      // C) Nếu bất kỳ bước A/B fail sau khi bucket đã promote:
+      //    - restore .bak về canonical (nếu có).
+      //    - log CRITICAL cho ops (DB đã ready path v2, ổ local
+      //      trỏ file cũ → user vẫn xem được từ bucket qua signed URL).
+      //
+      // KHÔNG xóa tmp khi promote fail — giữ file cho boot recovery
+      // (S10 Mạch 2). Ghi kèm marker `{tmp}.stale` để boot cleanup
+      // biết đây là temp của generation ĐÃ ready (bucket + DB), cần
+      // recover local, KHÔNG sweep dù > 24h.
+      const stalePath = `${tmpAbs}.stale`;
+      const markStale = async () => {
+        try {
+          await fsp.writeFile(
+            stalePath,
+            JSON.stringify(
+              {
+                clip_id: p.clip_id,
+                packing_event_id: p.packing_event_id,
+                command_id: command.id,
+                bucket_path: urlResult.bucketPath,
+                created_at: new Date().toISOString(),
+                reason: "local_canonical_stale",
+              },
+              null,
+              2,
+            ),
+            "utf8",
+          );
+        } catch (err) {
+          console.error(
+            `[clip-cutter] write .stale marker failed clip=${p.clip_id}: ${(err as Error).message}`,
+          );
+        }
+      };
+
+      let hadBak = false;
+      try {
+        if (existsSync(canonicalAbs)) {
+          await fsp.rename(canonicalAbs, bakAbs);
+          hadBak = true;
+        }
+      } catch (err) {
+        console.error(
+          `[clip-cutter] rename canonical → bak failed clip=${p.clip_id}: ${(err as Error).message}`,
+        );
+        // DB + bucket đã promote thành công. Ổ local: giữ tmp + marker
+        // .stale để boot recovery tự xử. Canonical CŨ vẫn còn ở
+        // {pe_id}.mp4 — user có thể xem từ bucket qua signed URL.
+        await markStale();
         await postClipCutResult({
           backendUrl: config.backendUrl,
           agentCode: config.agentCode,
           agentSecret: config.agentSecret,
+          clipId: p.clip_id,
           packingEventId: p.packing_event_id,
           cameraId: p.camera_id,
           waybillCode: p.waybill_code,
-          outcome: "failed",
-          errorMessage: cutResult.errorMessage,
+          outcome: "done",
+          clipPath: canonicalRel,
+          clipName,
+          clipStartedAt: p.target_start,
+          clipEndedAt: p.target_end,
+          durationSeconds: Math.round(cutResult.durationSeconds),
+          durationDriftSeconds: cutResult.durationDriftSeconds,
+          fileSizeBytes: cutResult.fileSizeBytes,
+          isPartial: p.partial_coverage ?? false,
+          coveredRangeLower: p.covered_range?.lower ?? null,
+          coveredRangeUpper: p.covered_range?.upper ?? null,
           sourceFiles: p.segments.map((s) => s.file_path),
-          generationParams: { stderr_tail: cutResult.stderrTail.slice(-500), elapsed_ms: cutResult.elapsedMs },
+          generationParams: {
+            cut_mode: "copy",
+            burn_in: false,
+            local_canonical_rename_failed: true,
+            local_canonical_stale: true,
+            local_recovery_tmp_path: tmpRel,
+            output_codec_name: codecProbe.codecName,
+            output_codec_tag: codecProbe.codecTag,
+            elapsed_ms: cutResult.elapsedMs,
+            upload_elapsed_ms: uploadElapsedMs,
+            total_gap_seconds: p.total_gap_seconds ?? 0,
+            gaps: p.gaps ?? [],
+            ...(p.audit ?? {}),
+          },
         });
         await reportCommandResult({
           backendUrl: config.backendUrl,
           agentCode: config.agentCode,
           agentSecret: config.agentSecret,
           commandId: command.id,
-          status: "failed",
-          error: cutResult.errorMessage ?? "cut_clip failed",
+          status: "done",
+          result: {
+            local_canonical_stale: true,
+            local_recovery_tmp_path: tmpRel,
+            bucket_path: urlResult.bucketPath,
+            file_size_bytes: cutResult.fileSizeBytes,
+          },
         });
         return;
       }
 
+      try {
+        await fsp.rename(tmpAbs, canonicalAbs);
+      } catch (err) {
+        console.error(
+          `[clip-cutter] rename tmp → canonical failed clip=${p.clip_id}: ${(err as Error).message}`,
+        );
+        if (hadBak) await restoreBak();
+        // DB + bucket đã promote OK; ổ local giữ file cũ. Giữ tmp +
+        // marker cho boot recovery. Không call failCommand vì bucket
+        // + DB đã ready. Report done + flag.
+        await markStale();
+        await postClipCutResult({
+          backendUrl: config.backendUrl,
+          agentCode: config.agentCode,
+          agentSecret: config.agentSecret,
+          clipId: p.clip_id,
+          packingEventId: p.packing_event_id,
+          cameraId: p.camera_id,
+          waybillCode: p.waybill_code,
+          outcome: "done",
+          clipPath: canonicalRel,
+          clipName,
+          clipStartedAt: p.target_start,
+          clipEndedAt: p.target_end,
+          durationSeconds: Math.round(cutResult.durationSeconds),
+          durationDriftSeconds: cutResult.durationDriftSeconds,
+          fileSizeBytes: cutResult.fileSizeBytes,
+          isPartial: p.partial_coverage ?? false,
+          coveredRangeLower: p.covered_range?.lower ?? null,
+          coveredRangeUpper: p.covered_range?.upper ?? null,
+          sourceFiles: p.segments.map((s) => s.file_path),
+          generationParams: {
+            cut_mode: "copy",
+            burn_in: false,
+            local_tmp_rename_failed: true,
+            local_canonical_stale: true,
+            local_recovery_tmp_path: tmpRel,
+            output_codec_name: codecProbe.codecName,
+            output_codec_tag: codecProbe.codecTag,
+            elapsed_ms: cutResult.elapsedMs,
+            upload_elapsed_ms: uploadElapsedMs,
+            total_gap_seconds: p.total_gap_seconds ?? 0,
+            gaps: p.gaps ?? [],
+            ...(p.audit ?? {}),
+          },
+        });
+        await reportCommandResult({
+          backendUrl: config.backendUrl,
+          agentCode: config.agentCode,
+          agentSecret: config.agentSecret,
+          commandId: command.id,
+          status: "done",
+          result: {
+            local_canonical_stale: true,
+            bucket_path: urlResult.bucketPath,
+            file_size_bytes: cutResult.fileSizeBytes,
+          },
+        });
+        return;
+      }
+
+      // Rename OK — dọn .bak. Nếu bak unlink fail, để cleanup .bak > 24h boot dọn.
+      if (hadBak) {
+        await fsp.unlink(bakAbs).catch(() => {});
+      }
+
       console.log(
-        `[clip-cutter] done packing_event=${p.packing_event_id} size=${cutResult.fileSizeBytes} duration=${cutResult.durationSeconds.toFixed(2)}s drift=${cutResult.durationDriftSeconds.toFixed(3)}s elapsed=${cutResult.elapsedMs}ms partial=${p.partial_coverage ?? false} target_duration=${targetDurationS.toFixed(2)}s`,
+        `[clip-cutter] promoted clip=${p.clip_id} pe=${p.packing_event_id} ` +
+          `size=${cutResult.fileSizeBytes} bucket=${urlResult.bucketPath} ` +
+          `cut_elapsed=${cutResult.elapsedMs}ms upload_elapsed=${uploadElapsedMs}ms`,
       );
 
       await postClipCutResult({
         backendUrl: config.backendUrl,
         agentCode: config.agentCode,
         agentSecret: config.agentSecret,
+        clipId: p.clip_id,
         packingEventId: p.packing_event_id,
         cameraId: p.camera_id,
         waybillCode: p.waybill_code,
         outcome: "done",
-        clipPath: outputRel,
+        clipPath: canonicalRel,
         clipName,
         clipStartedAt: p.target_start,
         clipEndedAt: p.target_end,
@@ -695,11 +895,15 @@ async function main(): Promise<void> {
         generationParams: {
           cut_mode: "copy",
           burn_in: false,
+          output_codec_name: codecProbe.codecName,
+          output_codec_tag: codecProbe.codecTag,
           ss_seconds: (Date.parse(p.cut_start) - Date.parse(p.segments[0].started_at)) / 1000,
           t_seconds: (Date.parse(p.cut_end) - Date.parse(p.cut_start)) / 1000,
           elapsed_ms: cutResult.elapsedMs,
+          upload_elapsed_ms: uploadElapsedMs,
           total_gap_seconds: p.total_gap_seconds ?? 0,
           gaps: p.gaps ?? [],
+          ...(p.audit ?? {}),
         },
       });
 
@@ -710,154 +914,38 @@ async function main(): Promise<void> {
         commandId: command.id,
         status: "done",
         result: {
-          clip_path: outputRel,
+          clip_path: canonicalRel,
+          bucket_path: urlResult.bucketPath,
           file_size_bytes: cutResult.fileSizeBytes,
           duration_seconds: Math.round(cutResult.durationSeconds),
           duration_drift_seconds: cutResult.durationDriftSeconds,
           is_partial: p.partial_coverage ?? false,
-          elapsed_ms: cutResult.elapsedMs,
+          cut_elapsed_ms: cutResult.elapsedMs,
+          upload_elapsed_ms: uploadElapsedMs,
         },
       });
+      // Không dùng `targetDurationS` trong safe path (không phải idempotent-reuse).
+      // Log vẫn tham chiếu qua durationDriftSeconds. Ép TS narrowing:
+      void targetDurationS;
+      void probeDurationSeconds;
       return;
     }
 
     if (command.type === "upload_clip") {
-      // 3c: đọc clip từ _clips/, xin signed URL, PUT lên bucket, báo
-      // complete. Upload là I/O-bound trên mạng → KHÔNG qua
-      // encodeGate (gate chỉ áp encode CPU-heavy).
-      const p = command.payload as {
-        packing_event_id?: string;
-        bucket_path?: string;
-      };
-      if (!p.packing_event_id) {
-        await reportCommandResult({
-          backendUrl: config.backendUrl,
-          agentCode: config.agentCode,
-          agentSecret: config.agentSecret,
-          commandId: command.id,
-          status: "failed",
-          error: "upload_clip payload missing packing_event_id",
-        });
-        return;
-      }
-      console.log(`[COMMAND UPLOAD_CLIP] ${command.id} packing_event=${p.packing_event_id}`);
-
-      const clipAbs = resolve(recordingRoot, CLIPS_SUBDIR, `${p.packing_event_id}.mp4`);
-      if (!existsSync(clipAbs)) {
-        // Permanent: clip file mất khỏi _clips → không upload được,
-        // cần quay về cut. Reconcile phía cloud sẽ thấy row ready
-        // nhưng bucket null + upload_clip failed → nếu user retry
-        // qua endpoint retry, cut sẽ chạy lại. Report failed rõ.
-        console.warn(`[upload_clip] clip file missing on disk: ${clipAbs}`);
-        await reportCommandResult({
-          backendUrl: config.backendUrl,
-          agentCode: config.agentCode,
-          agentSecret: config.agentSecret,
-          commandId: command.id,
-          status: "failed",
-          error: `clip_missing_on_disk: ${clipAbs}`,
-        });
-        return;
-      }
-
-      // Xin signed upload URL
-      const urlResult = await fetchClipUploadUrl({
-        backendUrl: config.backendUrl,
-        agentCode: config.agentCode,
-        agentSecret: config.agentSecret,
-        packingEventId: p.packing_event_id,
-      });
-      if (!urlResult.ok) {
-        console.error(`[upload_clip] fetchClipUploadUrl failed: ${urlResult.error} (http ${urlResult.status})`);
-        await reportCommandResult({
-          backendUrl: config.backendUrl,
-          agentCode: config.agentCode,
-          agentSecret: config.agentSecret,
-          commandId: command.id,
-          status: "failed",
-          error: `signed_url_fetch_failed: ${urlResult.error}`,
-        });
-        return;
-      }
-
-      // PUT file lên signed URL. Đọc file vào buffer (clip max
-      // ~100MB theo bucket cap, phần lớn <10MB).
-      let fileBuf: Buffer;
-      let fileSize: number;
-      try {
-        fileBuf = await fsp.readFile(clipAbs);
-        fileSize = fileBuf.byteLength;
-      } catch (err) {
-        await reportCommandResult({
-          backendUrl: config.backendUrl,
-          agentCode: config.agentCode,
-          agentSecret: config.agentSecret,
-          commandId: command.id,
-          status: "failed",
-          error: `read_clip_failed: ${(err as Error).message}`,
-        });
-        return;
-      }
-
-      const uploadStart = Date.now();
-      try {
-        const putRes = await fetch(urlResult.signedUrl, {
-          method: "PUT",
-          headers: { "Content-Type": "video/mp4" },
-          body: fileBuf,
-          redirect: "manual",
-        });
-        if (!putRes.ok) {
-          let bodyText = "";
-          try { bodyText = await putRes.text(); } catch { /* ignore */ }
-          throw new Error(`http_${putRes.status}: ${bodyText.slice(0, 200)}`);
-        }
-      } catch (err) {
-        console.error(`[upload_clip] PUT failed: ${(err as Error).message}`);
-        await reportCommandResult({
-          backendUrl: config.backendUrl,
-          agentCode: config.agentCode,
-          agentSecret: config.agentSecret,
-          commandId: command.id,
-          status: "failed",
-          error: `upload_put_failed: ${(err as Error).message}`,
-        });
-        return;
-      }
-      const uploadElapsedMs = Date.now() - uploadStart;
-
-      // Notify complete
-      const notify = await notifyClipUploadComplete({
-        backendUrl: config.backendUrl,
-        agentCode: config.agentCode,
-        agentSecret: config.agentSecret,
-        packingEventId: p.packing_event_id,
-        fileSizeBytes: fileSize,
-      });
-      if (!notify.ok) {
-        await reportCommandResult({
-          backendUrl: config.backendUrl,
-          agentCode: config.agentCode,
-          agentSecret: config.agentSecret,
-          commandId: command.id,
-          status: "failed",
-          error: `notify_complete_failed: ${notify.error}`,
-        });
-        return;
-      }
-
-      console.log(`[upload_clip] done packing_event=${p.packing_event_id} size=${fileSize} upload_elapsed=${uploadElapsedMs}ms`);
+      // Safe-retry S4 (2026-07-06): upload đã gộp vào `cut_clip` pipeline.
+      // Command `upload_clip` chỉ có thể do backend legacy (chưa deploy
+      // Safe Retry) enqueue → agent version mới báo failed rõ ràng để ops
+      // biết mismatch protocol. Mạch 2 sẽ loại hẳn command này ở backend.
+      console.warn(
+        `[upload_clip] DEPRECATED after Safe Retry (2026-07-06). Command ignored.`,
+      );
       await reportCommandResult({
         backendUrl: config.backendUrl,
         agentCode: config.agentCode,
         agentSecret: config.agentSecret,
         commandId: command.id,
-        status: "done",
-        result: {
-          bucket_path: urlResult.bucketPath,
-          file_size_bytes: fileSize,
-          upload_elapsed_ms: uploadElapsedMs,
-        },
+        status: "failed",
+        error: "upload_clip_deprecated_after_safe_retry",
       });
       return;
     }
@@ -1140,12 +1228,26 @@ async function main(): Promise<void> {
   // "video thuần", không burn, không overlay. Thông tin đơn ở panel
   // dashboard. Không có kế hoạch thêm lại font ở agent.
   try {
-    const removed = await cleanupOrphanConcatFiles(clipsDir);
-    if (removed > 0) {
-      console.log(`[clip-cutter] cleaned up ${removed} orphan .concat.txt file(s) at boot`);
+    const cleanup = await cleanupOrphanClipArtifacts(clipsDir);
+    const hasAction =
+      cleanup.concat_removed +
+        cleanup.stale_recovered +
+        cleanup.stale_recovery_failed +
+        cleanup.tmp_orphan_removed +
+        cleanup.bak_orphan_removed >
+      0;
+    if (hasAction) {
+      console.log(
+        `[clip-cleanup] boot: ` +
+          `concat=${cleanup.concat_removed} ` +
+          `stale_recovered=${cleanup.stale_recovered} ` +
+          `stale_failed=${cleanup.stale_recovery_failed} ` +
+          `tmp_orphan=${cleanup.tmp_orphan_removed} ` +
+          `bak_orphan=${cleanup.bak_orphan_removed}`,
+      );
     }
   } catch (err) {
-    console.warn(`[clip-cutter] orphan cleanup failed: ${(err as Error).message}`);
+    console.warn(`[clip-cleanup] boot cleanup failed: ${(err as Error).message}`);
   }
 
   // Segment index: bắt đầu watcher poll + flush queue.
