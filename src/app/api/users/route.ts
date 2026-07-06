@@ -18,16 +18,21 @@ export async function GET() {
   const ctx = await requirePermission("user.view");
   if (isError(ctx)) return ctx;
 
+  type UserRow = {
+    id: string;
+    full_name: string;
+    phone: string | null;
+    role: Role;
+    status: string;
+    created_at: string;
+  };
+
   const scoped = await getScopedClient(ctx);
-  const { data, error } = await scoped
-    .select<{
-      id: string;
-      full_name: string;
-      phone: string | null;
-      role: Role;
-      status: string;
-      created_at: string;
-    }>("user_profiles", "id, full_name, phone, role, status, created_at")
+  const { data: dataRaw, error } = await scoped
+    .select<UserRow>(
+      "user_profiles",
+      "id, full_name, phone, role, status, created_at",
+    )
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -35,7 +40,8 @@ export async function GET() {
   }
 
   const admin = createAdminClient();
-  const ids = (data ?? []).map((u) => u.id);
+  const data = (dataRaw ?? []) as UserRow[];
+  const ids = data.map((u) => u.id);
   const emails = new Map<string, string>();
   const linkedStaff = new Map<string, { id: string; staff_code: string; full_name: string }>();
   if (ids.length > 0) {
@@ -61,7 +67,7 @@ export async function GET() {
     }
   }
 
-  const users = (data ?? []).map((u) => ({
+  const users = data.map((u) => ({
     ...u,
     email: emails.get(u.id) ?? "",
     linked_staff: linkedStaff.get(u.id) ?? null,

@@ -98,33 +98,36 @@ export async function GET(req: NextRequest) {
   const ctx = await requirePermission("station_device.view");
   if (isError(ctx)) return ctx;
 
+  type DeviceRow = {
+    id: string;
+    device_code: string;
+    device_type: string;
+    name: string;
+    config_json: Record<string, unknown> | null;
+    status: string;
+    created_at: string;
+    updated_at: string;
+    connection_type: string | null;
+    device_identity: Record<string, unknown> | null;
+    current_port: string | null;
+    connection_status: string | null;
+    last_seen_at: string | null;
+    last_error: string | null;
+    bound_agent_id: string | null;
+  };
+
   const deviceType = req.nextUrl.searchParams.get("device_type");
   const scoped = await getScopedClient(ctx);
   let q = scoped
-    .select<{
-      id: string;
-      device_code: string;
-      device_type: string;
-      name: string;
-      config_json: Record<string, unknown> | null;
-      status: string;
-      created_at: string;
-      updated_at: string;
-      connection_type: string | null;
-      device_identity: Record<string, unknown> | null;
-      current_port: string | null;
-      connection_status: string | null;
-      last_seen_at: string | null;
-      last_error: string | null;
-      bound_agent_id: string | null;
-    }>(
+    .select<DeviceRow>(
       "station_devices",
       "id, device_code, device_type, name, config_json, status, created_at, updated_at, connection_type, device_identity, current_port, connection_status, last_seen_at, last_error, bound_agent_id",
     )
     .order("device_code");
   if (deviceType) q = q.eq("device_type", deviceType);
-  const { data, error } = await q;
+  const { data: dataRaw, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  const data = (dataRaw ?? []) as DeviceRow[];
 
   // Annotate each device with its current assignment (if any) so the UI can
   // show "Bàn 01" next to each scanner without a follow-up call.
@@ -140,7 +143,7 @@ export async function GET(req: NextRequest) {
     byDevice.set(a.device_id, a);
   }
 
-  const devices = (data ?? []).map((d) => {
+  const devices = data.map((d) => {
     const a = byDevice.get(d.id);
     const ps = a ? (Array.isArray(a.packing_stations) ? a.packing_stations[0] : a.packing_stations) : null;
     return {

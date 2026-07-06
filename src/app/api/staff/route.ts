@@ -12,24 +12,30 @@ export async function GET() {
   const ctx = await requirePermission("staff.view");
   if (isError(ctx)) return ctx;
 
+  type StaffRow = {
+    id: string;
+    staff_code: string;
+    full_name: string;
+    phone: string | null;
+    email: string | null;
+    status: StaffStatus;
+    user_id: string | null;
+    note: string | null;
+    created_at: string;
+  };
+
   const scoped = await getScopedClient(ctx);
-  const { data: staff, error } = await scoped
-    .select<{
-      id: string;
-      staff_code: string;
-      full_name: string;
-      phone: string | null;
-      email: string | null;
-      status: StaffStatus;
-      user_id: string | null;
-      note: string | null;
-      created_at: string;
-    }>("staff_profiles", "id, staff_code, full_name, phone, email, status, user_id, note, created_at")
+  const { data: staffRaw, error } = await scoped
+    .select<StaffRow>(
+      "staff_profiles",
+      "id, staff_code, full_name, phone, email, status, user_id, note, created_at",
+    )
     .order("staff_code");
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const ids = (staff ?? []).map((s) => s.id);
+  const staff = (staffRaw ?? []) as StaffRow[];
+  const ids = staff.map((s) => s.id);
   let assignments: Array<{
     staff_id: string;
     warehouse_id: string;
@@ -39,6 +45,13 @@ export async function GET() {
   let qrPrefix: Map<string, string> = new Map();
   let qrPayload: Map<string, string> = new Map();
 
+  type QrRow = {
+    staff_id: string;
+    token_prefix: string;
+    payload: string | null;
+    issued_at: string;
+  };
+
   if (ids.length > 0) {
     const { data: a } = await scoped
       .select("staff_warehouse_assignments", "staff_id, warehouse_id, is_primary, warehouses(code, name)")
@@ -46,24 +59,23 @@ export async function GET() {
       .is("unassigned_at", null);
     assignments = (a ?? []) as typeof assignments;
 
-    const { data: qr } = await scoped
-      .select<{
-        staff_id: string;
-        token_prefix: string;
-        payload: string | null;
-        issued_at: string;
-      }>("staff_qr_credentials", "staff_id, token_prefix, payload, issued_at")
+    const { data: qrRaw } = await scoped
+      .select<QrRow>(
+        "staff_qr_credentials",
+        "staff_id, token_prefix, payload, issued_at",
+      )
       .in("staff_id", ids)
       .eq("status", "active");
-    qrPrefix = new Map((qr ?? []).map((r) => [r.staff_id, r.token_prefix]));
+    const qr = (qrRaw ?? []) as QrRow[];
+    qrPrefix = new Map(qr.map((r) => [r.staff_id, r.token_prefix]));
     qrPayload = new Map(
-      (qr ?? [])
-        .filter((r): r is typeof r & { payload: string } => !!r.payload)
-        .map((r) => [r.staff_id, r.payload])
+      qr
+        .filter((r): r is QrRow & { payload: string } => !!r.payload)
+        .map((r) => [r.staff_id, r.payload]),
     );
   }
 
-  const result = (staff ?? []).map((s) => {
+  const result = staff.map((s) => {
     const a = assignments
       .filter((x) => x.staff_id === s.id)
       .map((x) => {
