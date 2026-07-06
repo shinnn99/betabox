@@ -1,5 +1,6 @@
 import { promises as fs, watch, type FSWatcher } from "node:fs";
 import path from "node:path";
+import { swallow } from "./fatal";
 
 /**
  * Theo dõi thư mục camera để bắt segment file mới.
@@ -54,7 +55,7 @@ export class SegmentWatcher {
   start(): void {
     if (this.pollTimer) return;
     this.pollTimer = setInterval(() => {
-      void this.pollAll();
+      swallow(this.pollAll(), "segment-watcher.pollAll");
     }, this.pollIntervalMs);
   }
 
@@ -146,7 +147,7 @@ export class SegmentWatcher {
         const relFromCamDir = String(fname);
         if (!MP4_RE.test(relFromCamDir)) return;
         const absPath = path.join(cameraDir, relFromCamDir);
-        void this.considerFile(params.cameraId, absPath);
+        this.considerFile(params.cameraId, absPath);
       });
     } catch (err) {
       // Dir chưa tồn tại là bình thường lúc start recording (ffmpeg

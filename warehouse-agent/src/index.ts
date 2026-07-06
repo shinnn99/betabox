@@ -43,6 +43,7 @@ import { promises as fsp } from "node:fs";
 import { existsSync } from "node:fs";
 import { EncodeGate } from "./encode-gate";
 import { describeFetchError, LogRateLimiter } from "./fetch-error";
+import { installFatalHandlers, swallow } from "./fatal";
 
 /**
  * Rate limiter dùng chung cho các fetch loop trong index.ts (heartbeat,
@@ -67,6 +68,7 @@ import { probeTargets, reportProbes } from "./camera-probe";
  * by COM — discovery does the rebind work on every tick.
  */
 async function main(): Promise<void> {
+  installFatalHandlers();
   const config = loadConfig();
 
   // pkg-aware path: khi chạy trong exe (`process.pkg` truthy), __dirname
@@ -1258,17 +1260,20 @@ async function main(): Promise<void> {
   // song song bằng allSettled. Chạy nền để không block startup.
   // Sau khi boot xong, kích boot recovery của segment index dựa trên
   // camera đã sống dậy (backfill segment sinh trong lúc agent chết).
-  void lifecycle.boot().then(() => {
-    const active = lifecycle.activeCameraInfos();
-    return segmentIndex.bootRecovery(active);
-  });
+  swallow(
+    lifecycle.boot().then(() => {
+      const active = lifecycle.activeCameraInfos();
+      return segmentIndex.bootRecovery(active);
+    }),
+    "lifecycle.boot+bootRecovery",
+  );
 
   const discoveryTimer = setInterval(() => {
-    void reconcile(config);
+    swallow(reconcile(config), "reconcile");
   }, config.discoveryIntervalMs);
   const heartbeatTimer = setInterval(ping, config.heartbeatIntervalMs);
   const pollTimer = setInterval(() => {
-    void pollOnce();
+    swallow(pollOnce(), "pollOnce");
   }, config.pollIntervalMs);
 
   // Camera probe (mở rộng):
@@ -1354,8 +1359,8 @@ async function main(): Promise<void> {
     for (const s of sessions.values()) s.stop();
     // Graceful stop mọi ffmpeg đang chạy để moov trailer segment cuối
     // được ghi. Không await — process.exit sẽ chạy sau delay.
-    void lifecycle.shutdown();
-    void segmentIndex.stop();
+    swallow(lifecycle.shutdown(), "lifecycle.shutdown");
+    swallow(segmentIndex.stop(), "segmentIndex.stop");
     setTimeout(() => process.exit(0), 1500);
   };
   process.on("SIGINT", shutdown);

@@ -11,6 +11,7 @@ import {
   SegmentReportQueue,
   type QueuedReport,
 } from "./segment-report-queue";
+import { swallow } from "./fatal";
 
 /**
  * Orchestrator: gộp watcher + tracker + queue + boot recovery thành
@@ -69,7 +70,7 @@ export class SegmentIndex {
     this.watcher.start();
     if (this.flushTimer) return;
     this.flushTimer = setInterval(() => {
-      void this.flushQueue();
+      swallow(this.flushQueue(), "segment-index.flushQueue");
     }, FLUSH_INTERVAL_MS);
   }
 

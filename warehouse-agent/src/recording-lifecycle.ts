@@ -15,6 +15,7 @@ import {
 import { DesiredStore, type DesiredEntry } from "./desired-store";
 import type { SegmentIndex } from "./segment-index";
 import { describeFetchError } from "./fetch-error";
+import { swallow } from "./fatal";
 
 /**
  * Retry policy (đã chốt Lát 2):
@@ -436,10 +437,16 @@ export class RecordingLifecycle {
     if (kind === "permanent") {
       this.desired.delete(spec.cameraId);
       this.probeSpecs.delete(spec.cameraId);
-      void this.deps.desiredStore.save(this.desired);
-      void this.reportStatus(spec, "error", `permanent :: ${stderrTail.slice(-500)}`);
+      swallow(this.deps.desiredStore.save(this.desired), "desiredStore.save[permanent]");
+      swallow(
+        this.reportStatus(spec, "error", `permanent :: ${stderrTail.slice(-500)}`),
+        "reportStatus[permanent]",
+      );
       // Segment cuối vừa đóng — báo ended_at, tháo watcher hẳn.
-      void this.deps.segmentIndex.onRecordingStopped(spec.cameraId);
+      swallow(
+        this.deps.segmentIndex.onRecordingStopped(spec.cameraId),
+        "segmentIndex.onRecordingStopped",
+      );
       this.states.delete(spec.cameraId);
       return;
     }
@@ -447,7 +454,10 @@ export class RecordingLifecycle {
     // để bắt file mới do ffmpeg respawn tạo. Gap giữa ended_at cũ và
     // started_at mới sẽ hiện đúng trong bảng — đây là ca test 3 (kill
     // ffmpeg) trong nghiệm thu.
-    void this.deps.segmentIndex.onFfmpegExitedForRespawn(spec.cameraId);
+    swallow(
+      this.deps.segmentIndex.onFfmpegExitedForRespawn(spec.cameraId),
+      "segmentIndex.onFfmpegExitedForRespawn",
+    );
     if (state.shortRetryCount < SHORT_RETRY_BACKOFFS_MS.length) {
       const delay = SHORT_RETRY_BACKOFFS_MS[state.shortRetryCount];
       state.shortRetryCount++;
@@ -456,7 +466,7 @@ export class RecordingLifecycle {
       );
       state.pendingTimer = setTimeout(() => {
         state.pendingTimer = null;
-        void this.startInternal(spec, /*isFreshStart=*/ false);
+        swallow(this.startInternal(spec, /*isFreshStart=*/ false), "startInternal[short-retry]");
       }, delay);
       return;
     }
@@ -464,7 +474,10 @@ export class RecordingLifecycle {
     // KHÔNG xóa desired. Camera rớt mạng lâu vẫn phải tự dậy khi mạng
     // về, không chết thầm.
     state.inLongRetry = true;
-    void this.reportStatus(spec, "degraded", `short_retry_exhausted :: ${stderrTail.slice(-500)}`);
+    swallow(
+      this.reportStatus(spec, "degraded", `short_retry_exhausted :: ${stderrTail.slice(-500)}`),
+      "reportStatus[degraded]",
+    );
     this.scheduleLongRetry(spec);
   }
 
@@ -477,7 +490,7 @@ export class RecordingLifecycle {
     }
     state.pendingTimer = setTimeout(() => {
       state.pendingTimer = null;
-      void this.longRetryAttempt(spec);
+      swallow(this.longRetryAttempt(spec), "longRetryAttempt");
     }, LONG_RETRY_INTERVAL_MS);
   }
 
