@@ -9,6 +9,7 @@ import {
   Activity,
   ShieldCheck,
   Wrench,
+  Server,
   type LucideIcon,
 } from "lucide-react";
 
@@ -77,6 +78,12 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Thiết bị kho",
         href: "/dashboard/devices",
         icon: Cpu,
+      },
+      {
+        id: "agents",
+        label: "Máy trạm kho",
+        href: "/dashboard/agents",
+        icon: Server,
       },
       {
         id: "staff",
