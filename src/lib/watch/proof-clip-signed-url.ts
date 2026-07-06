@@ -46,19 +46,29 @@ export type ProofClipSignedUrlResult =
 /**
  * Cấp signed URL cho clip của một packing_event.
  * Verify: clip tồn tại, thuộc org của ctx, ready, bucket_path còn TTL.
+ *
+ * Safe-retry (2026-07-06): 1 pe có thể có 2 row cùng lúc — ready cũ +
+ * pending mới đang regenerate. `.maybeSingle()` throw/return null khi
+ * thấy 2 row → helper hỏng. Lấy row 'ready' ưu tiên; fallback 'pending'
+ * hoặc row còn lại (không phải superseded) nếu chưa có ready.
  */
 export async function createProofClipSignedUrlByPackingEvent(
   ctx: OrgCtx,
   packingEventId: string,
 ): Promise<ProofClipSignedUrlResult> {
   const admin = createAdminClient();
-  const { data: clip } = await admin
+  const { data: clips } = await admin
     .from("order_proof_clips")
     .select("organization_id, status, bucket_path, bucket_uploaded_at")
     .eq("packing_event_id", packingEventId)
     .neq("status", "superseded")
-    .maybeSingle();
-  if (!clip) return { ok: false, reason: "not_found" };
+    .order("created_at", { ascending: false });
+  const rows = clips ?? [];
+  if (rows.length === 0) return { ok: false, reason: "not_found" };
+  // Ưu tiên row 'ready' (playable ngay); nếu chưa có, fallback row mới
+  // nhất (có thể pending hoặc failed) → signIfBucketValid trả not_ready
+  // đúng semantic.
+  const clip = rows.find((r) => r.status === "ready") ?? rows[0];
   if (clip.organization_id !== ctx.organizationId) {
     return { ok: false, reason: "cross_org" };
   }
