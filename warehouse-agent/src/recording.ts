@@ -2,6 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fingerprintArgs, type PidRegistry } from "./pid-registry";
+import { swallow } from "./fatal";
 
 /**
  * BLOCKS-GO-LIVE (nhắc lại rõ ràng, không tự thăng cấp thành "đã đóng"):
@@ -133,6 +135,12 @@ export interface StartArgs {
     signal: NodeJS.Signals | null;
     lastStderr: string;
   }) => void;
+  /**
+   * CRIT-1 (B2): PID registry để persist ffmpeg PID trên đĩa mỗi lần
+   * spawn/exit. Boot recovery dùng registry để kill zombie sau kill -9.
+   * Optional — nếu undefined, giữ hành vi cũ (in-memory only).
+   */
+  pidRegistry?: PidRegistry;
 }
 
 /**
@@ -234,6 +242,24 @@ export async function startRecording(args: StartArgs): Promise<StartOutcome | St
       return { ok: false, reason: "spawn_no_pid", stderrTail: "" };
     }
 
+    // CRIT-1 (B2): persist PID vào registry TRƯỚC khi setup handlers.
+    // Nếu agent chết đột ngột SAU đây, boot recovery sẽ đọc entry này
+    // + kill ffmpeg zombie. Fire-and-forget (swallow) để không block
+    // spawn — registry là best-effort observability.
+    if (args.pidRegistry) {
+      swallow(
+        args.pidRegistry.set({
+          cameraId: cid,
+          cameraCode: args.spec.cameraCode,
+          sessionId: args.spec.sessionId,
+          pid: child.pid,
+          startedAt: new Date().toISOString(),
+          fingerprint: fingerprintArgs(ffmpegArgs),
+        }),
+        `pid-registry.set[${args.spec.cameraCode}]`,
+      );
+    }
+
     let lastStderr = "";
     const STDERR_TAIL = 8_000;
     let exitedEarly = false;
@@ -261,6 +287,14 @@ export async function startRecording(args: StartArgs): Promise<StartOutcome | St
       const entry = runningMap.get(cid);
       if (entry) entry.lastStderr = lastStderr;
       runningMap.delete(cid);
+      // CRIT-1 (B2): xóa PID entry — process đã chết bình thường, không
+      // cần boot recovery kill.
+      if (args.pidRegistry) {
+        swallow(
+          args.pidRegistry.remove(cid),
+          `pid-registry.remove[${args.spec.cameraCode}]`,
+        );
+      }
       console.log(
         `[recording] exit camera=${args.spec.cameraCode} pid=${child.pid} code=${code} signal=${signal ?? "-"}`,
       );

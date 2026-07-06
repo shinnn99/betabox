@@ -45,6 +45,8 @@ import { EncodeGate } from "./encode-gate";
 import { describeFetchError, LogRateLimiter } from "./fetch-error";
 import { installFatalHandlers, swallow } from "./fatal";
 import { uploadWithTimeout } from "./upload";
+import { PidRegistry } from "./pid-registry";
+import { recoverZombieFfmpeg } from "./ffmpeg-boot-recovery";
 
 /**
  * Rate limiter dùng chung cho các fetch loop trong index.ts (heartbeat,
@@ -89,6 +91,9 @@ async function main(): Promise<void> {
   const desiredStore = new DesiredStore(
     resolve(dataDir, "desired-recording.json"),
   );
+  // CRIT-1 (B2): PID registry persist ffmpeg PID + boot recovery kill
+  // zombie sau kill -9 agent.
+  const pidRegistry = new PidRegistry(resolve(dataDir, "ffmpeg-pids.json"));
   const recordingRoot = resolve(process.cwd(), config.recordingDir);
   const segmentIndex = new SegmentIndex({
     backendUrl: config.backendUrl,
@@ -113,6 +118,7 @@ async function main(): Promise<void> {
     desiredStore,
     credentialsRetryMs: config.recordingCredentialsRetryMs,
     segmentIndex,
+    pidRegistry,
   });
 
   console.log(
@@ -1243,6 +1249,27 @@ async function main(): Promise<void> {
 
   // Segment index: bắt đầu watcher poll + flush queue.
   segmentIndex.start();
+
+  // CRIT-1 (B2) boot recovery: đọc PID registry, kill zombie ffmpeg từ
+  // lần chạy trước bị kill -9 hoặc crash native. Phải chạy TRƯỚC
+  // lifecycle.boot vì boot có thể spawn ffmpeg mới; nếu zombie chưa
+  // chết, ffmpeg mới sẽ bị camera 1-connection RTSP reject.
+  //
+  // Chạy tuần tự (await) chứ không fire-and-forget: cần chờ zombie chết
+  // trước khi spawn mới. Fail của boot recovery không block agent —
+  // chỉ log rồi tiếp tục.
+  try {
+    const rec = await recoverZombieFfmpeg(pidRegistry);
+    if (rec.totalEntries > 0) {
+      console.log(
+        `[boot-recovery] result total=${rec.totalEntries} killed=${rec.killed} already_dead=${rec.alreadyDead} pid_reused=${rec.pidReused} errors=${rec.errors}`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[boot-recovery] fatal error, continuing: ${(err as Error).message}`,
+    );
+  }
 
   // Boot recording lifecycle: đọc desired file, gọi cloud lấy credential
   // (retry mãi nếu mạng chưa lên — log leo thang theo ngưỡng), spawn

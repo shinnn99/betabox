@@ -71,6 +71,11 @@ export interface LifecycleDeps {
   desiredStore: DesiredStore;
   credentialsRetryMs: number;
   segmentIndex: SegmentIndex;
+  /**
+   * CRIT-1 (B2) PID registry cho ffmpeg zombie recovery. Optional; nếu
+   * undefined agent hoạt động như trước (không có persist PID).
+   */
+  pidRegistry?: import("./pid-registry").PidRegistry;
 }
 
 /**
@@ -351,6 +356,7 @@ export class RecordingLifecycle {
       spec,
       earlyExitWatchdogMs: EARLY_EXIT_WATCHDOG_MS,
       onUnexpectedExit: (info) => this.onUnexpectedExit(info.spec, info.lastStderr),
+      pidRegistry: this.deps.pidRegistry,
     });
 
     if (!outcome.ok) {
