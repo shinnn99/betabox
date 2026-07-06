@@ -1,5 +1,8 @@
 import "server-only";
-import type { PostgrestFilterBuilder } from "@supabase/postgrest-js";
+// Re-export từ @supabase/supabase-js thay vì @supabase/postgrest-js trực tiếp:
+// pnpm strict mode (Vercel) không cho import transitive dep — supabase-js đã
+// re-export type này, dùng đường re-export là sạch không cần thêm dep.
+import type { PostgrestFilterBuilder } from "@supabase/supabase-js";
 import { createClient } from "./server";
 import { createAdminClient } from "./admin";
 import type { ApiContext } from "./guard";
