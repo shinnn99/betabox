@@ -4,9 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "next dev --experimental-https --experimental-https-key ./certs/localhost-key.pem --experimental-https-cert ./certs/localhost.pem",
+    "prebuild": "node scripts/check-proof-clip-signed-url.mjs",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "check:signed-url": "node scripts/check-proof-clip-signed-url.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",

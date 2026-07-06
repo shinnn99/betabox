@@ -18,6 +18,7 @@ import { sendHeartbeat } from "./heartbeat";
 import { listLocalPorts, postDiscovery, type PortInfo } from "./discovery";
 import {
   fetchClipUploadUrl,
+  fetchAllActiveCameraCredentials,
   fetchRecordingCredentials,
   notifyClipUploadComplete,
   pollCommandsWithState,
@@ -1168,13 +1169,43 @@ async function main(): Promise<void> {
     void pollOnce();
   }, config.pollIntervalMs);
 
-  // Camera probe: TCP-connect RTSP port của mọi camera trong lifecycle
-  // state (bao gồm cả camera đang long-retry vì tắt vật lý), batch
-  // report ok/fail. Backend đọc `cameras.last_probe_at + last_probe_ok`
-  // + `warehouse_agents.last_seen_at` để phân biệt 4 nhánh Online /
-  // Offline / Mất kết nối kho / Chưa test.
+  // Camera probe (mở rộng):
+  //   Nguồn A — lifecycle.probeTargets(): camera đang recording hoặc đang
+  //     long-retry vì tắt vật lý (giữ nguyên hành vi cũ).
+  //   Nguồn B — cloud fetch all_active: mọi camera status='active' của org,
+  //     kể cả chưa recording. Để UI hiện Online cho camera vừa cấu hình,
+  //     không bắt user Test kết nối tay hoặc chờ Start recording.
+  // Union theo cameraId (A tinh — có rtspUrl tin cậy từ config file/desired;
+  // B chỉ dùng cho camera A không có).
+  //
+  // Nếu fetch B fail (mạng flake) → skip, dùng A một mình như cũ. Không
+  // block probe loop.
   const cameraProbeTimer = setInterval(async () => {
-    const targets = lifecycle.probeTargets();
+    const localTargets = lifecycle.probeTargets();
+    const localIds = new Set(localTargets.map((t) => t.cameraId));
+
+    let allActiveTargets: Array<{ cameraId: string; cameraCode: string; rtspUrl: string }> = [];
+    try {
+      const creds = await fetchAllActiveCameraCredentials({
+        backendUrl: config.backendUrl,
+        agentCode: config.agentCode,
+        agentSecret: config.agentSecret,
+      });
+      allActiveTargets = creds
+        .filter((c) => !localIds.has(c.camera_id))
+        .map((c) => ({
+          cameraId: c.camera_id,
+          cameraCode: c.camera_code,
+          rtspUrl: c.rtsp_url,
+        }));
+    } catch (err) {
+      // Log nhưng không throw — probe local vẫn chạy.
+      console.warn(
+        `[camera-probe] fetch all_active failed: ${(err as Error).message}`,
+      );
+    }
+
+    const targets = [...localTargets, ...allActiveTargets];
     if (targets.length === 0) return;
     const results = await probeTargets(targets);
     await reportProbes({

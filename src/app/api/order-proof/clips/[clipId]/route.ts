@@ -16,7 +16,6 @@
  */
 import { NextResponse } from "next/server";
 import { stat, open } from "node:fs/promises";
-import { createAdminClient } from "@/lib/supabase/admin";
 import {
   isError,
   requirePermission,
@@ -25,7 +24,7 @@ import {
   clipRowIsSafe,
   getClipById,
 } from "@/lib/order-proof/service";
-import { BUCKET_NAME, SIGNED_URL_TTL_SECONDS } from "@/lib/watch/config";
+import { createProofClipSignedUrlByClipId } from "@/lib/watch/proof-clip-signed-url";
 
 interface RouteContext {
   params: Promise<{ clipId: string }>;
@@ -88,18 +87,24 @@ export async function GET(req: Request, { params }: RouteContext) {
   // + không bucket, trả 410 kèm hướng dẫn dùng page /watch mới để
   // reconcile (page /watch tự enqueue cut+upload nếu chưa có bucket).
   if (row.bucket_path) {
-    const admin = createAdminClient();
-    const { data: signed, error: signedErr } = await admin.storage
-      .from(BUCKET_NAME)
-      .createSignedUrl(row.bucket_path, SIGNED_URL_TTL_SECONDS);
-    if (signed?.signedUrl) {
+    // N2 DiD-A: helper verify org (tầng 2 sau requirePermission +
+    // getClipById scoped-by-org). KHÔNG gọi createSignedUrl trực tiếp.
+    const signResult = await createProofClipSignedUrlByClipId(
+      { organizationId: ctx.organizationId },
+      clipId,
+    );
+    if (signResult.ok) {
       // 307 redirect để browser <video> follow tới signed URL bucket.
-      return NextResponse.redirect(signed.signedUrl, 307);
+      return NextResponse.redirect(signResult.signedUrl, 307);
     }
-    // Bucket path có nhưng signed URL fail: fallback tiếp tục tới ổ
-    // local (chỉ work khi server cùng máy agent). Không throw ngay.
+    // Bucket path có nhưng helper trả reason khác ok: fallback tiếp tục
+    // tới ổ local (chỉ work khi server cùng máy agent). Không throw ngay.
     console.warn(
-      `[clip GET] bucket_path=${row.bucket_path} signed URL failed: ${signedErr?.message}`,
+      `[clip GET] bucket_path=${row.bucket_path} signed URL not ok: reason=${signResult.reason}${
+        "message" in signResult && signResult.message
+          ? ` msg=${signResult.message}`
+          : ""
+      }`,
     );
   }
 
@@ -188,3 +193,4 @@ export async function GET(req: Request, { params }: RouteContext) {
     headers,
   });
 }
+

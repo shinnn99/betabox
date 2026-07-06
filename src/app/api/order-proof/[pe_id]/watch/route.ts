@@ -6,11 +6,8 @@ import {
   enqueueUploadClip,
 } from "@/lib/agent-commands/enqueue";
 import {
-  BUCKET_NAME,
-  BUCKET_TTL_HOURS,
   ENQUEUE_CUT_COOLDOWN_SECONDS,
   OFFLINE_POLL_GIVEUP_MINUTES,
-  SIGNED_URL_TTL_SECONDS,
   UPLOAD_FAILED_COOLDOWN_MINUTES,
   bucketPathFor,
 } from "@/lib/watch/config";
@@ -18,6 +15,7 @@ import {
   readAgentLiveness,
   type AgentLiveness,
 } from "@/lib/watch/agent-liveness";
+import { createProofClipSignedUrlByPackingEvent } from "@/lib/watch/proof-clip-signed-url";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -254,40 +252,35 @@ export async function POST(_req: Request, ctx: RouteContext) {
   }
 
   // TRỤ 1 — check bucket TRƯỚC agent. Clip đã cloud → cấp URL, KỆ agent.
+  // N2 DiD-A: KHÔNG gọi createSignedUrl trực tiếp. Helper verify org
+  // trong nó (tầng thứ hai sau verify ở dòng ~232) — cross-tenant lộ
+  // chéo phải qua CẢ HAI tầng thì mới lọt. Grep-CI cấm createSignedUrl
+  // ngoài src/lib/watch/proof-clip-signed-url.ts.
   if (clip?.status === "ready") {
-    const ttlMs = BUCKET_TTL_HOURS * 3600 * 1000;
-    const uploadedAt = clip.bucket_uploaded_at
-      ? new Date(clip.bucket_uploaded_at).getTime()
-      : 0;
-    const ageMs = Date.now() - uploadedAt;
-    const bucketValid =
-      clip.bucket_path !== null &&
-      clip.bucket_uploaded_at !== null &&
-      ageMs < ttlMs;
-
-    if (bucketValid && clip.bucket_path) {
-      // Cấp signed URL mới mỗi call — không cache
-      const { data: signed, error: signedErr } = await admin.storage
-        .from(BUCKET_NAME)
-        .createSignedUrl(clip.bucket_path, SIGNED_URL_TTL_SECONDS);
-      if (signedErr || !signed) {
-        return NextResponse.json<WatchResponse>(
-          {
-            state: "failed",
-            error: `signed_url_failed: ${signedErr?.message ?? "unknown"}`,
-          },
-          { status: 200 },
-        );
-      }
-      const expiresAt = new Date(
-        Date.now() + SIGNED_URL_TTL_SECONDS * 1000,
-      ).toISOString();
+    const signResult = await createProofClipSignedUrlByPackingEvent(
+      { organizationId: pe.organization_id },
+      packingEventId,
+    );
+    if (signResult.ok) {
       return NextResponse.json<WatchResponse>({
         state: "ready",
-        signed_url: signed.signedUrl,
-        expires_at: expiresAt,
+        signed_url: signResult.signedUrl,
+        expires_at: signResult.expiresAt,
       });
     }
+    if (signResult.reason === "signed_url_failed") {
+      return NextResponse.json<WatchResponse>(
+        {
+          state: "failed",
+          error: `signed_url_failed: ${signResult.message ?? "unknown"}`,
+        },
+        { status: 200 },
+      );
+    }
+    // bucket_missing / bucket_expired → rơi xuống nhánh upload_failed /
+    // enqueue upload bên dưới. not_found/cross_org không đạt vì đã verify
+    // ở tầng trên; nếu lọt (race), rơi xuống nhánh dưới xử tiếp cũng an
+    // toàn (helper đã chặn cấp URL).
   }
 
   // Từ đây, mọi nhánh CẦN agent. Đọc liveness NGAY BÂY GIỜ (TRỤ 2).

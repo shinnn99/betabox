@@ -26,12 +26,27 @@ const UUID_RE =
 
 interface RequestBody {
   camera_ids: string[];
+  // Khi true, bỏ qua camera_ids và trả về TẤT CẢ camera active của org.
+  // Agent dùng cho probe loop mở rộng: cần biết trạng thái camera đã cấu
+  // hình nhưng CHƯA start recording, để UI hiện Online trước khi user bấm
+  // Start. Chỉ trả rtsp_url — password vẫn được gửi (agent cần probe TCP
+  // đúng host:port từ URL đã build).
+  all_active?: boolean;
 }
 
 function parseBody(raw: unknown): RequestBody | { error: string } {
   if (!raw || typeof raw !== "object") return { error: "invalid_body" };
   const r = raw as Record<string, unknown>;
+  const allActive = r.all_active === true;
   const ids = r.camera_ids;
+  if (allActive) {
+    // camera_ids không cần khi all_active — vẫn accept mảng rỗng để
+    // caller cũ không phá.
+    if (ids !== undefined && !Array.isArray(ids)) {
+      return { error: "camera_ids_required" };
+    }
+    return { camera_ids: [], all_active: true };
+  }
   if (!Array.isArray(ids)) return { error: "camera_ids_required" };
   if (ids.length > 100) return { error: "too_many_camera_ids" };
   for (const id of ids) {
@@ -89,13 +104,20 @@ export async function POST(req: Request) {
 
   // Filter theo organization_id của agent — KHÔNG tin camera_ids từ client.
   // Camera không thuộc org agent thì lặng lẽ bị loại, không leak "exists".
-  const { data: cams, error: camErr } = await admin
+  // Khi all_active=true, bỏ qua .in() và trả về mọi camera status=active
+  // của org (dùng cho probe loop mở rộng — probe cả camera chưa recording).
+  let camsQuery = admin
     .from("cameras")
     .select(
       "id, camera_code, ip, rtsp_port, username, password_ciphertext, password_iv, password_tag, rtsp_path",
     )
-    .in("id", parsed.camera_ids)
     .eq("organization_id", agent.organization_id);
+  if (parsed.all_active) {
+    camsQuery = camsQuery.eq("status", "active");
+  } else {
+    camsQuery = camsQuery.in("id", parsed.camera_ids);
+  }
+  const { data: cams, error: camErr } = await camsQuery;
 
   if (camErr) {
     return NextResponse.json(

@@ -238,6 +238,11 @@ export async function GET() {
         lastProbeOk: c.last_probe_ok,
         agentLastSeenAt: agentForOnline?.last_seen_at ?? null,
         hasRecordingIntent,
+        lastTestedAt: c.last_tested_at,
+        lastTestSuccess:
+          typeof c.last_test_result === "object" &&
+          c.last_test_result !== null &&
+          (c.last_test_result as { success?: unknown }).success === true,
         now: nowForOnline,
       }),
     };

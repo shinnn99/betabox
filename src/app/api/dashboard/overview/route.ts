@@ -161,7 +161,7 @@ export async function GET() {
       admin
         .from("cameras")
         .select(
-          "id, camera_code, name, location, status, last_probe_at, last_probe_ok",
+          "id, camera_code, name, location, status, last_probe_at, last_probe_ok, last_tested_at, last_test_result",
         )
         .eq("organization_id", ctx.organizationId)
         .order("camera_code", { ascending: true }),
@@ -322,17 +322,31 @@ export async function GET() {
       recording: recordingCameraIds.has(c.id as string),
     }));
 
-    // Probe metadata (last_probe_at + last_probe_ok) lookup theo id để
+    // Probe metadata + user-test metadata lookup theo id để
     // deriveCameraOnlineState. Không chèn vào CameraSnapshot public type
     // vì nó là chi tiết real-time, khác snapshot cấu hình.
+    // Thêm last_tested_at/last_test_success để helper coi camera online
+    // khi user vừa Test kết nối OK, kể cả khi probe loop chưa kịp cập nhật
+    // (camera chưa recording → agent hiện tại không probe).
     const cameraProbeById = new Map<
       string,
-      { last_probe_at: string | null; last_probe_ok: boolean | null }
+      {
+        last_probe_at: string | null;
+        last_probe_ok: boolean | null;
+        last_tested_at: string | null;
+        last_test_success: boolean | null;
+      }
     >();
     for (const c of camerasRes.data ?? []) {
+      const tr = c.last_test_result as unknown;
+      const testSuccess =
+        typeof tr === "object" && tr !== null &&
+        (tr as { success?: unknown }).success === true;
       cameraProbeById.set(c.id as string, {
         last_probe_at: (c.last_probe_at as string | null) ?? null,
         last_probe_ok: (c.last_probe_ok as boolean | null) ?? null,
+        last_tested_at: (c.last_tested_at as string | null) ?? null,
+        last_test_success: c.last_tested_at ? testSuccess : null,
       });
     }
     const agentLastSeenAt =
@@ -410,12 +424,16 @@ export async function GET() {
       const probe = cameraProbeById.get(c.id) ?? {
         last_probe_at: null,
         last_probe_ok: null,
+        last_tested_at: null,
+        last_test_success: null,
       };
       const onlineState = deriveCameraOnlineState({
         lastProbeAt: probe.last_probe_at,
         lastProbeOk: probe.last_probe_ok,
         agentLastSeenAt: agentLastSeenAt,
         hasRecordingIntent: c.recording,
+        lastTestedAt: probe.last_tested_at,
+        lastTestSuccess: probe.last_test_success,
         now,
       });
       const status: DeviceSnapshot["status"] = c.recording
@@ -559,12 +577,16 @@ export async function GET() {
       const probe = cameraProbeById.get(c.id) ?? {
         last_probe_at: null,
         last_probe_ok: null,
+        last_tested_at: null,
+        last_test_success: null,
       };
       const onlineState = deriveCameraOnlineState({
         lastProbeAt: probe.last_probe_at,
         lastProbeOk: probe.last_probe_ok,
         agentLastSeenAt,
         hasRecordingIntent: c.recording,
+        lastTestedAt: probe.last_tested_at,
+        lastTestSuccess: probe.last_test_success,
         now,
       });
       if (onlineState === "warehouse_disconnected") {

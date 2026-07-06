@@ -3,5 +3,6 @@ dist/
 dist-exe/
 dist-test/
 dist-package/
+dist-installer/
 .env
 data/*.jsonl

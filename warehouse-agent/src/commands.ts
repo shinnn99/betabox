@@ -124,6 +124,40 @@ export async function fetchRecordingCredentials(params: {
   return json.items ?? [];
 }
 
+/**
+ * Lấy credential (bao gồm RTSP URL) cho MỌI camera status='active' của org.
+ * Dùng cho probe loop mở rộng — probe cả camera chưa recording để UI hiện
+ * trạng thái Online/Offline realtime. Trước đây probe chỉ chạy cho camera
+ * đang recording → camera cấu hình xong nhưng chưa Start bị hiện "Offline"
+ * do last_probe_at cũ (không có nhịp probe nào chạy).
+ *
+ * Backend endpoint chung với fetchRecordingCredentials: khi all_active=true
+ * bỏ qua camera_ids và trả tất cả camera active của org.
+ */
+export async function fetchAllActiveCameraCredentials(params: {
+  backendUrl: string;
+  agentCode: string;
+  agentSecret: string;
+}): Promise<CredentialItem[]> {
+  const body = JSON.stringify({ camera_ids: [], all_active: true });
+  const headers = signBody({
+    agentCode: params.agentCode,
+    agentSecret: params.agentSecret,
+    body,
+  });
+  const res = await fetchWithRetry(`${params.backendUrl}/api/agent/recording-credentials`, {
+    method: "POST",
+    headers,
+    body,
+    redirect: "manual",
+  });
+  if (!res.ok) {
+    throw new Error(`recording-credentials all_active ${res.status}`);
+  }
+  const json = (await res.json()) as { ok: boolean; items?: CredentialItem[] };
+  return json.items ?? [];
+}
+
 export type RecordingStatusEvent =
   | "recording"
   | "stopped"
