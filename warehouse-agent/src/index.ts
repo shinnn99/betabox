@@ -44,6 +44,7 @@ import { existsSync } from "node:fs";
 import { EncodeGate } from "./encode-gate";
 import { describeFetchError, LogRateLimiter } from "./fetch-error";
 import { installFatalHandlers, swallow } from "./fatal";
+import { uploadWithTimeout } from "./upload";
 
 /**
  * Rate limiter dùng chung cho các fetch loop trong index.ts (heartbeat,
@@ -655,28 +656,16 @@ async function main(): Promise<void> {
         await failCommand(`read_tmp_failed: ${(err as Error).message}`);
         return;
       }
-      const uploadStart = Date.now();
-      try {
-        const putRes = await fetch(urlResult.signedUrl, {
-          method: "PUT",
-          headers: { "Content-Type": "video/mp4" },
-          body: fileBuf,
-          redirect: "manual",
-        });
-        if (!putRes.ok) {
-          let bodyText = "";
-          try {
-            bodyText = await putRes.text();
-          } catch {
-            // ignore
-          }
-          throw new Error(`http_${putRes.status}: ${bodyText.slice(0, 200)}`);
-        }
-      } catch (err) {
-        await failCommand(`upload_put_failed: ${(err as Error).message}`);
+      const uploadResult = await uploadWithTimeout(urlResult.signedUrl, fileBuf, {
+        contentType: "video/mp4",
+      });
+      if (!uploadResult.ok) {
+        await failCommand(
+          `upload_put_failed[${uploadResult.errorKind}]: ${uploadResult.errorMessage ?? "unknown"} attempts=${uploadResult.attempts} elapsed=${uploadResult.totalElapsedMs}ms`,
+        );
         return;
       }
-      const uploadElapsedMs = Date.now() - uploadStart;
+      const uploadElapsedMs = uploadResult.totalElapsedMs;
 
       // === STEP 7: Notify upload-complete → backend verify + RPC promote ===
       // Backend endpoint clip-upload-complete gọi promote_clip_generation
