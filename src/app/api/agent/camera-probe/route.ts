@@ -183,14 +183,24 @@ export async function POST(req: Request) {
 
   let updated = 0;
   if (rowsToUpsert.length > 0) {
-    // Batch UPDATE qua RPC — 1 round-trip cho toàn bộ probe, thay N
-    // update tuần tự. Không dùng .upsert() vì cameras có NOT NULL columns
-    // (name, camera_code, ip) không có default; upsert-with-id chỉ UPDATE
-    // khi row tồn tại nhưng nếu race (row bị xóa giữa allowedById.get và
-    // upsert) sẽ INSERT fail. RPC UPDATE ... FROM (subquery) sạch hơn.
-    const { data: updatedCount, error } = await admin.rpc(
-      "apply_camera_probes",
+    // Batch UPDATE qua RPC v2 — 1 round-trip cho toàn bộ probe, tenant
+    // filter đã đưa vào RPC (WHERE c.organization_id = p_organization_id).
+    // Caller PHẢI khai p_organization_id lấy từ HMAC-verified agent context
+    // (agent.organization_id), KHÔNG lấy mù từ request body.
+    //
+    // Bảo vệ hai tầng:
+    //   Tầng 1 (đã có): route pre-filter cameraIds qua SELECT eq(org)
+    //     → rowsToUpsert chỉ chứa camera đúng org.
+    //   Tầng 2 (mới): RPC v2 UPDATE ... WHERE c.organization_id = ...
+    //     → dù caller build sai payload, DB vẫn từ chối.
+    //
+    // Response { requested, updated, rejected }: nếu rejected > 0 thì
+    // caller pre-filter và RPC filter không khớp — dấu hiệu race hoặc bug
+    // logic. Log để ops thấy.
+    const { data: rpcResult, error } = await admin.rpc(
+      "apply_camera_probes_v2",
       {
+        p_organization_id: agent.organization_id,
         p_probes: rowsToUpsert.map((r) => ({
           id: r.id,
           last_probe_ok: r.last_probe_ok,
@@ -199,8 +209,23 @@ export async function POST(req: Request) {
         })),
       },
     );
-    if (!error && typeof updatedCount === "number") {
-      updated = updatedCount;
+    if (error) {
+      console.error(
+        `[camera-probe] apply_camera_probes_v2 failed agent=${agent.id} code=${error.code ?? "?"} message=${error.message}`,
+      );
+    } else if (rpcResult && typeof rpcResult === "object") {
+      const r = rpcResult as {
+        requested?: number;
+        updated?: number;
+        rejected?: number;
+      };
+      updated = typeof r.updated === "number" ? r.updated : 0;
+      const rejected = typeof r.rejected === "number" ? r.rejected : 0;
+      if (rejected > 0) {
+        console.warn(
+          `[camera-probe] tenant mismatch agent=${agent.id} org=${agent.organization_id} requested=${r.requested ?? "?"} updated=${updated} rejected=${rejected}`,
+        );
+      }
     }
   }
 
