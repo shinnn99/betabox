@@ -282,6 +282,11 @@ function ManualForm({
     password: "",
     rtsp_path: initial?.rtsp_path ?? "/ch1/main",
     location: initial?.location ?? "",
+    // Chỉ dùng ở mode=edit — cho user bật/tắt camera. status='error' được
+    // set bởi system (test-connection fail) → không cho chọn từ dropdown.
+    status: (initial?.status === "inactive" ? "inactive" : "active") as
+      | "active"
+      | "inactive",
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -301,6 +306,9 @@ function ManualForm({
     };
     if (mode === "create" || form.password.length > 0) {
       body.password = form.password;
+    }
+    if (mode === "edit") {
+      body.status = form.status;
     }
     const url =
       mode === "create" ? "/api/cameras" : `/api/cameras/${initial!.id}`;
@@ -418,6 +426,27 @@ function ManualForm({
           className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm"
         />
       </Field>
+
+      {mode === "edit" && (
+        <Field
+          label="Trạng thái"
+          hint="Không hoạt động = tạm ngưng, agent không probe, không cho bấm Bắt đầu ghi."
+        >
+          <select
+            value={form.status}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                status: e.target.value as "active" | "inactive",
+              })
+            }
+            className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm bg-white"
+          >
+            <option value="active">Đang hoạt động</option>
+            <option value="inactive">Tạm ngưng</option>
+          </select>
+        </Field>
+      )}
 
       {err && <p className="text-sm text-red-600">{err}</p>}
       <div className="flex justify-end gap-2 pt-2">
