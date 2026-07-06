@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   readAgentHeaders,
-  verifyAgentSignature,
+  verifyAgentRequest,
 } from "@/lib/warehouse/agent-auth";
+import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,14 +42,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "agent_disabled" }, { status: 403 });
   }
 
-  const verdict = verifyAgentSignature({
+  // B1.3: verifyAgentRequest hỗ trợ cả v1 + v2. v1 = signature-only (legacy);
+  // v2 = signature + consume nonce (chống replay). Header `x-agent-sig-version`
+  // xác định. Route canonical path = "/api/warehouse/heartbeat" (v2 only).
+  const verdict = await verifyAgentRequest(admin, {
     rawBody,
+    method: "POST",
+    canonicalPath: "/api/warehouse/heartbeat",
     headers,
+    agentId: agent.id,
     secret: agent.secret as string,
   });
   if (!verdict.ok) {
     return NextResponse.json({ error: verdict.error }, { status: verdict.status });
   }
+  recordAgentSigVersion(agent.id, verdict.version);
 
   // NTP guard: agent gửi time_drift_seconds (abs, tính từ /api/warehouse/
   // time-check). Body cũ `{ping:true}` không có field này → giữ null,

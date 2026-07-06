@@ -1,68 +1,181 @@
 import "server-only";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  computeNonceExpiresAt,
+  parseTimestampMs,
+  readAgentHeadersFromRecord,
+  verifySignatureV1,
+  verifySignatureV2,
+  type AgentAuthFailure,
+  type AgentAuthHeaders,
+  type AgentAuthHeadersV1,
+  type AgentAuthHeadersV2,
+  type AgentAuthSuccess,
+} from "./agent-auth-core";
 
-const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
+export type {
+  AgentAuthHeaders,
+  AgentAuthFailure,
+  AgentAuthSuccess,
+  SignatureVersion,
+} from "./agent-auth-core";
 
-export interface AgentAuthHeaders {
-  code: string;
-  timestamp: string;
-  signature: string;
-}
-
-export type AgentAuthFailure =
-  | { ok: false; status: 400; error: "missing_headers" }
-  | { ok: false; status: 400; error: "bad_timestamp" }
-  | { ok: false; status: 401; error: "timestamp_skew" }
-  | { ok: false; status: 401; error: "bad_signature" };
-
-export interface AgentAuthSuccess {
-  ok: true;
-}
-
+/**
+ * Backward-compat re-export cho callers cũ.
+ */
 export function readAgentHeaders(req: Request): AgentAuthHeaders | null {
-  const code = req.headers.get("x-agent-code");
-  const timestamp = req.headers.get("x-agent-timestamp");
-  const signature = req.headers.get("x-agent-signature");
-  if (!code || !timestamp || !signature) return null;
-  return { code, timestamp, signature };
+  return readAgentHeadersFromRecord((name) => req.headers.get(name));
 }
 
-function parseTimestampMs(raw: string): number | null {
-  const trimmed = raw.trim();
-  if (/^\d+$/.test(trimmed)) {
-    const n = Number(trimmed);
-    return Number.isFinite(n) ? n : null;
-  }
-  const t = Date.parse(trimmed);
-  return Number.isFinite(t) ? t : null;
-}
-
+/**
+ * Verify signature LEGACY V1 (không consume nonce). Backward-compat cho
+ * route đã tồn tại — callers hiện tại pass v1 headers.
+ *
+ * B1.3: hàm này giữ signature cũ để không break callers. Route mới nên
+ * dùng `verifyAgentRequest` dưới đây (hỗ trợ cả v1 + v2).
+ */
 export function verifyAgentSignature(params: {
   rawBody: string;
-  headers: AgentAuthHeaders;
+  headers: { code: string; timestamp: string; signature: string };
   secret: string;
   now?: number;
 }): AgentAuthSuccess | AgentAuthFailure {
-  const { rawBody, headers, secret } = params;
-  const now = params.now ?? Date.now();
+  const v1Headers: AgentAuthHeadersV1 = {
+    version: "v1",
+    code: params.headers.code,
+    timestamp: params.headers.timestamp,
+    signature: params.headers.signature,
+  };
+  return verifySignatureV1({
+    rawBody: params.rawBody,
+    headers: v1Headers,
+    secret: params.secret,
+    now: params.now,
+  });
+}
 
-  const ts = parseTimestampMs(headers.timestamp);
-  if (ts === null) return { ok: false, status: 400, error: "bad_timestamp" };
-  if (Math.abs(now - ts) > MAX_CLOCK_SKEW_MS) {
-    return { ok: false, status: 401, error: "timestamp_skew" };
+/**
+ * B1.3 nonce consumer: atomic INSERT với ON CONFLICT DO NOTHING. Trả
+ * true nếu nonce mới (consume OK), false nếu duplicate (replay).
+ *
+ * KHÔNG throw nếu DB error — caller phải xử. Fail-closed: DB error =
+ * treat as replay để không lỡ cho request qua khi nonce store hỏng.
+ *
+ * Consumer tách riêng để test được (inject mock client).
+ */
+export interface NonceConsumeResult {
+  ok: boolean;
+  reason?: "duplicate" | "db_error";
+  errorMessage?: string;
+}
+
+export async function consumeNonce(
+  admin: SupabaseClient,
+  params: {
+    agentId: string;
+    nonce: string;
+    requestTimestampMs: number;
+  },
+): Promise<NonceConsumeResult> {
+  const expiresAt = computeNonceExpiresAt(params.requestTimestampMs);
+  const { data, error, status } = await admin
+    .from("warehouse_agent_request_nonces")
+    .insert({
+      agent_id: params.agentId,
+      nonce: params.nonce,
+      request_timestamp: new Date(params.requestTimestampMs).toISOString(),
+      expires_at: expiresAt.toISOString(),
+    })
+    .select("agent_id")
+    .maybeSingle();
+
+  if (error) {
+    // 23505 = unique_violation → duplicate = replay
+    if (error.code === "23505") {
+      return { ok: false, reason: "duplicate" };
+    }
+    // Fail-closed: DB error khác coi như reject để không cho request qua
+    // khi nonce store hỏng. Log để ops thấy.
+    console.error(
+      `[nonce] consume failed agent=${params.agentId} code=${error.code ?? "?"} message=${error.message}`,
+    );
+    return { ok: false, reason: "db_error", errorMessage: error.message };
   }
 
-  const message = `${headers.timestamp}.${rawBody}`;
-  const expected = createHmac("sha256", secret).update(message).digest("hex");
+  // maybeSingle trả null nếu 0 row — không nên xảy ra sau INSERT OK, nhưng
+  // guard defensive.
+  if (!data && status !== 201 && status !== 200) {
+    console.error(
+      `[nonce] consume unexpected empty response agent=${params.agentId} status=${status}`,
+    );
+    return { ok: false, reason: "db_error", errorMessage: "empty_response" };
+  }
 
-  const got = headers.signature.trim().toLowerCase();
-  if (got.length !== expected.length) {
-    return { ok: false, status: 401, error: "bad_signature" };
-  }
-  const a = Buffer.from(expected, "utf8");
-  const b = Buffer.from(got, "utf8");
-  if (!timingSafeEqual(a, b)) {
-    return { ok: false, status: 401, error: "bad_signature" };
-  }
   return { ok: true };
+}
+
+/**
+ * B1.3 orchestrator: verify signature (v1 hoặc v2) + consume nonce nếu v2.
+ *
+ * Route mới NÊN gọi hàm này thay vì `verifyAgentSignature`. Trong window
+ * rollout, cả v1 và v2 đều accepted; telemetry tăng counter theo version.
+ */
+export async function verifyAgentRequest(
+  admin: SupabaseClient,
+  params: {
+    rawBody: string;
+    method: string;
+    canonicalPath: string;
+    headers: AgentAuthHeaders;
+    agentId: string;
+    secret: string;
+    now?: number;
+  },
+): Promise<AgentAuthSuccess | AgentAuthFailure> {
+  // Step 1: verify signature (không đụng DB).
+  let sigResult: AgentAuthSuccess | AgentAuthFailure;
+  if (params.headers.version === "v1") {
+    sigResult = verifySignatureV1({
+      rawBody: params.rawBody,
+      headers: params.headers,
+      secret: params.secret,
+      now: params.now,
+    });
+  } else {
+    sigResult = verifySignatureV2({
+      rawBody: params.rawBody,
+      method: params.method,
+      canonicalPath: params.canonicalPath,
+      headers: params.headers as AgentAuthHeadersV2,
+      secret: params.secret,
+      now: params.now,
+    });
+  }
+
+  if (!sigResult.ok) return sigResult;
+
+  // Step 2: consume nonce (chỉ v2). Signature invalid không consume →
+  // chống DoS bảng nonce.
+  if (params.headers.version === "v2") {
+    const nonceHeaders = params.headers as AgentAuthHeadersV2;
+    const tsMs = parseTimestampMs(nonceHeaders.timestamp);
+    if (tsMs === null) {
+      // Guard defensive — verifySignatureV2 đã check ts nhưng repeat để type-safe.
+      return { ok: false, status: 400, error: "bad_timestamp" };
+    }
+    const consume = await consumeNonce(admin, {
+      agentId: params.agentId,
+      nonce: nonceHeaders.nonce,
+      requestTimestampMs: tsMs,
+    });
+    if (!consume.ok) {
+      if (consume.reason === "duplicate") {
+        return { ok: false, status: 401, error: "replay_rejected" };
+      }
+      // db_error → fail-closed 401 (đã log).
+      return { ok: false, status: 401, error: "replay_rejected" };
+    }
+  }
+
+  return sigResult;
 }
