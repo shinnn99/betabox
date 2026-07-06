@@ -38,6 +38,24 @@ const rules = [
     ],
   },
   {
+    file: "src/app/api/warehouse/agents/[id]/route.ts",
+    label: "HIGH-10: DELETE warehouse_agent phải scope org ở SELECT + DELETE",
+    must: [
+      // SELECT verify phải có eq(id) + eq(organization_id).
+      /\.from\("warehouse_agents"\)\s*\.select\([^)]*\)\s*\.eq\("id"[\s\S]{0,100}?\.eq\("organization_id"/,
+      // DELETE cũng phải có org filter.
+      /\.from\("warehouse_agents"\)\s*\.delete\(\)\s*\.eq\("id"[\s\S]{0,100}?\.eq\("organization_id"/,
+    ],
+  },
+  {
+    file: "src/app/api/warehouse/agents/[id]/reset-secret/route.ts",
+    label: "HIGH-10: POST reset-secret phải scope org ở SELECT + UPDATE",
+    must: [
+      /\.from\("warehouse_agents"\)\s*\.select\([^)]*\)\s*\.eq\("id"[\s\S]{0,100}?\.eq\("organization_id"/,
+      /\.from\("warehouse_agents"\)\s*\.update\([\s\S]{0,300}?\.eq\("id"[\s\S]{0,100}?\.eq\("organization_id"/,
+    ],
+  },
+  {
     file: "src/app/api/staff/[id]/route.ts",
     label: "HIGH-9: PATCH staff verify warehouse_ids thuộc org + assignment writes scope org",
     must: [

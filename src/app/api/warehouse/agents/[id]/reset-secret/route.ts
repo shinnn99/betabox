@@ -29,13 +29,20 @@ export async function POST(_req: Request, ctx: RouteContext) {
   const { id } = await ctx.params;
   const admin = createAdminClient();
 
-  // Verify agent thuộc org của caller (không tin id từ client).
-  const { data: agent } = await admin
+  // HIGH-10: verify agent thuộc org qua eq(org) ở tầng query.
+  const { data: agent, error: lookupErr } = await admin
     .from("warehouse_agents")
-    .select("id, code, name, organization_id")
+    .select("id, code, name")
     .eq("id", id)
+    .eq("organization_id", authCtx.organizationId)
     .maybeSingle();
-  if (!agent || agent.organization_id !== authCtx.organizationId) {
+  if (lookupErr) {
+    return NextResponse.json(
+      { error: "lookup_failed", message: lookupErr.message },
+      { status: 500 },
+    );
+  }
+  if (!agent) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
@@ -43,7 +50,8 @@ export async function POST(_req: Request, ctx: RouteContext) {
   const { error } = await admin
     .from("warehouse_agents")
     .update({ secret: newSecret, updated_at: new Date().toISOString() })
-    .eq("id", id);
+    .eq("id", id)
+    .eq("organization_id", authCtx.organizationId);
   if (error) {
     return NextResponse.json(
       { error: "reset_failed", message: error.message },

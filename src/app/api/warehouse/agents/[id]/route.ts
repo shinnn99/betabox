@@ -24,19 +24,30 @@ export async function DELETE(_req: Request, ctx: RouteContext) {
   const { id } = await ctx.params;
   const admin = createAdminClient();
 
-  const { data: agent } = await admin
+  // HIGH-10: verify agent thuộc org qua eq(org) trực tiếp (không tin
+  // organization_id trong row lookup rồi so bằng JS — defense-in-depth
+  // ở tầng query, chống race hoặc bug logic phía trên).
+  const { data: agent, error: lookupErr } = await admin
     .from("warehouse_agents")
-    .select("id, code, organization_id")
+    .select("id, code")
     .eq("id", id)
+    .eq("organization_id", authCtx.organizationId)
     .maybeSingle();
-  if (!agent || agent.organization_id !== authCtx.organizationId) {
+  if (lookupErr) {
+    return NextResponse.json(
+      { error: "lookup_failed", message: lookupErr.message },
+      { status: 500 },
+    );
+  }
+  if (!agent) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
   const { error } = await admin
     .from("warehouse_agents")
     .delete()
-    .eq("id", id);
+    .eq("id", id)
+    .eq("organization_id", authCtx.organizationId);
   if (error) {
     return NextResponse.json(
       { error: "delete_failed", message: error.message },
