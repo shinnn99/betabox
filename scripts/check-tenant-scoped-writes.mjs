@@ -37,6 +37,22 @@ const rules = [
       /\.from\("station_devices"\)\s*\.update\([^)]*\)[\s\S]{0,200}?\.eq\("organization_id"/,
     ],
   },
+  {
+    file: "src/app/api/staff/[id]/route.ts",
+    label: "HIGH-9: PATCH staff verify warehouse_ids thuộc org + assignment writes scope org",
+    must: [
+      // Verify warehouse_ids: SELECT warehouses theo org + in(newIds).
+      /\.from\("warehouses"\)[\s\S]{0,300}?\.eq\("organization_id"[\s\S]{0,100}?\.in\("id"/,
+      // Assignment insert phải map organization_id vào từng row.
+      /\.from\("staff_warehouse_assignments"\)\s*\.insert\([\s\S]{0,300}?organization_id:/,
+      // Assignment SELECT current phải có org filter.
+      /\.from\("staff_warehouse_assignments"\)\s*\.select\([\s\S]{0,300}?\.eq\("organization_id"/,
+      // Assignment remove UPDATE phải có org filter.
+      /\.from\("staff_warehouse_assignments"\)\s*\.update\(\{\s*unassigned_at[\s\S]{0,300}?\.eq\("organization_id"/,
+      // Assignment primary UPDATE phải có org filter.
+      /\.from\("staff_warehouse_assignments"\)\s*\.update\(\{\s*is_primary[\s\S]{0,300}?\.eq\("organization_id"/,
+    ],
+  },
 ];
 
 let failed = 0;
