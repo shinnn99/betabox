@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { cleanupExpiredClips } from "@/lib/watch/cleanup";
+import { secureCompare } from "@/lib/secure-compare";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,7 +25,7 @@ export async function POST(req: Request) {
   let authorized = false;
   let authMode: "cron_secret" | "admin_session" | null = null;
 
-  if (cronSecret && providedSecret && providedSecret === cronSecret) {
+  if (secureCompare(providedSecret, cronSecret)) {
     authorized = true;
     authMode = "cron_secret";
   } else {
