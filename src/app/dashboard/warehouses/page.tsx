@@ -33,7 +33,12 @@ interface WarehouseRow {
   stations_count: number;
   devices_count: number;
   staff_count: number;
-  session_fallback_seconds?: number;
+  session_fallback_seconds?: number | null;
+  packing_timing_config?: {
+    max_order_seconds: number | null;
+    video_pre_seconds: number | null;
+    video_default_post_seconds: number | null;
+  };
 }
 
 interface DeviceAlert {
@@ -695,6 +700,12 @@ function WarehouseDialog({
     address: initial?.address ?? "",
     status: initial?.status ?? "active",
     session_fallback_seconds: initial?.session_fallback_seconds ?? 30,
+    max_order_seconds:
+      initial?.packing_timing_config?.max_order_seconds ?? 600,
+    video_pre_seconds:
+      initial?.packing_timing_config?.video_pre_seconds ?? 10,
+    video_default_post_seconds:
+      initial?.packing_timing_config?.video_default_post_seconds ?? 60,
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -704,6 +715,21 @@ function WarehouseDialog({
     setErr("");
     if (form.session_fallback_seconds < 1) {
       setErr("Fallback session phải lớn hơn 0.");
+      return;
+    }
+    if (form.max_order_seconds < 60 || form.max_order_seconds > 3600) {
+      setErr("Thời gian tối đa một đơn phải trong khoảng 60–3600 giây.");
+      return;
+    }
+    if (form.video_pre_seconds < 0 || form.video_pre_seconds > 120) {
+      setErr("Video lấy trước quét phải trong khoảng 0–120 giây.");
+      return;
+    }
+    if (
+      form.video_default_post_seconds < 1 ||
+      form.video_default_post_seconds > 600
+    ) {
+      setErr("Video lấy sau (khi chưa có scan kế) phải trong khoảng 1–600 giây.");
       return;
     }
     setSaving(true);
@@ -718,6 +744,11 @@ function WarehouseDialog({
     if (mode === "edit") {
       body.status = form.status;
       body.session_fallback_seconds = form.session_fallback_seconds;
+      body.packing_timing_config = {
+        max_order_seconds: form.max_order_seconds,
+        video_pre_seconds: form.video_pre_seconds,
+        video_default_post_seconds: form.video_default_post_seconds,
+      };
     }
     const res = await fetch(url, {
       method,
@@ -776,6 +807,68 @@ function WarehouseDialog({
                   setForm({
                     ...form,
                     session_fallback_seconds: Number(e.target.value),
+                  })
+                }
+                className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono"
+              />
+            </Field>
+            <div className="pt-2 mt-2 border-t border-slate-100">
+              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2">
+                Cấu hình clip đơn hàng
+              </p>
+            </div>
+            <Field
+              label="Thời gian tối đa một đơn (giây)"
+              hint="Đơn kéo dài quá ngưỡng này sẽ bị đóng bằng timeout. Clip cũng không dài quá ngưỡng này. Khuyến nghị 600 (10 phút)."
+            >
+              <input
+                type="number"
+                min={60}
+                max={3600}
+                required
+                value={form.max_order_seconds}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    max_order_seconds: Number(e.target.value),
+                  })
+                }
+                className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono"
+              />
+            </Field>
+            <Field
+              label="Video lấy trước lúc quét (giây)"
+              hint="Bao nhiêu giây trước thời điểm quét đơn sẽ có trong clip. Khuyến nghị 10."
+            >
+              <input
+                type="number"
+                min={0}
+                max={120}
+                required
+                value={form.video_pre_seconds}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    video_pre_seconds: Number(e.target.value),
+                  })
+                }
+                className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono"
+              />
+            </Field>
+            <Field
+              label="Video lấy sau khi chưa có quét kế (giây)"
+              hint="Dùng khi đơn cuối ca hoặc chưa có đơn kế. Khuyến nghị 60."
+            >
+              <input
+                type="number"
+                min={1}
+                max={600}
+                required
+                value={form.video_default_post_seconds}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    video_default_post_seconds: Number(e.target.value),
                   })
                 }
                 className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono"
@@ -917,7 +1010,7 @@ function Modal({
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-xl max-h-[90vh] overflow-y-auto">
         <div className="p-4 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white rounded-t-2xl">
           <h3 className="font-bold text-slate-800">{title}</h3>
           <button

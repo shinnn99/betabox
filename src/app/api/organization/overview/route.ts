@@ -14,6 +14,14 @@ interface WarehouseRow {
   stations_count: number;
   devices_count: number;
   staff_count: number;
+  session_fallback_seconds: number | null;
+  // 3 field điều khiển cửa sổ đơn + clip. Frontend đọc để hiện form
+  // sửa; các key khác trong JSONB không expose cho UI (kỹ thuật).
+  packing_timing_config: {
+    max_order_seconds: number | null;
+    video_pre_seconds: number | null;
+    video_default_post_seconds: number | null;
+  };
 }
 
 interface DeviceAlert {
@@ -66,7 +74,9 @@ export async function GET() {
           .maybeSingle(),
         admin
           .from("warehouses")
-          .select("id, code, name, address, status, created_at")
+          .select(
+            "id, code, name, address, status, created_at, session_fallback_seconds, packing_timing_config",
+          )
           .eq("organization_id", orgId)
           .order("code"),
         admin
@@ -117,6 +127,8 @@ export async function GET() {
       address: string | null;
       status: string;
       created_at: string;
+      session_fallback_seconds: number | null;
+      packing_timing_config: Record<string, unknown> | null;
     }>;
 
     const stations = (stationsRes.data ?? []) as Array<{
@@ -187,6 +199,15 @@ export async function GET() {
       }
     }
 
+    const readTimingNumber = (
+      cfg: Record<string, unknown> | null,
+      key: string,
+    ): number | null => {
+      if (!cfg) return null;
+      const v = cfg[key];
+      return typeof v === "number" && Number.isFinite(v) ? v : null;
+    };
+
     const warehouseRows: WarehouseRow[] = warehouses.map((w) => ({
       id: w.id,
       code: w.code,
@@ -197,6 +218,15 @@ export async function GET() {
       stations_count: stationsByWarehouse.get(w.id) ?? 0,
       devices_count: devicesByWarehouse.get(w.id) ?? 0,
       staff_count: staffPerWarehouse.get(w.id)?.size ?? 0,
+      session_fallback_seconds: w.session_fallback_seconds,
+      packing_timing_config: {
+        max_order_seconds: readTimingNumber(w.packing_timing_config, "max_order_seconds"),
+        video_pre_seconds: readTimingNumber(w.packing_timing_config, "video_pre_seconds"),
+        video_default_post_seconds: readTimingNumber(
+          w.packing_timing_config,
+          "video_default_post_seconds",
+        ),
+      },
     }));
 
     // Totals
