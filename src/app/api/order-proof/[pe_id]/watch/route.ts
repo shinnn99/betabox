@@ -278,14 +278,32 @@ export async function POST(_req: Request, ctx: RouteContext) {
     // vì "chưa có row" (loop). Camera_id null nếu no_camera.
     // Chỉ insert khi CHƯA có row nào (đã kiểm ở đầu — không có ready
     // /pending/failed).
-    await admin.from("order_proof_clips").insert({
-      organization_id: pe.organization_id,
-      packing_event_id: packingEventId,
-      waybill_code: "",
-      camera_id: pe.proof_camera_id,
-      status: "failed",
-      error_message: userMessage,
-    });
+    //
+    // HIGH-15: destruct .error. Nếu insert failed clip BỊ REJECT (RLS,
+    // unique constraint race) → KHÔNG trả preparing_cut giả — tick sau
+    // sẽ lại thấy "chưa có row" → enqueue cut lại → loop hoại. Trả
+    // failed rõ ràng để UI dừng poll và ops kiểm log.
+    const { error: insErr } = await admin
+      .from("order_proof_clips")
+      .insert({
+        organization_id: pe.organization_id,
+        packing_event_id: packingEventId,
+        waybill_code: "",
+        camera_id: pe.proof_camera_id,
+        status: "failed",
+        error_message: userMessage,
+      });
+    if (insErr) {
+      console.error(
+        `[watch] insert failed clip row failed pe=${packingEventId} org=${pe.organization_id} code=${insErr.code ?? "?"} message=${insErr.message}`,
+      );
+      // Vẫn trả failed cho client thay vì preparing_cut để BLOCK loop.
+      // Client dừng poll ở state=failed; user cần refresh sau khi ops fix.
+      return NextResponse.json<WatchResponse>({
+        state: "failed",
+        error: `${userMessage} [reconcile-write-failed]`,
+      });
+    }
 
     return NextResponse.json<WatchResponse>({
       state: "failed",

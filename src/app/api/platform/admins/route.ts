@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePlatformRole } from "@/lib/supabase/guard";
 import type { PlatformRole } from "@/lib/platform/admin-check";
+import { logPlatformAudit } from "@/lib/platform/audit";
 
 const VALID_PLATFORM_ROLES: PlatformRole[] = ["platform_owner", "platform_support"];
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -113,20 +114,17 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "insert_failed", message: insertErr.message }, { status: 500 });
   }
 
-  // Audit
-  try {
-    await admin.from("platform_audit_log").insert({
-      actor_user_id: ctx.userId,
-      actor_email: ctx.email,
-      impersonating_org_id: null,
-      action: "platform.admin.add",
-      target_type: "platform_admin",
-      target_id: targetUserId,
-      metadata: { role, target_email: authUser.user.email ?? null, notes },
-    });
-  } catch (auditErr) {
-    console.error("[platform_audit_log] failed:", auditErr);
-  }
+  // Audit qua helper — destruct .error đúng (Supabase SDK không throw
+  // khi RLS reject). Không fail-closed vì platform_admins.insert đã ổn.
+  await logPlatformAudit({
+    actorUserId: ctx.userId,
+    actorEmail: ctx.email,
+    impersonatingOrgId: null,
+    action: "platform.admin.add",
+    targetType: "platform_admin",
+    targetId: targetUserId,
+    metadata: { role, target_email: authUser.user.email ?? null, notes },
+  });
 
   return NextResponse.json({ id: targetUserId, role }, { status: 201 });
 }

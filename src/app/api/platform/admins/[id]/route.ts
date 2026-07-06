@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePlatformRole } from "@/lib/supabase/guard";
+import { logPlatformAudit } from "@/lib/platform/audit";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -64,20 +65,17 @@ export async function DELETE(_req: Request, { params }: RouteContext) {
     return NextResponse.json({ error: delErr.message }, { status: 500 });
   }
 
-  // Audit
-  try {
-    await admin.from("platform_audit_log").insert({
-      actor_user_id: ctx.userId,
-      actor_email: ctx.email,
-      impersonating_org_id: null,
-      action: "platform.admin.remove",
-      target_type: "platform_admin",
-      target_id: id,
-      metadata: { revoked_role: target.role },
-    });
-  } catch (auditErr) {
-    console.error("[platform_audit_log] failed:", auditErr);
-  }
+  // Audit qua helper — destruct .error đúng. Không fail-closed vì DELETE
+  // đã ổn.
+  await logPlatformAudit({
+    actorUserId: ctx.userId,
+    actorEmail: ctx.email,
+    impersonatingOrgId: null,
+    action: "platform.admin.remove",
+    targetType: "platform_admin",
+    targetId: id,
+    metadata: { revoked_role: target.role },
+  });
 
   return NextResponse.json({ ok: true });
 }

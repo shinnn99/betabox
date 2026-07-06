@@ -615,7 +615,7 @@ export async function recordTestResult(
   result: { success: boolean; message: string; meta?: Record<string, unknown> },
 ): Promise<void> {
   const admin = createAdminClient();
-  await admin
+  const { error } = await admin
     .from("cameras")
     .update({
       last_tested_at: new Date().toISOString(),
@@ -629,4 +629,12 @@ export async function recordTestResult(
     })
     .eq("organization_id", organizationId)
     .eq("id", id);
+  if (error) {
+    // Camera test đã chạy — kết quả ghi vào DB fail. Log để ops thấy;
+    // caller (route test-connection) chỉ nhận Promise<void>, không thể
+    // rollback nghiệp vụ test. Không throw để không phá response chính.
+    console.error(
+      `[updateCameraTestResult] persist failed org=${organizationId} camera=${id} success=${result.success} code=${error.code ?? "?"} message=${error.message}`,
+    );
+  }
 }
