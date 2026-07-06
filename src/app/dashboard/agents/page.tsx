@@ -131,23 +131,16 @@ export default function AgentsPage() {
   };
 
   return (
-    <DashboardLayout>
-      <div className="max-w-6xl mx-auto p-6 space-y-6">
-        <header className="rounded-2xl bg-white border border-slate-100 shadow-sm p-4 flex items-center gap-3">
-          <div className="h-10 w-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-            <Server className="h-5 w-5" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h1 className="text-lg font-semibold text-slate-800 leading-tight">
-              Máy trạm kho
-            </h1>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Cấu hình máy tính tại kho để cài phần mềm agent Betacom.
-            </p>
-          </div>
+    <DashboardLayout
+      pageTitle="Máy trạm kho"
+      pageSubtitle="Cấu hình máy tính tại kho để cài phần mềm agent Betacom"
+      pageIcon={Server}
+    >
+      <div className="space-y-3">
+        <div className="flex items-center justify-end gap-2">
           <button
             onClick={() => void load()}
-            className="h-9 w-9 rounded-xl border border-slate-200 hover:bg-slate-50 inline-flex items-center justify-center"
+            className="h-9 w-9 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 inline-flex items-center justify-center"
             title="Tải lại"
           >
             <RefreshCw className="h-4 w-4 text-slate-500" />
@@ -159,7 +152,7 @@ export default function AgentsPage() {
             <Plus className="h-4 w-4" />
             Thêm máy trạm
           </button>
-        </header>
+        </div>
 
         <div className="rounded-2xl bg-white border border-slate-100 shadow-sm overflow-hidden">
           {rows === null ? (
