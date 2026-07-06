@@ -20,7 +20,7 @@
 ; chỉnh w32time.
 
 #define AppName        "Betacom Warehouse Agent"
-#define AppVersion     "0.2.0"
+#define AppVersion     "0.3.3"
 #define AppPublisher   "Betacom"
 #define AppURL         "https://betabox.vercel.app"
 #define ServiceName    "BetacomAgent"
@@ -66,6 +66,72 @@ Name: "{app}\data";        Permissions: users-modify
 var
   ConfigPage: TInputQueryWizardPage;
   RecordingPage: TInputDirWizardPage;
+  PrefillDone: Boolean;
+
+// Đọc value của KEY trong 1 dòng KEY=VALUE. Trả '' nếu không phải dòng
+// KEY này. Bỏ qua whitespace hai đầu, KHÔNG dùng hàm Trim nội bộ vì
+// phần VALUE (VD RECORDING_DIR) có thể chứa space hợp lệ ở giữa.
+function ParseEnvLine(const Line, Key: string): string;
+var
+  P: Integer;
+  L, K, V: string;
+begin
+  Result := '';
+  L := Line;
+  // Skip comment lines
+  if (Length(L) > 0) and (L[1] = '#') then exit;
+  P := Pos('=', L);
+  if P <= 1 then exit;
+  K := Copy(L, 1, P - 1);
+  V := Copy(L, P + 1, Length(L) - P);
+  if CompareText(Trim(K), Key) = 0 then
+    Result := V;
+end;
+
+// Đọc .env cũ (nếu upgrade in-place), tách 4 field, prefill wizard.
+//
+// Gọi ở CurPageChanged khi rời wpSelectDir — TẠI ĐÓ constant {app} đã
+// được resolve (user vừa xác nhận install dir). Không gọi ở
+// InitializeWizard vì lúc đó {app} chưa init → Runtime error "expand
+// the 'app' constant before it was initialized".
+//
+// Idempotent qua flag PrefillDone để chỉ chạy 1 lần (user quay lại
+// page wpSelectDir không reload đè lên input họ đang sửa).
+//
+// Về AGENT_SECRET: hiện ở page dưới dạng field password (echo=True), user
+// KHÔNG nhìn thấy chuỗi thật nhưng vẫn giữ value đầu vào. Bấm Next mà
+// không sửa = value cũ được giữ nguyên → không mất secret khi upgrade.
+procedure TryLoadPreviousEnv;
+var
+  EnvPath, Line, V: string;
+  Lines: TArrayOfString;
+  i: Integer;
+begin
+  EnvPath := ExpandConstant('{app}\.env');
+  if not FileExists(EnvPath) then exit;
+  if not LoadStringsFromFile(EnvPath, Lines) then exit;
+
+  for i := 0 to GetArrayLength(Lines) - 1 do begin
+    Line := Lines[i];
+
+    V := ParseEnvLine(Line, 'BACKEND_URL');
+    if V <> '' then ConfigPage.Values[0] := V;
+
+    V := ParseEnvLine(Line, 'AGENT_CODE');
+    if V <> '' then ConfigPage.Values[1] := V;
+
+    V := ParseEnvLine(Line, 'AGENT_SECRET');
+    if V <> '' then ConfigPage.Values[2] := V;
+
+    V := ParseEnvLine(Line, 'RECORDING_DIR');
+    if V <> '' then begin
+      // .env dùng forward slash D:/beta_cam_recordings; wizard hiển thị
+      // dạng Windows D:\beta_cam_recordings để user quen mắt.
+      StringChangeEx(V, '/', '\', True);
+      RecordingPage.Values[0] := V;
+    end;
+  end;
+end;
 
 procedure InitializeWizard;
 begin
@@ -85,6 +151,23 @@ begin
     False, 'BetacomAgent');
   RecordingPage.Add('');
   RecordingPage.Values[0] := 'D:\beta_cam_recordings';
+  PrefillDone := False;
+end;
+
+// Fire khi wizard chuyển sang page mới. Dùng để prefill từ .env cũ
+// SAU khi user đã xác nhận install dir (wpSelectDir Next), lúc đó
+// constant {app} mới được resolve.
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = ConfigPage.ID) and (not PrefillDone) then begin
+    // Upgrade in-place: nếu .env cũ tồn tại, prefill 4 field. User bấm
+    // Next mà không đổi = ghi lại y nguyên → không mất secret/config
+    // khi upgrade. Fix bug 2026-07-06: installer 0.2.0/0.3.0/0.3.1
+    // luôn hỏi lại secret; và 0.3.2 crash với "expand app constant
+    // before init" khi gọi ở InitializeWizard.
+    TryLoadPreviousEnv;
+    PrefillDone := True;
+  end;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -197,8 +280,37 @@ begin
   Exec(Nssm, 'start {#ServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+procedure StopServiceIfRunning;
+var
+  Nssm: string;
+  ResultCode: Integer;
+begin
+  // Stop service NSSM nếu tồn tại → release lock file betacom-agent.exe/ffmpeg.exe
+  // trước khi [Files] copy đè. Không dùng nssm.exe của bản mới (chưa copy)
+  // — dùng nssm.exe của bản CŨ ở {app}\nssm.exe (upgrade in-place cùng
+  // AppId + UsePreviousAppDir=yes).
+  //
+  // Fallback: sc stop trực tiếp nếu nssm.exe cũ mất (VD user xóa tay).
+  // sc stop chờ tối đa 30s, đủ cho agent shutdown gracefully.
+  Nssm := ExpandConstant('{app}\nssm.exe');
+  if FileExists(Nssm) then begin
+    Exec(Nssm, 'stop {#ServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+  // Belt-and-suspenders: gọi sc stop dù nssm đã stop — vô hại nếu service
+  // đã stopped, đảm bảo release lock khi nssm không tồn tại.
+  Exec('sc.exe', 'stop {#ServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // Chờ ngắn cho Windows release file handle sau khi service stop.
+  Sleep(2000);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if CurStep = ssInstall then begin
+    // TRƯỚC khi [Files] copy: stop service để release lock.
+    // Fix bug 2026-07-06: "DeleteFile failed; code 5. Access is denied."
+    // khi upgrade in-place vì service NSSM giữ lock trên betacom-agent.exe.
+    StopServiceIfRunning;
+  end;
   if CurStep = ssPostInstall then begin
     WriteEnvFile;
     ConfigureNTP;
