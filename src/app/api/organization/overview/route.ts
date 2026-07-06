@@ -30,13 +30,7 @@ interface OrganizationOverview {
     id: string;
     name: string;
     slug: string | null;
-    legal_name: string | null;
-    tax_code: string | null;
-    phone: string | null;
-    email: string | null;
-    address: string | null;
     status: string;
-    plan: string | null;
     owner_name: string | null;
   };
   totals: {
@@ -67,9 +61,7 @@ export async function GET() {
       await Promise.all([
         admin
           .from("organizations")
-          .select(
-            "id, name, slug, legal_name, tax_code, phone, email, address, status, created_at",
-          )
+          .select("id, name, slug, status, created_at")
           .eq("id", orgId)
           .maybeSingle(),
         admin
@@ -250,13 +242,7 @@ export async function GET() {
         id: org.id as string,
         name: org.name as string,
         slug: (org.slug as string | null) ?? null,
-        legal_name: (org.legal_name as string | null) ?? null,
-        tax_code: (org.tax_code as string | null) ?? null,
-        phone: (org.phone as string | null) ?? null,
-        email: (org.email as string | null) ?? null,
-        address: (org.address as string | null) ?? null,
         status: (org.status as string) ?? "active",
-        plan: null,
         owner_name: (ownerProfile?.full_name as string | null) ?? null,
       },
       totals: {

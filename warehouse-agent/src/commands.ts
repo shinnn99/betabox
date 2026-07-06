@@ -261,7 +261,10 @@ export async function fetchKnownRecordingFiles(params: {
   return json.files ?? [];
 }
 
-export type ClipOutcome = "done" | "failed" | "skipped" | "encoding";
+// 'skipped' cũ bỏ 2026-07-06 — ca idempotent-reuse (file _clips/ có sẵn)
+// giờ gửi `done` với `generation_params.idempotent_reuse=true`. Xem cọc
+// tại warehouse-agent/src/index.ts nơi post idempotent-reuse.
+export type ClipOutcome = "done" | "failed" | "encoding";
 
 export interface PostClipResultParams {
   backendUrl: string;

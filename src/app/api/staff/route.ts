@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, requirePermissionStrict, isError } from "@/lib/supabase/guard";
+import { getScopedClient } from "@/lib/supabase/scoped-client";
 import { audit } from "@/lib/audit";
 import { issueAndStoreStaffQr } from "@/lib/qr";
 
@@ -12,10 +12,19 @@ export async function GET() {
   const ctx = await requirePermission("staff.view");
   if (isError(ctx)) return ctx;
 
-  const supabase = await createClient();
-  const { data: staff, error } = await supabase
-    .from("staff_profiles")
-    .select("id, staff_code, full_name, phone, email, status, user_id, note, created_at")
+  const scoped = await getScopedClient(ctx);
+  const { data: staff, error } = await scoped
+    .select<{
+      id: string;
+      staff_code: string;
+      full_name: string;
+      phone: string | null;
+      email: string | null;
+      status: StaffStatus;
+      user_id: string | null;
+      note: string | null;
+      created_at: string;
+    }>("staff_profiles", "id, staff_code, full_name, phone, email, status, user_id, note, created_at")
     .order("staff_code");
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -31,16 +40,19 @@ export async function GET() {
   let qrPayload: Map<string, string> = new Map();
 
   if (ids.length > 0) {
-    const { data: a } = await supabase
-      .from("staff_warehouse_assignments")
-      .select("staff_id, warehouse_id, is_primary, warehouses(code, name)")
+    const { data: a } = await scoped
+      .select("staff_warehouse_assignments", "staff_id, warehouse_id, is_primary, warehouses(code, name)")
       .in("staff_id", ids)
       .is("unassigned_at", null);
     assignments = (a ?? []) as typeof assignments;
 
-    const { data: qr } = await supabase
-      .from("staff_qr_credentials")
-      .select("staff_id, token_prefix, payload, issued_at")
+    const { data: qr } = await scoped
+      .select<{
+        staff_id: string;
+        token_prefix: string;
+        payload: string | null;
+        issued_at: string;
+      }>("staff_qr_credentials", "staff_id, token_prefix, payload, issued_at")
       .in("staff_id", ids)
       .eq("status", "active");
     qrPrefix = new Map((qr ?? []).map((r) => [r.staff_id, r.token_prefix]));

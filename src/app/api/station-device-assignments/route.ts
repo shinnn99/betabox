@@ -113,18 +113,27 @@ export async function POST(req: Request) {
   // Close any active assignment for THIS device (it can only be active in
   // one place at a time — partial unique index uniq_active_assignment_per_device
   // enforces this).
+  //
+  // Cross-tenant guard: filter organization_id để attacker biết device_id
+  // org khác không thể unassign device đó (dù device_id đã verify org ở
+  // trên, giữ filter phòng thủ nhiều-tầng).
   await admin
     .from("station_device_assignments")
     .update({ unassigned_at: now, status: "ended" })
+    .eq("organization_id", ctx.organizationId)
     .eq("device_id", deviceId)
     .is("unassigned_at", null);
 
   // Rule: at most one active device PER (station, device_type). A packing
   // station typically needs both a scanner and a camera, so we only retire
   // the previous assignment that shares the same device_type as the new one.
+  //
+  // Cross-tenant guard: filter organization_id trước station_id để attacker
+  // biết station_id org khác không enumerate được device assignments.
   const { data: stationActive } = await admin
     .from("station_device_assignments")
     .select("id, station_devices!inner ( device_type )")
+    .eq("organization_id", ctx.organizationId)
     .eq("station_id", stationId)
     .is("unassigned_at", null);
 
@@ -141,9 +150,13 @@ export async function POST(req: Request) {
     .map((r) => r.id);
 
   if (sameTypeIds.length > 0) {
+    // Cross-tenant guard: sameTypeIds đã lọc org qua stationActive query,
+    // nhưng thêm filter phòng thủ để defense-in-depth (nếu tương lai
+    // stationActive query bị sửa nhầm bỏ org filter, chỗ này vẫn chặn).
     await admin
       .from("station_device_assignments")
       .update({ unassigned_at: now, status: "ended" })
+      .eq("organization_id", ctx.organizationId)
       .in("id", sameTypeIds);
   }
 

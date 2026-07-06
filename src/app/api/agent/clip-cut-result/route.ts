@@ -21,13 +21,25 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
- * 3b-2: thêm `encoding` — agent báo bắt đầu re-encode, cloud upsert
- * row `status='pending', progress_state='encoding'`. UI đọc và hiện
- * "đang cắt clip...". Khi encode xong, agent gửi `done`/`failed`;
- * backend TỰ set `progress_state=null` khi outcome final (agent
- * KHÔNG cần gửi tường minh — mỗi field một nơi quyết).
+ * Outcome map từ agent → row `order_proof_clips`:
+ *   'encoding' — agent bắt đầu cắt: upsert `status='pending',
+ *                progress_state='encoding'`. UI hiện "đang cắt clip".
+ *                (Tên `encoding` giữ vì DB CHECK constraint chốt giá
+ *                trị này; thực chất là copy-stream 1-3s sau chốt
+ *                2026-07-05, không phải reencode.)
+ *   'done'     — cắt xong: upsert `status='ready'`. Bao cả ca
+ *                idempotent-reuse (agent thấy file cũ hợp lệ, gửi
+ *                `generation_params.idempotent_reuse=true`).
+ *   'failed'   — cắt lỗi: upsert `status='failed'`.
+ *
+ * Backend TỰ set `progress_state=null` khi outcome final — agent không
+ * cần gửi tường minh (mỗi field một nơi quyết).
+ *
+ * 'skipped' cũ (idempotent hit không insert row) đã bỏ 2026-07-06: agent
+ * giờ luôn upsert row `done` với `idempotent_reuse=true` — bảo đảm row
+ * tồn tại cho /watch, đóng nguồn bug 32-command-done-0-row.
  */
-type Outcome = "done" | "failed" | "skipped" | "encoding";
+type Outcome = "done" | "failed" | "encoding";
 
 interface ResultBody {
   packing_event_id: string;
@@ -68,7 +80,6 @@ function parseBody(raw: unknown): ParseOutcome {
   if (
     outcomeRaw !== "done" &&
     outcomeRaw !== "failed" &&
-    outcomeRaw !== "skipped" &&
     outcomeRaw !== "encoding"
   ) {
     return { ok: false, error: "outcome_invalid" };
@@ -167,11 +178,6 @@ export async function POST(req: Request) {
     .maybeSingle();
   if (!pe) {
     return NextResponse.json({ error: "packing_event_not_in_org" }, { status: 403 });
-  }
-
-  // Skipped: idempotent hit, không ghi gì mới. Chỉ log để ops thấy.
-  if (body.outcome === "skipped") {
-    return NextResponse.json({ ok: true, action: "skipped" });
   }
 
   const nowIso = new Date().toISOString();

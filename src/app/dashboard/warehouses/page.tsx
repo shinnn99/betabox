@@ -50,13 +50,7 @@ interface Overview {
     id: string;
     name: string;
     slug: string | null;
-    legal_name: string | null;
-    tax_code: string | null;
-    phone: string | null;
-    email: string | null;
-    address: string | null;
     status: string;
-    plan: string | null;
     owner_name: string | null;
   };
   totals: {
@@ -315,12 +309,6 @@ function OrganizationCard({
             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-xs font-medium">
               {org.status === "active" ? "Đang hoạt động" : org.status}
             </span>
-          </span>
-        </div>
-        <div className="flex">
-          <span className="text-slate-500 w-32 shrink-0">Gói sử dụng:</span>
-          <span className="text-slate-800 font-medium">
-            {org.plan ?? "Business"}
           </span>
         </div>
       </div>
@@ -839,11 +827,6 @@ function OrganizationDialog({
 }) {
   const [form, setForm] = useState({
     name: initial.name ?? "",
-    legal_name: initial.legal_name ?? "",
-    tax_code: initial.tax_code ?? "",
-    phone: initial.phone ?? "",
-    email: initial.email ?? "",
-    address: initial.address ?? "",
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -874,44 +857,6 @@ function OrganizationDialog({
             required
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
-            className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm"
-          />
-        </Field>
-        <Field label="Tên pháp lý">
-          <input
-            value={form.legal_name}
-            onChange={(e) => setForm({ ...form, legal_name: e.target.value })}
-            className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm"
-          />
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Mã số thuế">
-            <input
-              value={form.tax_code}
-              onChange={(e) => setForm({ ...form, tax_code: e.target.value })}
-              className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono"
-            />
-          </Field>
-          <Field label="Điện thoại">
-            <input
-              value={form.phone}
-              onChange={(e) => setForm({ ...form, phone: e.target.value })}
-              className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm"
-            />
-          </Field>
-        </div>
-        <Field label="Email">
-          <input
-            type="email"
-            value={form.email}
-            onChange={(e) => setForm({ ...form, email: e.target.value })}
-            className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm"
-          />
-        </Field>
-        <Field label="Địa chỉ">
-          <input
-            value={form.address}
-            onChange={(e) => setForm({ ...form, address: e.target.value })}
             className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm"
           />
         </Field>

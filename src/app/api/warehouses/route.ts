@@ -1,17 +1,17 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, requirePermissionStrict, isError } from "@/lib/supabase/guard";
+import { getScopedClient } from "@/lib/supabase/scoped-client";
 import { audit } from "@/lib/audit";
 
 export async function GET() {
   const ctx = await requirePermission("warehouse.view");
   if (isError(ctx)) return ctx;
 
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("warehouses")
+  const scoped = await getScopedClient(ctx);
+  const { data, error } = await scoped
     .select(
+      "warehouses",
       "id, code, name, address, status, session_fallback_seconds, created_at",
     )
     .order("code");

@@ -21,6 +21,7 @@ import {
   ClipboardCheck,
 } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
+import { apiFetch, useImpersonatingOrgId } from "@/lib/api-fetch";
 
 interface HourlyPoint {
   hour: number;
@@ -172,6 +173,7 @@ export default function DashboardPage() {
   const [series, setSeries] = useState<SeriesPoint[]>([]);
   const [seriesUnit, setSeriesUnit] = useState<"hour" | "day">("hour");
   const [rangeOpen, setRangeOpen] = useState(false);
+  const impersonatingOrgId = useImpersonatingOrgId();
 
   useEffect(() => {
     let cancelled = false;
@@ -179,10 +181,11 @@ export default function DashboardPage() {
 
     const fetchOverview = async () => {
       try {
-        const r = await fetch("/api/dashboard/overview", {
-          cache: "no-store",
-          signal: controller.signal,
-        });
+        const r = await apiFetch(
+          "/api/dashboard/overview",
+          { cache: "no-store", signal: controller.signal },
+          impersonatingOrgId,
+        );
         if (!r.ok) {
           const body = await r.json().catch(() => ({}));
           throw new Error(body.message || `HTTP ${r.status}`);
@@ -207,17 +210,18 @@ export default function DashboardPage() {
       controller.abort();
       clearInterval(id);
     };
-  }, []);
+  }, [impersonatingOrgId]);
 
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
     const run = async () => {
       try {
-        const r = await fetch(`/api/dashboard/production?range=${range}`, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
+        const r = await apiFetch(
+          `/api/dashboard/production?range=${range}`,
+          { cache: "no-store", signal: controller.signal },
+          impersonatingOrgId,
+        );
         if (!r.ok) return;
         const json = (await r.json()) as {
           series: SeriesPoint[];
@@ -236,7 +240,7 @@ export default function DashboardPage() {
       cancelled = true;
       controller.abort();
     };
-  }, [range]);
+  }, [range, impersonatingOrgId]);
 
   const maxSeries = useMemo(
     () => Math.max(1, ...series.map((h) => h.value)),
@@ -394,10 +398,27 @@ export default function DashboardPage() {
                     <AlertRow key={a.id} alert={a} />
                   ))
                 )}
-                <div className="flex items-center gap-2 pt-2 text-xs text-slate-500">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                  <span>Các camera còn lại đang hoạt động bình thường</span>
-                </div>
+                {(() => {
+                  const cameraDeviceList =
+                    devices?.list.filter((d) => d.kind === "camera") ?? [];
+                  const cameraOnlineCount = cameraDeviceList.filter(
+                    (d) => d.status === "live" || d.status === "recording",
+                  ).length;
+                  const cameraTotal = cameraDeviceList.length;
+                  // Không hiện dòng chốt khi: chưa tải xong · không có camera nào ·
+                  // 0 camera online · alerts trống (đã có "Không có cảnh báo").
+                  if (loading || cameraTotal === 0 || cameraOnlineCount === 0 || alerts.length === 0) {
+                    return null;
+                  }
+                  return (
+                    <div className="flex items-center gap-2 pt-2 text-xs text-slate-500">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                      <span>
+                        {cameraOnlineCount}/{cameraTotal} camera đang hoạt động bình thường
+                      </span>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 

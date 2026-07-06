@@ -13,6 +13,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { useSession } from "@/lib/useSession";
 import { getInitials } from "@/lib/auth";
+import { useImpersonatingOrgId } from "@/lib/api-fetch";
 
 interface Props {
   pageTitle?: string;
@@ -30,8 +31,13 @@ export default function DashboardNavbar({
   extras,
 }: Props) {
   const { session, signOut } = useSession();
+  const impersonatingOrgId = useImpersonatingOrgId();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const accountHref = impersonatingOrgId
+    ? `/platform/org/${impersonatingOrgId}/dashboard/account`
+    : "/dashboard/account";
 
   const displayName = session?.fullName ?? "...";
   const email = session?.email ?? "";
@@ -118,14 +124,14 @@ export default function DashboardNavbar({
               </div>
               <div className="h-px bg-slate-100 mx-1" />
               <Link
-                href="/dashboard/account"
+                href={accountHref}
                 onClick={() => setMenuOpen(false)}
                 className="flex items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
               >
                 <UserIcon className="h-4 w-4" /> Tài khoản
               </Link>
               <Link
-                href="/dashboard/account"
+                href={accountHref}
                 onClick={() => setMenuOpen(false)}
                 className="flex items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
               >

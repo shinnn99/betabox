@@ -5,11 +5,6 @@ import { audit } from "@/lib/audit";
 
 const EDITABLE_FIELDS = [
   "name",
-  "legal_name",
-  "tax_code",
-  "phone",
-  "email",
-  "address",
   "logo_url",
 ] as const;
 
@@ -20,7 +15,7 @@ export async function GET() {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("organizations")
-    .select("id, name, slug, legal_name, tax_code, phone, email, address, logo_url, status, created_at, updated_at")
+    .select("id, name, slug, logo_url, status, created_at, updated_at")
     .eq("id", ctx.organizationId)
     .single();
 
@@ -64,7 +59,7 @@ export async function PATCH(req: Request) {
     .from("organizations")
     .update(update)
     .eq("id", ctx.organizationId)
-    .select("id, name, slug, legal_name, tax_code, phone, email, address, logo_url, status, created_at, updated_at")
+    .select("id, name, slug, logo_url, status, created_at, updated_at")
     .single();
 
   if (error) {

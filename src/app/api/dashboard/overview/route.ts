@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isError, requirePermission } from "@/lib/supabase/guard";
+import { deriveCameraOnlineState } from "@/lib/camera/online-state";
 import type {
   PackingEventStatus,
   PackingEventTimingStatus,
@@ -144,6 +145,7 @@ export async function GET() {
       staffProfilesRes,
       stationDevicesRes,
       packingStationsRes,
+      agentForOnlineRes,
     ] = await Promise.all([
       admin
         .from("packing_events")
@@ -158,7 +160,9 @@ export async function GET() {
         .eq("business_date", previousDate),
       admin
         .from("cameras")
-        .select("id, camera_code, name, location, status")
+        .select(
+          "id, camera_code, name, location, status, last_probe_at, last_probe_ok",
+        )
         .eq("organization_id", ctx.organizationId)
         .order("camera_code", { ascending: true }),
       admin
@@ -185,6 +189,16 @@ export async function GET() {
         .select("id, code, name, status, warehouse_id")
         .eq("organization_id", ctx.organizationId)
         .neq("status", "archived"),
+      // Agent gần nhất còn sống — dùng cho deriveCameraOnlineState phân
+      // biệt agent-chết (warehouse_disconnected) vs camera-chết (offline).
+      admin
+        .from("warehouse_agents")
+        .select("last_seen_at")
+        .eq("organization_id", ctx.organizationId)
+        .eq("status", "active")
+        .order("last_seen_at", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .maybeSingle(),
     ]);
 
     if (todayEventsRes.error) throw new Error(todayEventsRes.error.message);
@@ -307,6 +321,22 @@ export async function GET() {
       status: c.status as CameraSnapshot["status"],
       recording: recordingCameraIds.has(c.id as string),
     }));
+
+    // Probe metadata (last_probe_at + last_probe_ok) lookup theo id để
+    // deriveCameraOnlineState. Không chèn vào CameraSnapshot public type
+    // vì nó là chi tiết real-time, khác snapshot cấu hình.
+    const cameraProbeById = new Map<
+      string,
+      { last_probe_at: string | null; last_probe_ok: boolean | null }
+    >();
+    for (const c of camerasRes.data ?? []) {
+      cameraProbeById.set(c.id as string, {
+        last_probe_at: (c.last_probe_at as string | null) ?? null,
+        last_probe_ok: (c.last_probe_ok as boolean | null) ?? null,
+      });
+    }
+    const agentLastSeenAt =
+      (agentForOnlineRes.data?.last_seen_at as string | null) ?? null;
     const cameraTotal = camerasList.length;
     const cameraActive = camerasList.filter((c) => c.status === "active").length;
 
@@ -373,14 +403,35 @@ export async function GET() {
 
     const deviceRows: DeviceSnapshot[] = [];
     for (const c of camerasList) {
-      const live = c.status === "active";
+      // Trạng thái real-time từ agent probe. Không đọc cameras.status
+      // vì đó là snapshot cấu hình lần test cuối, không phản ánh việc
+      // agent kho có còn kết nối lúc này hay không. Xem
+      // src/lib/camera/online-state.ts cho 4 nhánh derive.
+      const probe = cameraProbeById.get(c.id) ?? {
+        last_probe_at: null,
+        last_probe_ok: null,
+      };
+      const onlineState = deriveCameraOnlineState({
+        lastProbeAt: probe.last_probe_at,
+        lastProbeOk: probe.last_probe_ok,
+        agentLastSeenAt: agentLastSeenAt,
+        hasRecordingIntent: c.recording,
+        now,
+      });
+      const status: DeviceSnapshot["status"] = c.recording
+        ? "recording"
+        : onlineState === "online"
+          ? "live"
+          : c.status === "error"
+            ? "error"
+            : "offline";
       deviceRows.push({
         id: `cam:${c.id}`,
         kind: "camera",
         code: c.camera_code,
         name: c.name || c.camera_code,
         location: c.location,
-        status: c.recording ? "recording" : live ? "live" : c.status === "error" ? "error" : "offline",
+        status,
         last_seen_at: null,
       });
     }
@@ -486,6 +537,12 @@ export async function GET() {
         });
       }
     }
+    // Camera alerts — dùng cùng deriveCameraOnlineState với DeviceRow để
+    // 2 widget không phân kỳ (bảng thiết bị / widget cảnh báo cùng 1
+    // trạng thái). Gộp agent-offline: nếu nhiều camera cùng bị
+    // warehouse_disconnected → 1 alert gộp "Agent kho mất kết nối — N
+    // camera bị ảnh hưởng", không xả N alert riêng.
+    const cameraDisconnectedByAgent: typeof camerasList = [];
     for (const c of camerasList) {
       if (alerts.length >= 8) break;
       if (c.status === "error") {
@@ -497,7 +554,47 @@ export async function GET() {
           location: c.location,
           at: null,
         });
+        continue;
       }
+      const probe = cameraProbeById.get(c.id) ?? {
+        last_probe_at: null,
+        last_probe_ok: null,
+      };
+      const onlineState = deriveCameraOnlineState({
+        lastProbeAt: probe.last_probe_at,
+        lastProbeOk: probe.last_probe_ok,
+        agentLastSeenAt,
+        hasRecordingIntent: c.recording,
+        now,
+      });
+      if (onlineState === "warehouse_disconnected") {
+        cameraDisconnectedByAgent.push(c);
+      } else if (onlineState === "offline") {
+        alerts.push({
+          id: `camoff:${c.id}`,
+          severity: "medium",
+          order_code: null,
+          message: `Camera ${c.camera_code} mất kết nối (agent thấy nhưng không tới được camera)`,
+          location: c.location,
+          at: null,
+        });
+      }
+    }
+    if (cameraDisconnectedByAgent.length > 0 && alerts.length < 8) {
+      const codes = cameraDisconnectedByAgent
+        .map((c) => c.camera_code)
+        .join(", ");
+      alerts.push({
+        id: "agent_offline",
+        severity: "high",
+        order_code: null,
+        message:
+          cameraDisconnectedByAgent.length === 1
+            ? `Agent kho mất kết nối — camera ${codes} không ghi được`
+            : `Agent kho mất kết nối — ${cameraDisconnectedByAgent.length} camera bị ảnh hưởng (${codes})`,
+        location: null,
+        at: agentLastSeenAt,
+      });
     }
 
     const totalAlerts = alerts.length;

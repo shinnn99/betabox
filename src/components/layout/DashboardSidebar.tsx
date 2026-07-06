@@ -28,6 +28,8 @@ export default function DashboardSidebar({
   const initialized = useRef(false);
   const rafId = useRef(0);
 
+  // Impersonate context giờ đi qua cookie (không URL prefix). URL luôn
+  // /dashboard/* như tenant thường → sidebar Link href thẳng.
   const isActive = useCallback(
     (href: string) => {
       const path = pathname ?? "";

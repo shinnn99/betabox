@@ -18,6 +18,7 @@ import { ROLE_OPTIONS, ROLE_LABEL, type Role } from "@/lib/auth";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
 import Select from "@/components/ui/Select";
+import { apiFetch, useImpersonatingOrgId } from "@/lib/api-fetch";
 
 interface UserRow {
   id: string;
@@ -32,6 +33,7 @@ interface UserRow {
 
 export default function UsersPage() {
   const { session } = useSession();
+  const impersonatingOrgId = useImpersonatingOrgId();
   const confirm = useConfirm();
   const toast = useToast();
   const [users, setUsers] = useState<UserRow[]>([]);
@@ -44,7 +46,7 @@ export default function UsersPage() {
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
-    const res = await fetch("/api/users", { cache: "no-store" });
+    const res = await apiFetch("/api/users", { cache: "no-store" }, impersonatingOrgId);
     const data = await res.json();
     if (!res.ok) {
       setError(data.message ?? data.error ?? "Không tải được danh sách.");
@@ -53,7 +55,7 @@ export default function UsersPage() {
     }
     setUsers(data.users);
     setLoading(false);
-  }, []);
+  }, [impersonatingOrgId]);
 
   useEffect(() => {
     load();
@@ -77,7 +79,7 @@ export default function UsersPage() {
       variant: "danger",
     });
     if (!ok) return;
-    const res = await fetch(`/api/users/${u.id}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/users/${u.id}`, { method: "DELETE" }, impersonatingOrgId);
     const data = await res.json();
     if (!res.ok) {
       toast.error(data.message ?? data.error ?? "Xoá thất bại");
@@ -244,6 +246,7 @@ function CreateUserDialog({
   onClose: () => void;
   onCreated: () => void;
 }) {
+  const impersonatingOrgId = useImpersonatingOrgId();
   const [form, setForm] = useState({
     email: "",
     password: "",
@@ -258,11 +261,15 @@ function CreateUserDialog({
     e.preventDefault();
     setErr("");
     setSaving(true);
-    const res = await fetch("/api/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
-    });
+    const res = await apiFetch(
+      "/api/users",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      },
+      impersonatingOrgId,
+    );
     const data = await res.json();
     setSaving(false);
     if (!res.ok) {
@@ -348,6 +355,7 @@ function EditUserDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const impersonatingOrgId = useImpersonatingOrgId();
   const [form, setForm] = useState({
     full_name: user.full_name,
     phone: user.phone ?? "",
@@ -374,11 +382,15 @@ function EditUserDialog({
     }
     if (form.password) body.password = form.password;
 
-    const res = await fetch(`/api/users/${user.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const res = await apiFetch(
+      `/api/users/${user.id}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      impersonatingOrgId,
+    );
     const data = await res.json();
     setSaving(false);
     if (!res.ok) {

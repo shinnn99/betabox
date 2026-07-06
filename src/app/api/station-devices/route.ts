@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   requirePermission,
   requirePermissionStrict,
   isError,
 } from "@/lib/supabase/guard";
+import { getScopedClient } from "@/lib/supabase/scoped-client";
 import { audit } from "@/lib/audit";
 import { invalidateCameraCaches } from "@/lib/camera/service";
 
@@ -99,10 +99,26 @@ export async function GET(req: NextRequest) {
   if (isError(ctx)) return ctx;
 
   const deviceType = req.nextUrl.searchParams.get("device_type");
-  const supabase = await createClient();
-  let q = supabase
-    .from("station_devices")
-    .select(
+  const scoped = await getScopedClient(ctx);
+  let q = scoped
+    .select<{
+      id: string;
+      device_code: string;
+      device_type: string;
+      name: string;
+      config_json: Record<string, unknown> | null;
+      status: string;
+      created_at: string;
+      updated_at: string;
+      connection_type: string | null;
+      device_identity: Record<string, unknown> | null;
+      current_port: string | null;
+      connection_status: string | null;
+      last_seen_at: string | null;
+      last_error: string | null;
+      bound_agent_id: string | null;
+    }>(
+      "station_devices",
       "id, device_code, device_type, name, config_json, status, created_at, updated_at, connection_type, device_identity, current_port, connection_status, last_seen_at, last_error, bound_agent_id",
     )
     .order("device_code");

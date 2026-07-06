@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Building2, ChevronDown, Check, Loader2 } from "lucide-react";
 import { useSession } from "@/lib/useSession";
+import { apiFetch, useImpersonatingOrgId } from "@/lib/api-fetch";
 
 interface Organization {
   id: string;
@@ -18,6 +19,7 @@ interface Props {
 
 export default function OrgSwitcherCard({ collapsed }: Props) {
   const { session } = useSession();
+  const impersonatingOrgId = useImpersonatingOrgId();
   const [open, setOpen] = useState(false);
   const [org, setOrg] = useState<Organization | null>(null);
   const [loading, setLoading] = useState(false);
@@ -28,7 +30,7 @@ export default function OrgSwitcherCard({ collapsed }: Props) {
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
-    const res = await fetch("/api/organization", { cache: "no-store" });
+    const res = await apiFetch("/api/organization", { cache: "no-store" }, impersonatingOrgId);
     const data = await res.json();
     if (!res.ok) {
       setError(data.message ?? data.error ?? "Không tải được tổ chức.");
@@ -37,7 +39,7 @@ export default function OrgSwitcherCard({ collapsed }: Props) {
     }
     setOrg(data.organization);
     setLoading(false);
-  }, []);
+  }, [impersonatingOrgId]);
 
   useEffect(() => {
     load();

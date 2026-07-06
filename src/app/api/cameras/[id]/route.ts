@@ -6,6 +6,7 @@ import {
 import { audit } from "@/lib/audit";
 import {
   deleteCamera,
+  HasProofClipsError,
   updateCamera,
   validateCameraInput,
   type CameraInput,
@@ -105,6 +106,16 @@ export async function DELETE(_req: Request, { params }: RouteContext) {
     });
     return NextResponse.json({ ok: true });
   } catch (err) {
+    if (err instanceof HasProofClipsError) {
+      return NextResponse.json(
+        {
+          error: "has_proof_clips",
+          clips_count: err.clipsCount,
+          message: err.message,
+        },
+        { status: 409 },
+      );
+    }
     return NextResponse.json(
       { error: "delete_failed", message: (err as Error).message },
       { status: 400 },

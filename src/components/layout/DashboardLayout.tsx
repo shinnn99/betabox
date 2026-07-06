@@ -26,6 +26,28 @@ export default function DashboardLayout({
   const { session, loading } = useSession(true);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [isImpersonating, setIsImpersonating] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const res = await fetch("/api/platform/current-impersonate-org", {
+          cache: "no-store",
+        });
+        const data = await res.json();
+        if (!cancelled) setIsImpersonating(Boolean(data.orgId));
+      } catch {
+        if (!cancelled) setIsImpersonating(false);
+      }
+    };
+    check();
+    const id = window.setInterval(check, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
 
   useEffect(() => {
     const stored = localStorage.getItem("sidebar-collapsed");
@@ -48,7 +70,11 @@ export default function DashboardLayout({
   }
 
   return (
-    <div className="h-screen lg:bg-slate-100 overflow-hidden">
+    <div
+      className={`lg:bg-slate-100 overflow-hidden ${
+        isImpersonating ? "h-[calc(100vh-40px)] mt-10" : "h-screen"
+      }`}
+    >
       <div className="h-full flex gap-3 lg:p-3">
         <DashboardSidebar
           mobileOpen={mobileOpen}

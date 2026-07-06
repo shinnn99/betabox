@@ -75,20 +75,10 @@ const EnvSchema = z.object({
    * ghi mỗi ngần này để bắt segment mới mà watcher bỏ sót.
    */
   SEGMENT_WATCH_POLL_MS: z.coerce.number().int().positive().default(10000),
-  /**
-   * 3b-1: burn-in mã vận đơn + timestamp lên clip. Vị trí và style
-   * cấu hình được để chuyển camera khác không phải sửa code.
-   *
-   * VERIFY-ON-HIKVISION: mặc định top-right tránh đè overlay bottom-left
-   * của EZVIZ H1c test. Khi đổi Hikvision (overlay khác vị trí), kiểm
-   * lại và đổi qua env nếu cần.
-   */
-  BURN_POSITION: z.enum(["top-right", "top-left", "bottom-right", "bottom-left"]).default("top-right"),
-  BURN_FONT_SIZE_RATIO: z.coerce.number().positive().default(0.035),
-  BURN_FONT_COLOR: z.string().default("white"),
-  BURN_BORDER_COLOR: z.string().default("black"),
-  BURN_BORDER_WIDTH: z.coerce.number().int().nonnegative().default(3),
-  BURN_WARNING_COLOR: z.string().default("#ff3838"),
+  // BURN_* env đã xoá 2026-07-05: đường clip chốt "video thuần" —
+  // không burn (nướng vào file), không overlay (đè giao diện), không
+  // vẽ mark gap. Thông tin đơn (mã vận đơn/kho/bàn/nhân viên/camera/
+  // thời gian) hiện ở panel cạnh video trong dashboard.
 });
 
 export type ScannerPin = z.infer<typeof ScannerPinSchema>;
@@ -113,12 +103,6 @@ export interface AgentConfig {
   recordingCredentialsRetryMs: number;
   recoveryScanDays: number;
   segmentWatchPollMs: number;
-  burnPosition: "top-right" | "top-left" | "bottom-right" | "bottom-left";
-  burnFontSizeRatio: number;
-  burnFontColor: string;
-  burnBorderColor: string;
-  burnBorderWidth: number;
-  burnWarningColor: string;
 }
 
 export function loadConfig(): AgentConfig {
@@ -163,11 +147,5 @@ export function loadConfig(): AgentConfig {
     recordingCredentialsRetryMs: env.RECORDING_CREDENTIALS_RETRY_MS,
     recoveryScanDays: env.RECOVERY_SCAN_DAYS,
     segmentWatchPollMs: env.SEGMENT_WATCH_POLL_MS,
-    burnPosition: env.BURN_POSITION,
-    burnFontSizeRatio: env.BURN_FONT_SIZE_RATIO,
-    burnFontColor: env.BURN_FONT_COLOR,
-    burnBorderColor: env.BURN_BORDER_COLOR,
-    burnBorderWidth: env.BURN_BORDER_WIDTH,
-    burnWarningColor: env.BURN_WARNING_COLOR,
   };
 }

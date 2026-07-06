@@ -420,21 +420,11 @@ async function main(): Promise<void> {
         target_end?: string;
         cut_start?: string;
         cut_end?: string;
-        work_started_at?: string;
-        work_ended_at?: string | null;
         segments?: CutSegmentInput[];
         partial_coverage?: boolean;
         covered_range?: { lower?: string; upper?: string };
         gaps?: unknown;
         total_gap_seconds?: number;
-        // Chống nghi cắt ghép: dấu chèn tại điểm nối gap. Cloud tính,
-        // agent render mp4 tmp + đan xen concat.
-        marks?: Array<{
-          after_segment_index: number;
-          gap_seconds: number;
-          kind: "mark_short" | "black_full";
-          duration_seconds: number;
-        }>;
         // Cọc #8 force_recut: user bấm [Thử lại] → xóa file cũ trước
         // idempotent check. Chống ca file cũ SAI được tái sử dụng.
         force_recut?: boolean;
@@ -601,34 +591,24 @@ async function main(): Promise<void> {
         return;
       }
 
-      // 3b-1: nếu payload có work_started_at → burn-in. work_started_at
-      // là mốc scan gốc (khớp log tuyệt đối), tách khỏi target_start
-      // (đã cộng pre-roll) và cut_start (thêm GOP pad). Xem
-      // enqueueCutClip trong backend.
-      const workStarted = p.work_started_at ?? null;
-      const workEnded = p.work_ended_at ?? null;
-      const burnIn = workStarted
-        ? {
-            fontPath: burnFontPath,
-            waybillCode: p.waybill_code,
-            workStartedAt: workStarted,
-            workEndedAt: workEnded,
-            isPartial: p.partial_coverage ?? false,
-            totalGapSeconds: p.total_gap_seconds ?? 0,
-            position: config.burnPosition,
-            fontSizeRatio: config.burnFontSizeRatio,
-            fontColor: config.burnFontColor,
-            borderColor: config.burnBorderColor,
-            borderWidth: config.burnBorderWidth,
-            warningColor: config.burnWarningColor,
-          }
-        : null;
-
-      // 3b-2: gate 1-in-flight. Poll-filter + claim-limit-1 đã ngăn
-      // 2 cut_clip cùng lúc, gate là assertion phòng thủ fail-loud
-      // nếu logic filter lỗi. Trước encode: gửi outcome='encoding'
-      // để cloud upsert row với progress_state='encoding' (UI hiện
-      // "đang cắt clip"). Sau encode: outcome final như trước.
+      // Cut = copy-stream 100% clip (chốt 2026-07-05). Video thuần,
+      // vài giây/clip 10 phút. Không burn, không overlay, không mark.
+      // Thông tin đơn (mã vận đơn, kho, bàn, nhân viên, camera, giờ)
+      // hiển thị ở panel dashboard cạnh video, không đè lên hình.
+      // is_partial + covered_range vẫn ghi vào order_proof_clips để
+      // panel hiện "clip thiếu N giây" — cảnh báo gap ở dữ liệu, không
+      // ở video.
+      //
+      // Gate 1-in-flight (encodeGate): trước phải chống 2 cut_clip
+      // reencode song song ngốn CPU; giờ copy-stream nhẹ (I/O-bound),
+      // gate không còn cần thiết nhưng GIỮ để chống race spawn ffmpeg
+      // + đọc segment (share file) — rẻ, không hại.
+      //
+      // outcome='encoding' báo cloud upsert row progress_state='encoding'.
+      // Tên "encoding" giữ vì DB CHECK constraint chốt giá trị này —
+      // đổi tên = migration 2 bước + phối hợp deploy, không đáng cho
+      // internal wire. Thực chất giờ là "đang cắt copy-stream 1-3s",
+      // không phải reencode. UI dashboard đã hiện đúng "Đang cắt clip".
       await postClipCutResult({
         backendUrl: config.backendUrl,
         agentCode: config.agentCode,
@@ -639,8 +619,8 @@ async function main(): Promise<void> {
         outcome: "encoding",
         sourceFiles: p.segments.map((s) => s.file_path),
         generationParams: {
-          cut_mode: burnIn ? "reencode" : "copy",
-          burn_in: burnIn ? true : false,
+          cut_mode: "copy",
+          burn_in: false,
         },
       });
 
@@ -648,22 +628,6 @@ async function main(): Promise<void> {
       const cutStartIso = p.cut_start;
       const cutEndIso = p.cut_end;
       const segments = p.segments;
-      const marks = p.marks ?? [];
-
-      // Chống nghi cắt ghép: chuẩn bị config render mark nếu payload
-      // có marks. Resolution mặc định 1920x1080 (EZVIZ H1c chuẩn); nếu
-      // camera khác resolution → khác resolution segment → concat -c copy
-      // sẽ ffmpeg complain. Nhưng gap-mark là ca hiếm (camera offline
-      // thật), chấp nhận reencode để nhất quán resolution nếu cần.
-      // 1920x1080 = default an toàn cho EZVIZ hiện có.
-      const markRenderConfig = marks.length > 0
-        ? {
-            fontPath: burnFontPath,
-            resolution: "1920x1080",
-            fontColor: config.burnFontColor,
-            warningColor: config.burnWarningColor,
-          }
-        : undefined;
 
       const cutResult = await encodeGate.run(() =>
         cutClip({
@@ -674,9 +638,6 @@ async function main(): Promise<void> {
           cutStart: new Date(cutStartIso),
           cutEnd: new Date(cutEndIso),
           segments,
-          burnIn,
-          marks,
-          markRenderConfig,
         }),
       );
 
@@ -731,8 +692,8 @@ async function main(): Promise<void> {
         coveredRangeUpper: p.covered_range?.upper ?? null,
         sourceFiles: p.segments.map((s) => s.file_path),
         generationParams: {
-          cut_mode: burnIn ? "reencode" : "copy",
-          burn_in: burnIn ? true : false,
+          cut_mode: "copy",
+          burn_in: false,
           ss_seconds: (Date.parse(p.cut_start) - Date.parse(p.segments[0].started_at)) / 1000,
           t_seconds: (Date.parse(p.cut_end) - Date.parse(p.cut_start)) / 1000,
           elapsed_ms: cutResult.elapsedMs,
@@ -1174,41 +1135,9 @@ async function main(): Promise<void> {
   const clipsDir = resolve(recordingRoot, CLIPS_SUBDIR);
   await fsp.mkdir(clipsDir, { recursive: true });
 
-  // Font path cho burn-in (3b-1). Path tuyệt đối, độc lập cwd.
-  //
-  // pkg-aware: khi chạy exe, __dirname trỏ /snapshot/warehouse-agent/dist
-  // (pkg virtual filesystem). ffmpeg (external process) KHÔNG đọc được
-  // /snapshot/... — phải extract font ra file tạm cạnh exe.
-  //
-  // Dev mode: __dirname là folder thật, ffmpeg đọc được trực tiếp.
-  let burnFontPath: string;
-  if (isPackaged) {
-    // Extract font từ snapshot ra folder cạnh exe (chỉ 1 lần lúc boot).
-    const fontBundledPath = resolve(__dirname, "..", "assets", "fonts", "NotoSans-Bold.ttf");
-    const fontRealPath = resolve(dirname(process.execPath), "assets", "fonts", "NotoSans-Bold.ttf");
-    await fsp.mkdir(dirname(fontRealPath), { recursive: true });
-    // Chỉ copy nếu file real chưa tồn tại hoặc mtime khác (agent update).
-    try {
-      const srcStat = await fsp.stat(fontBundledPath);
-      let needCopy = true;
-      try {
-        const dstStat = await fsp.stat(fontRealPath);
-        if (dstStat.size === srcStat.size) needCopy = false;
-      } catch {
-        // dst not exists
-      }
-      if (needCopy) {
-        const fontBuf = await fsp.readFile(fontBundledPath);
-        await fsp.writeFile(fontRealPath, fontBuf);
-        console.log(`[boot] extracted font to ${fontRealPath}`);
-      }
-    } catch (err) {
-      console.error(`[boot] font extraction failed: ${(err as Error).message}`);
-    }
-    burnFontPath = fontRealPath;
-  } else {
-    burnFontPath = resolve(__dirname, "..", "assets", "fonts", "NotoSans-Bold.ttf");
-  }
+  // Font extract cho burn/mark đã xoá 2026-07-05 — đường clip chốt
+  // "video thuần", không burn, không overlay. Thông tin đơn ở panel
+  // dashboard. Không có kế hoạch thêm lại font ở agent.
   try {
     const removed = await cleanupOrphanConcatFiles(clipsDir);
     if (removed > 0) {

@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   requirePermission,
   requirePermissionStrict,
   isError,
 } from "@/lib/supabase/guard";
+import { getScopedClient } from "@/lib/supabase/scoped-client";
 import { audit } from "@/lib/audit";
 
 export const runtime = "nodejs";
@@ -16,10 +16,9 @@ export async function GET(req: NextRequest) {
   if (isError(ctx)) return ctx;
 
   const warehouseId = req.nextUrl.searchParams.get("warehouse_id");
-  const supabase = await createClient();
-  let q = supabase
-    .from("packing_stations")
-    .select("id, code, name, warehouse_id, status, created_at, updated_at")
+  const scoped = await getScopedClient(ctx);
+  let q = scoped
+    .select("packing_stations", "id, code, name, warehouse_id, status, created_at, updated_at")
     .order("code");
   if (warehouseId) q = q.eq("warehouse_id", warehouseId);
 

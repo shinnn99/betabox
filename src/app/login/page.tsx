@@ -51,6 +51,18 @@ export default function LoginPage() {
     }
 
     setSuccess(true);
+    // Phân nhánh redirect: platform admin → /platform, tenant → /dashboard.
+    // Gọi /api/platform/context — nếu 200 thì là platform admin.
+    try {
+      const ctxRes = await fetch("/api/platform/context", { cache: "no-store" });
+      if (ctxRes.ok) {
+        router.replace("/platform");
+        router.refresh();
+        return;
+      }
+    } catch {
+      // Fallback dashboard tenant
+    }
     router.replace("/dashboard");
     router.refresh();
   };
@@ -100,16 +112,23 @@ export default function LoginPage() {
             </div>
           </div>
 
-          <div className="max-w-lg -mt-8">
-            <div className="mb-5">
-              <p className="text-4xl xl:text-5xl font-extrabold tracking-tight pb-3">
+          <div
+            className="max-w-lg -mt-8"
+            style={{
+              fontFamily:
+                "system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+              wordBreak: "keep-all",
+            }}
+          >
+            <div className="mb-5 space-y-1.5">
+              <h1 className="text-2xl md:text-3xl xl:text-[2.75rem] font-bold leading-[1.15]">
                 Giám sát đóng hàng
-              </p>
-              <p className="text-4xl xl:text-5xl font-extrabold tracking-tight bg-gradient-to-r from-emerald-300 via-green-300 to-emerald-400 bg-clip-text text-transparent pb-1">
+              </h1>
+              <h1 className="text-2xl md:text-3xl xl:text-[2.75rem] font-bold leading-[1.15] bg-gradient-to-r from-emerald-300 via-green-300 to-emerald-400 bg-clip-text text-transparent">
                 Minh bạch & Hiệu suất
-              </p>
+              </h1>
             </div>
-            <p className="text-emerald-200/80 text-base xl:text-lg leading-relaxed max-w-md">
+            <p className="text-emerald-200/80 text-sm md:text-base leading-relaxed max-w-md">
               Quay video toàn bộ quá trình đóng hàng tại kho, đo lường hiệu
               suất nhân sự và truy xuất nhanh khi có khiếu nại từ khách hàng.
             </p>
@@ -277,11 +296,17 @@ export default function LoginPage() {
                 "Đăng nhập"
               )}
             </button>
-
-            <p className="text-xs text-slate-400 text-center pt-1">
-              Tài khoản do bộ phận IT cấp. Liên hệ quản lý kho nếu chưa có.
-            </p>
           </form>
+
+          <p className="text-center text-sm text-slate-500 mt-6">
+            Chưa có tài khoản?{" "}
+            <a
+              href="/signup"
+              className="font-semibold text-emerald-600 hover:text-emerald-700"
+            >
+              Đăng ký dùng thử
+            </a>
+          </p>
         </div>
       </div>
     </div>

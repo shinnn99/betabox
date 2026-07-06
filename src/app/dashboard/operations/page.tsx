@@ -764,7 +764,18 @@ export default function OperationsPage() {
                           {ev.work_started_at ? formatTime(ev.work_started_at) : "—"}
                         </td>
                         <td className="px-2 py-2 text-xs text-slate-500 tabular-nums whitespace-nowrap">
-                          {ev.work_ended_at ? formatTime(ev.work_ended_at) : "—"}
+                          {ev.timing_status === "capped_timeout" &&
+                          ev.work_started_at &&
+                          ev.work_duration_seconds != null
+                            ? formatTime(
+                                new Date(
+                                  new Date(ev.work_started_at).getTime() +
+                                    ev.work_duration_seconds * 1000,
+                                ).toISOString(),
+                              )
+                            : ev.work_ended_at
+                              ? formatTime(ev.work_ended_at)
+                              : "—"}
                         </td>
                         <td className="px-2 py-2 text-xs whitespace-nowrap">
                           {ev.timing_status === "open" ? (

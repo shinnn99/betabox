@@ -1,7 +1,8 @@
 import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 import { NextResponse, type NextRequest } from "next/server";
 
-const PUBLIC_PATHS = ["/login", "/auth"];
+const PUBLIC_PATHS = ["/login", "/auth", "/signup"];
 
 // API endpoints that authenticate themselves (HMAC, signed webhooks, etc.)
 // and must not be intercepted by the session-based auth proxy.
@@ -27,6 +28,9 @@ const PUBLIC_API_PREFIXES = [
   // trong route. Không có session cookie, phải bypass proxy nếu không sẽ
   // bị 401 trước khi route được gọi.
   "/api/cron",
+  // V6: Signup công khai (user chưa có tài khoản → không session). Route
+  // tự bảo vệ bằng Turnstile captcha + rate-limit (IP + email).
+  "/api/signup",
 ];
 
 export async function updateSession(request: NextRequest) {
@@ -88,10 +92,52 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  if (user && path === "/login") {
-    const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
-    return NextResponse.redirect(url);
+  // Platform admin routing:
+  //  - Vào /login khi đã login → redirect /platform (nếu platform admin) hoặc /dashboard.
+  //  - Vào /dashboard/* KHÔNG impersonate (không có org claim VÀ không có cookie
+  //    impersonate) → redirect /platform. Vì platform admin không có
+  //    organization_id trong JWT, dashboard tenant sẽ vỡ.
+  //  - Vào /dashboard/* CÓ cookie impersonate → skip redirect: proxy khối 2
+  //    (src/proxy.ts) sẽ ký token từ cookie, guard đọc org từ token.
+  const isDashboardPath = path === "/dashboard" || path.startsWith("/dashboard/");
+  const hasOrgClaim = !!(user as Record<string, unknown> | undefined)?.organization_id;
+  const hasImpersonateCookie = !!request.cookies.get("impersonate_org_id")?.value;
+  const shouldCheckPlatform =
+    (user && path === "/login") ||
+    (user && isDashboardPath && !hasOrgClaim && !hasImpersonateCookie);
+
+  if (shouldCheckPlatform) {
+    let isPlatform = false;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (serviceKey && user) {
+      try {
+        const admin = createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          serviceKey,
+          { auth: { autoRefreshToken: false, persistSession: false } }
+        );
+        const { data } = await admin
+          .from("platform_admins")
+          .select("id")
+          .eq("id", user.sub as string)
+          .eq("status", "active")
+          .maybeSingle();
+        isPlatform = !!data;
+      } catch (e) {
+        console.error("[proxy] platform_admins check error:", e);
+      }
+    }
+    if (path === "/login") {
+      const url = request.nextUrl.clone();
+      url.pathname = isPlatform ? "/platform" : "/dashboard";
+      return NextResponse.redirect(url);
+    }
+    if (isPlatform) {
+      // Platform admin vào dashboard tenant không impersonate → redirect /platform
+      const url = request.nextUrl.clone();
+      url.pathname = "/platform";
+      return NextResponse.redirect(url);
+    }
   }
 
   return supabaseResponse;

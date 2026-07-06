@@ -18,6 +18,8 @@ import {
   Info,
   Link2,
   Loader2,
+  MoreVertical,
+  Pencil,
   Plug,
   PlugZap,
   Plus,
@@ -25,21 +27,23 @@ import {
   Save,
   ScanLine,
   Search,
-  Settings2,
   Trash2,
   Wifi,
   WifiOff,
 } from "lucide-react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { createPortal } from "react-dom";
+import { useSearchParams } from "next/navigation";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import Select from "@/components/ui/Select";
 import { useToast } from "@/components/ui/Toast";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { Modal, Field } from "@/components/warehouse-config/Modal";
 import {
+  CameraDialog,
   CameraDialogBody,
   type Camera,
 } from "@/components/devices/CamerasView";
+import { CameraTestConnectionModal } from "@/components/devices/CameraTestConnectionModal";
 import {
   ScannerPortPicker,
   identityMatches,
@@ -240,7 +244,6 @@ export default function DevicesPageWrapper() {
 
 function DevicesPage() {
   const search = useSearchParams();
-  const router = useRouter();
   const toast = useToast();
   const confirm = useConfirm();
   const initialTab = (search.get("type") === "scanner"
@@ -257,6 +260,9 @@ function DevicesPage() {
   const [showPicker, setShowPicker] = useState(false);
   const [assignTarget, setAssignTarget] = useState<Device | null>(null);
   const [scannerDetailId, setScannerDetailId] = useState<string | null>(null);
+  const [editingCameraId, setEditingCameraId] = useState<string | null>(null);
+  const [testingCameraId, setTestingCameraId] = useState<string | null>(null);
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   // Per-camera recording action busy (for the inline Ghi/Dừng button).
   const [recBusy, setRecBusy] = useState<Record<string, "start" | "stop">>({});
   const pageActive = useRef(true);
@@ -350,6 +356,17 @@ function DevicesPage() {
   );
 
   const toggleRecording = async (cam: CameraDevice, action: "start" | "stop") => {
+    // Chặn "start" khi agent offline: backend vẫn enqueue được (agent-pattern),
+    // nhưng người dùng bấm xong thấy toast xanh sẽ tưởng đã ghi thật. Với
+    // "stop" thì cho enqueue kể cả offline — agent lên lại tự nhận và dừng.
+    if (
+      action === "start" &&
+      cam.camera_online_state === "warehouse_disconnected"
+    ) {
+      toast.error("Agent kho mất kết nối — không thể bắt đầu ghi mới.");
+      return;
+    }
+
     setRecBusy((m) => ({ ...m, [cam.id]: action }));
     try {
       const res = await fetch(`/api/cameras/${cam.id}/recording/${action}`, {
@@ -359,10 +376,15 @@ function DevicesPage() {
         const j = await res.json().catch(() => ({}));
         toast.error(j.message ?? j.error ?? "Lỗi.");
       } else {
+        // Backend trả 202 = đã enqueue command cho agent. Với start, agent
+        // online chắc chắn xử lý ngay; với stop, agent offline cũng OK vì
+        // sẽ nhận lệnh khi lên lại.
         toast.success(
           action === "start"
             ? `Đã bắt đầu ghi (${cam.camera_code})`
-            : `Đã dừng ghi (${cam.camera_code})`,
+            : cam.camera_online_state === "warehouse_disconnected"
+              ? `Đã gửi lệnh dừng (${cam.camera_code}) — agent sẽ xử lý khi kết nối lại.`
+              : `Đã dừng ghi (${cam.camera_code})`,
         );
         void load();
       }
@@ -394,6 +416,50 @@ function DevicesPage() {
       return;
     }
     toast.success(`Đã xoá ${s.device_code}`);
+    void load();
+  };
+
+  const onDeleteCamera = async (c: CameraDevice) => {
+    const ok = await confirm({
+      title: "Xoá camera",
+      message: `Camera ${c.camera_code} sẽ bị xoá khỏi danh sách. Lịch sử recording liên tục cũng sẽ bị xoá.`,
+      confirmLabel: "Xoá",
+      variant: "danger",
+    });
+    if (!ok) return;
+    const res = await fetch(`/api/cameras/${c.id}`, { method: "DELETE" });
+    const j = await res.json().catch(() => ({}));
+
+    // 409 has_proof_clips: camera còn clip pháp lý gắn đơn hàng, không hard-delete
+    // được. Cho phép người dùng chuyển sang "Ngừng hoạt động" (soft-archive).
+    if (res.status === 409 && j.error === "has_proof_clips") {
+      const archiveOk = await confirm({
+        title: "Không xoá được camera",
+        message: `Camera này còn ${j.clips_count} clip pháp lý gắn với đơn hàng — không thể xoá. Chuyển sang "Ngừng hoạt động" thay vì xoá?`,
+        confirmLabel: "Ngừng hoạt động",
+        variant: "danger",
+      });
+      if (!archiveOk) return;
+      const putRes = await fetch(`/api/cameras/${c.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "inactive" }),
+      });
+      const putJson = await putRes.json().catch(() => ({}));
+      if (!putRes.ok) {
+        toast.error(putJson.message ?? putJson.error ?? "Chuyển trạng thái thất bại.");
+        return;
+      }
+      toast.success(`Đã ngừng hoạt động ${c.camera_code}`);
+      void load();
+      return;
+    }
+
+    if (!res.ok) {
+      toast.error(j.message ?? j.error ?? "Xoá thất bại.");
+      return;
+    }
+    toast.success(`Đã xoá ${c.camera_code}`);
     void load();
   };
 
@@ -461,18 +527,18 @@ function DevicesPage() {
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[1240px]">
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm">
+          <div>
+            <table className="w-full text-sm table-fixed">
               <thead className="bg-slate-50/60">
                 <tr className="text-left text-[11px] tracking-wider text-slate-500">
                   <th className="px-4 py-3 font-semibold">Thiết bị</th>
-                  <th className="px-4 py-3 font-semibold w-24">Loại</th>
+                  <th className="px-4 py-3 font-semibold w-24 whitespace-nowrap">Loại</th>
                   <th className="px-4 py-3 font-semibold">Bàn đang phục vụ</th>
-                  <th className="px-4 py-3 font-semibold w-32">Kết nối</th>
-                  <th className="px-4 py-3 font-semibold w-28">Trạng thái</th>
-                  <th className="px-4 py-3 font-semibold w-28">Cập nhật</th>
-                  <th className="px-4 py-3 font-semibold w-72 text-right whitespace-nowrap">
+                  <th className="px-4 py-3 font-semibold w-36 whitespace-nowrap">Kết nối</th>
+                  <th className="px-4 py-3 font-semibold w-36 whitespace-nowrap">Trạng thái</th>
+                  <th className="px-4 py-3 font-semibold w-32 whitespace-nowrap">Cập nhật</th>
+                  <th className="px-2 py-3 font-semibold w-24 text-center whitespace-nowrap">
                     Hành động
                   </th>
                 </tr>
@@ -523,7 +589,7 @@ function DevicesPage() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-slate-700">
+                      <td className="px-4 py-3 text-slate-700 whitespace-nowrap">
                         {d.kind === "camera" ? "Camera" : "Máy quét"}
                       </td>
                       <td className="px-4 py-3">
@@ -548,17 +614,17 @@ function DevicesPage() {
                           </button>
                         )}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 whitespace-nowrap">
                         <span
-                          className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded ${conn.cls}`}
+                          className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded whitespace-nowrap ${conn.cls}`}
                         >
                           <ConnIcon className="h-3 w-3" />
                           {conn.label}
                         </span>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 whitespace-nowrap">
                         <span
-                          className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded ${stt.cls}`}
+                          className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded whitespace-nowrap ${stt.cls}`}
                         >
                           {d.kind === "camera" && d.recording?.is_recording && (
                             <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
@@ -566,71 +632,37 @@ function DevicesPage() {
                           {stt.label}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-xs text-slate-500">
+                      <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
                         {formatRelative(d.updated_at)}
                       </td>
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-1 flex-nowrap">
-                          {d.kind === "camera" && (
-                            <button
-                              onClick={() =>
-                                toggleRecording(
-                                  d,
-                                  d.recording?.is_recording ? "stop" : "start",
-                                )
-                              }
-                              disabled={!!recBusy[d.id] || d.status !== "active"}
-                              className={`h-8 px-2.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap ${
-                                d.recording?.is_recording
-                                  ? "bg-red-500 hover:bg-red-600 text-white"
-                                  : "bg-emerald-500 hover:bg-emerald-600 text-white"
-                              } disabled:opacity-40 disabled:cursor-not-allowed`}
-                              title={
-                                d.status !== "active"
-                                  ? "Camera chưa Online — Test kết nối trước khi ghi."
-                                  : undefined
-                              }
-                            >
-                              {recBusy[d.id] ? (
-                                <Loader2 className="h-3 w-3 animate-spin" />
-                              ) : (
-                                <Circle
-                                  className={`h-3 w-3 ${
-                                    d.recording?.is_recording ? "fill-current" : ""
-                                  }`}
-                                />
-                              )}
-                              {d.recording?.is_recording ? "Dừng" : "Ghi"}
-                            </button>
-                          )}
-                          <button
-                            onClick={() => setAssignTarget(d)}
-                            className="h-8 px-2.5 rounded-lg text-xs text-slate-600 hover:bg-slate-100 whitespace-nowrap"
-                          >
-                            {d.current_station ? "Đổi bàn" : "Gán bàn"}
-                          </button>
-                          <button
-                            onClick={() =>
-                              d.kind === "camera"
-                                ? router.push(
-                                    `/dashboard/devices/cameras/${d.id}`,
-                                  )
-                                : setScannerDetailId(d.id)
-                            }
-                            className="h-8 px-2.5 rounded-lg text-xs text-slate-600 hover:bg-slate-100 inline-flex items-center gap-1 whitespace-nowrap"
-                          >
-                            <Settings2 className="h-3.5 w-3.5" />
-                            Chi tiết
-                          </button>
-                          {d.kind === "scanner" && (
-                            <button
-                              onClick={() => onDeleteScanner(d)}
-                              className="h-8 px-2.5 rounded-lg text-xs text-rose-600 hover:bg-rose-50 whitespace-nowrap"
-                            >
-                              Xoá
-                            </button>
-                          )}
-                        </div>
+                      <td className="px-2 py-3 text-center whitespace-nowrap">
+                        <DeviceActionMenu
+                          device={d}
+                          isOpen={menuOpenId === d.id}
+                          onToggle={() =>
+                            setMenuOpenId((prev) => (prev === d.id ? null : d.id))
+                          }
+                          onClose={() => setMenuOpenId(null)}
+                          recBusy={!!recBusy[d.id]}
+                          onToggleRecording={() => {
+                            if (d.kind !== "camera") return;
+                            toggleRecording(
+                              d,
+                              d.recording?.is_recording ? "stop" : "start",
+                            );
+                          }}
+                          onTestConnection={() => setTestingCameraId(d.id)}
+                          onEdit={() =>
+                            d.kind === "camera"
+                              ? setEditingCameraId(d.id)
+                              : setScannerDetailId(d.id)
+                          }
+                          onAssignStation={() => setAssignTarget(d)}
+                          onDelete={() => {
+                            if (d.kind === "scanner") onDeleteScanner(d);
+                            else onDeleteCamera(d);
+                          }}
+                        />
                       </td>
                     </tr>
                   );
@@ -689,6 +721,43 @@ function DevicesPage() {
                 setScannerDetailId(null);
                 void load();
               }}
+            />
+          );
+        })()}
+
+      {editingCameraId &&
+        (() => {
+          const c = devices.find(
+            (d): d is CameraDevice =>
+              d.kind === "camera" && d.id === editingCameraId,
+          );
+          if (!c) return null;
+          return (
+            <CameraDialog
+              mode="edit"
+              initial={c}
+              cameras={cameraList}
+              onClose={() => setEditingCameraId(null)}
+              onSaved={() => {
+                setEditingCameraId(null);
+                void load();
+              }}
+            />
+          );
+        })()}
+
+      {testingCameraId &&
+        (() => {
+          const c = devices.find(
+            (d): d is CameraDevice =>
+              d.kind === "camera" && d.id === testingCameraId,
+          );
+          if (!c) return null;
+          return (
+            <CameraTestConnectionModal
+              camera={c}
+              onClose={() => setTestingCameraId(null)}
+              onAfterChange={() => void load()}
             />
           );
         })()}
@@ -1509,5 +1578,158 @@ function ScannerDetailDialog({
         </div>
       </form>
     </Modal>
+  );
+}
+
+function DeviceActionMenu({
+  device,
+  isOpen,
+  onToggle,
+  onClose,
+  recBusy,
+  onToggleRecording,
+  onTestConnection,
+  onEdit,
+  onAssignStation,
+  onDelete,
+}: {
+  device: Device;
+  isOpen: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  recBusy: boolean;
+  onToggleRecording: () => void;
+  onTestConnection: () => void;
+  onEdit: () => void;
+  onAssignStation: () => void;
+  onDelete?: () => void;
+}) {
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  // Compute portal position so the menu escapes the table's overflow-y-auto
+  // scroll container. Flip upwards when there is not enough space below.
+  useEffect(() => {
+    if (!isOpen || !btnRef.current) return;
+    const rect = btnRef.current.getBoundingClientRect();
+    const MENU_WIDTH = 208;
+    const MENU_HEIGHT_EST = 260;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const openUp = spaceBelow < MENU_HEIGHT_EST && rect.top > MENU_HEIGHT_EST;
+    const top = openUp ? rect.top - MENU_HEIGHT_EST - 4 : rect.bottom + 4;
+    const left = Math.max(8, rect.right - MENU_WIDTH);
+    setPos({ top, left });
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (btnRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      onClose();
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [isOpen, onClose]);
+
+  const isCamera = device.kind === "camera";
+  const isRecording = isCamera && device.recording?.is_recording;
+  // Chặn "Bắt đầu ghi" khi agent offline: enqueue vẫn được nhưng agent
+  // không xử lý được ngay → người dùng tưởng đã ghi mà thực tế chưa.
+  // Với "Dừng ghi" thì cho phép enqueue kể cả agent offline: agent lên
+  // lại sẽ nhận command và dừng.
+  const agentOnline =
+    isCamera && device.camera_online_state !== "warehouse_disconnected";
+  const canRecord =
+    isCamera && device.status === "active" && (isRecording || agentOnline);
+
+  const run = (fn: () => void) => {
+    onClose();
+    fn();
+  };
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={onToggle}
+        className="h-8 w-8 rounded-lg text-slate-500 hover:bg-slate-100 inline-flex items-center justify-center"
+        aria-label="Hành động"
+      >
+        <MoreVertical className="h-4 w-4" />
+      </button>
+      {isOpen && pos && typeof document !== "undefined" &&
+        createPortal(
+          <div
+            ref={menuRef}
+            style={{ position: "fixed", top: pos.top, left: pos.left }}
+            className="z-50 w-52 rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left text-sm"
+          >
+          {isCamera && (
+            <>
+              <button
+                onClick={() => run(onToggleRecording)}
+                disabled={recBusy || !canRecord}
+                className={`w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed ${
+                  isRecording ? "text-rose-600" : "text-emerald-600"
+                }`}
+                title={
+                  !canRecord
+                    ? !agentOnline
+                      ? "Agent kho mất kết nối — không thể bắt đầu ghi mới."
+                      : "Camera chưa Online — Test kết nối trước khi ghi."
+                    : undefined
+                }
+              >
+                {recBusy ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Circle
+                    className={`h-3.5 w-3.5 ${isRecording ? "fill-current" : ""}`}
+                  />
+                )}
+                <span className="font-semibold">
+                  {isRecording ? "Dừng ghi" : "Bắt đầu ghi"}
+                </span>
+              </button>
+              <button
+                onClick={() => run(onTestConnection)}
+                className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 text-slate-700"
+              >
+                <PlugZap className="h-3.5 w-3.5" />
+                Test kết nối
+              </button>
+            </>
+          )}
+          <button
+            onClick={() => run(onEdit)}
+            className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 text-slate-700"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            Chỉnh sửa
+          </button>
+          <div className="my-1 border-t border-slate-100" />
+          <button
+            onClick={() => run(onAssignStation)}
+            className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 text-slate-700"
+          >
+            <Link2 className="h-3.5 w-3.5" />
+            {device.current_station ? "Đổi bàn" : "Gán bàn"}
+          </button>
+          {onDelete && (
+            <button
+              onClick={() => run(onDelete)}
+              className="w-full flex items-center gap-2 px-3 py-2 hover:bg-rose-50 text-rose-600"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Xoá
+            </button>
+          )}
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }

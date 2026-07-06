@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, requirePermissionStrict, isError } from "@/lib/supabase/guard";
+import { getScopedClient } from "@/lib/supabase/scoped-client";
 import { audit } from "@/lib/audit";
 import type { Role } from "@/lib/auth";
 
@@ -18,10 +18,16 @@ export async function GET() {
   const ctx = await requirePermission("user.view");
   if (isError(ctx)) return ctx;
 
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("user_profiles")
-    .select("id, full_name, phone, role, status, created_at")
+  const scoped = await getScopedClient(ctx);
+  const { data, error } = await scoped
+    .select<{
+      id: string;
+      full_name: string;
+      phone: string | null;
+      role: Role;
+      status: string;
+      created_at: string;
+    }>("user_profiles", "id, full_name, phone, role, status, created_at")
     .order("created_at", { ascending: false });
 
   if (error) {

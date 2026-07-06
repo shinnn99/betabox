@@ -365,14 +365,32 @@ export class RecordingLifecycle {
         this.probeSpecs.delete(spec.cameraId);
         await this.deps.desiredStore.save(this.desired);
         await this.reportStatus(spec, "error", `${outcome.reason} :: ${outcome.stderrTail.slice(-500)}`);
+        // Permanent: xóa state hẳn — không có retry nào chạy tiếp.
+        this.states.delete(spec.cameraId);
       } else {
-        // Transient khi boot: giữ desired, schedule long-retry.
+        // Transient: state PHẢI giữ để scheduleLongRetry sau này lấy
+        // pendingTimer + longRetryFailCount. Xóa state ở đây (bug cũ
+        // 2026-07-06) khiến timer setTimeout đã schedule nhưng callback
+        // đọc state=null → thoát im lặng → long-retry KHÔNG BAO GIỜ
+        // chạy. Bằng chứng: hik_01 session updated_at cố định 28 phút
+        // sau boot fail transient, desired vẫn có camera → agent muốn
+        // ghi nhưng không có ai kích lại.
+        //
+        // Với ca fresh-start (startOne từ cloud command) transient:
+        // KHÔNG schedule long-retry (câu trả lời trả cloud là "fail
+        // transient", cloud/user quyết retry hay không). Trước đây
+        // state cũng bị delete → OK. Giờ giữ state nhưng KHÔNG schedule
+        // → state mồ côi. Xóa state cho ca này để tránh mồ côi.
         if (!isFreshStart) {
           await this.reportStatus(spec, "degraded", outcome.reason);
           this.scheduleLongRetry(spec);
+          // State giữ. scheduleLongRetry đã set state.pendingTimer.
+        } else {
+          // Fresh-start transient: không có retry pending → xóa state
+          // để lần startOne kế tiếp bắt đầu clean.
+          this.states.delete(spec.cameraId);
         }
       }
-      this.states.delete(spec.cameraId);
       return false;
     }
 

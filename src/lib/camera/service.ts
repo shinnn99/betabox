@@ -525,11 +525,33 @@ export async function updateCamera(
   return data ? toPublicCamera(data as CameraRow) : null;
 }
 
+export class HasProofClipsError extends Error {
+  code = "has_proof_clips" as const;
+  clipsCount: number;
+  constructor(clipsCount: number) {
+    super(`Camera còn ${clipsCount} clip pháp lý gắn với đơn hàng.`);
+    this.clipsCount = clipsCount;
+  }
+}
+
 export async function deleteCamera(
   organizationId: string,
   id: string,
 ): Promise<boolean> {
   const admin = createAdminClient();
+
+  // Chặn trước khi FK RESTRICT vỡ: clip pháp lý gắn với đơn hàng cụ thể,
+  // không cascade theo camera. Caller phải soft-delete (chuyển inactive).
+  const { count: clipsCount } = await admin
+    .from("order_proof_clips")
+    .select("id", { count: "exact", head: true })
+    .eq("organization_id", organizationId)
+    .eq("camera_id", id);
+
+  if ((clipsCount ?? 0) > 0) {
+    throw new HasProofClipsError(clipsCount ?? 0);
+  }
+
   const { error, count } = await admin
     .from("cameras")
     .delete({ count: "exact" })

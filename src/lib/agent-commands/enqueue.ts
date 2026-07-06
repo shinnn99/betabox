@@ -13,39 +13,13 @@ const GOP_PAD_AFTER_SECONDS = 3;
 // - N.ended_at > ngưỡng này = có gap thật (camera offline, respawn
 // chậm). Dưới ngưỡng coi là liền mạch (roll bình thường có thể lệch
 // vài ms).
+//
+// Gap phát hiện được feed vào `order_proof_clips.is_partial` +
+// `covered_range` + `total_gap_seconds` — dashboard hiện "clip thiếu
+// N giây". Chỉ ghi nhận dữ liệu ở panel, KHÔNG vẽ gì lên video
+// (chốt 2026-07-05: video thuần copy-stream, không burn, không
+// overlay, không mark).
 const GAP_DETECT_THRESHOLD_MS = 500;
-
-/**
- * Chống nghi cắt ghép (gap pháp lý) — 2 tầng đánh dấu:
- *
- * TẦNG 1: định vị điểm gap (gap 30-60s)
- *   Chèn dấu ngắn (mặc định 2s) tại đúng điểm nối — 2 frame đen +
- *   text "GAP <N> GIÂY / <M> PHÚT". Định vị đúng chỗ, không phá nhịp
- *   clip. Chống ca "clip nói có gap nhưng không chỉ chỗ nào".
- *
- * TẦNG 2: màn đen full (gap ≥60s)
- *   Chèn màn đen ĐÚNG độ dài gap. Phản ánh đúng "camera mất bao lâu".
- *
- * Gap <30s: chỉ burn-in warning chung ("[!] VIDEO CÓ KHOẢNG TRỐNG (N PHÚT)"),
- * không đánh dấu điểm — hiccup mạng ngắn coi là kỹ thuật vô hại.
- *
- * Ngưỡng chọn 2026-07-03 sau khi Hạnh cân UX-vs-pháp-lý:
- *   30s: đủ tráo gói cực nhẹ, camera LAN có thể hiccup 15-30s nên
- *        không lấy ngưỡng thấp hơn (tránh clip nhiều dấu vụn).
- *   60s: hành vi tráo có ý định cần ≥1 phút → màn đen full bắt buộc.
- *   2s dấu: đủ đọc text (50-60 frame), không dài như màn đen full.
- *
- * Config được qua env cho phép chỉnh theo tranh chấp thật.
- */
-const MIN_GAP_TO_MARK_SECONDS = Number(
-  process.env.MIN_GAP_TO_MARK_SECONDS ?? 30,
-);
-const MIN_GAP_TO_BLACK_FULL_SECONDS = Number(
-  process.env.MIN_GAP_TO_BLACK_FULL_SECONDS ?? 60,
-);
-const MARK_DURATION_SECONDS = Number(
-  process.env.MARK_DURATION_SECONDS ?? 2,
-);
 
 /**
  * Producer cho kênh cloud → agent. Chèn job vào agent_commands.
@@ -124,16 +98,11 @@ export async function enqueueStopRecording(
 }
 
 /**
- * BLOCKS-GO-LIVE: producer CHƯA lọc theo độ lớn gap. Nếu resolve
- * ra khoảng phủ vắt qua gap lớn (VD 14 phút cam offline), enqueue
- * vẫn cho phép cắt clip partial — clip sinh ra nối thẳng qua gap,
- * trông liền mạch nhưng bỏ mất 14 phút. Rủi ro pháp lý (xem cọc
- * chi tiết trong warehouse-agent/src/clip-cutter.ts).
- *
- * Trước go-live: hoặc thêm ngưỡng ở đây (từ chối cắt khi tổng
- * gap > X), hoặc chuyển sang chèn dấu gap lên hình (3b), hoặc
- * cảnh báo cứng phía UI dựa trên is_partial + covered_range.
- * 3a-2 CHỈ báo covered_range đầy đủ để lát sau quyết được.
+ * Cut clip = luôn copy-stream, không burn/vẽ/overlay (chốt 2026-07-05).
+ * Video thuần. Cảnh báo gap cho vận hành: dashboard đọc
+ * `order_proof_clips.is_partial` + `covered_range` + `total_gap_seconds`
+ * (đã set trong payload xuống agent → callback clip-cut-result → row
+ * DB) và hiện ở panel thông tin đơn cạnh video, không đè lên hình.
  */
 export interface EnqueueCutClipArgs {
   organizationId: string;
@@ -406,9 +375,9 @@ export async function enqueueCutClip(
     };
   }
 
-  // Phát hiện gap giữa các segment liên tiếp. Nếu có gap nội bộ →
-  // clip sẽ partial, nối thẳng qua gap (rủi ro pháp lý — xem cọc
-  // BLOCKS-GO-LIVE ở đầu file này và trong clip-cutter.ts).
+  // Phát hiện gap giữa các segment liên tiếp. Feed
+  // `order_proof_clips.is_partial` + `covered_range` + `total_gap_seconds`
+  // → panel dashboard hiện "clip thiếu N giây".
   //
   // covered_range = [min(started_at), max(ended_at)] của tập segments.
   // Khoảng cách target_start → covered_range.lower là khoảng KHÔNG có
@@ -417,7 +386,6 @@ export async function enqueueCutClip(
     from_iso: string;
     to_iso: string;
     gap_seconds: number;
-    after_segment_index: number;
   }> = [];
   let totalGapMs = 0;
   const sortedSegments = [...segments].sort(
@@ -436,9 +404,6 @@ export async function enqueueCutClip(
         from_iso: cur.ended_at,
         to_iso: next.started_at,
         gap_seconds: Math.round(diff / 1000),
-        // Chèn dấu SAU segment index này. Agent dùng để đan xen concat
-        // list: [seg0, mark_after_0, seg1, seg2, mark_after_2, seg3].
-        after_segment_index: i,
       });
     }
   }
@@ -469,48 +434,10 @@ export async function enqueueCutClip(
   const cutStartMs = targetStartMs - GOP_PAD_BEFORE_SECONDS * 1000;
   const cutEndMs = targetEndMs + GOP_PAD_AFTER_SECONDS * 1000;
 
-  // work_started_at / work_ended_at là MỐC NGHIỆP VỤ GỐC từ
-  // packing_events — cái này sẽ được BURN lên clip (3b-1) để khớp
-  // log tuyệt đối. KHÁC với target_start/target_end (đã cộng pre-roll
-  // 10s) và cut_start/cut_end (đã cộng thêm GOP pad 3s).
-  //
-  // Nếu work_started_at null (đơn không valid, không có timing
-  // window mở) → fallback scanned_at, vì RPC process_waybill_scan
-  // set work_started_at = scanned_at khi status='valid'. Với trường
-  // hợp valid → work_started_at ≡ scanned_at, fallback không đổi
-  // giá trị. Với trường hợp không valid → dùng scanned_at là mốc
-  // gần nhất có ý nghĩa.
-  //
-  // work_ended_at có thể null (đơn chưa được đóng bởi scan kế) — agent
-  // burn "(đang xử lý)" thay vì mốc.
-  const workStartedIso = (pe.work_started_at ?? pe.scanned_at) as string;
-  const workEndedIso = (pe.work_ended_at ?? null) as string | null;
-
-  // Tính marks[] — chỉ những gap ≥ ngưỡng dấu. Mỗi mark là "chèn gì
-  // vào đâu": kind (mark_short/black_full), duration_seconds, và
-  // after_segment_index (agent biết chèn sau segment nào trong concat).
-  //
-  // KHÔNG chèn mark cho gap head/tail (missedHead/missedTail) — đó là
-  // window rơi vào ngoài coverage segment, agent sẽ trim cutStart/cutEnd
-  // theo segments thật (không có gì để chèn giữa). Chỉ mark gap NỘI BỘ
-  // giữa hai segment (chống nghi cắt ghép giấu diếm giữa clip).
-  interface GapMark {
-    after_segment_index: number;
-    gap_seconds: number;
-    kind: "mark_short" | "black_full";
-    duration_seconds: number;
-  }
-  const marks: GapMark[] = gaps
-    .filter((g) => g.gap_seconds >= MIN_GAP_TO_MARK_SECONDS)
-    .map((g) => {
-      const isFull = g.gap_seconds >= MIN_GAP_TO_BLACK_FULL_SECONDS;
-      return {
-        after_segment_index: g.after_segment_index,
-        gap_seconds: g.gap_seconds,
-        kind: isFull ? "black_full" : "mark_short",
-        duration_seconds: isFull ? g.gap_seconds : MARK_DURATION_SECONDS,
-      };
-    });
+  // work_started_at/work_ended_at đã BỎ khỏi payload 2026-07-05: agent
+  // không dùng (video thuần, không burn/overlay). Panel dashboard join
+  // packing_events lấy trực tiếp — nguồn chân lý ở DB, không cần copy
+  // qua agent_commands.
 
   const payload = {
     packing_event_id: pe.id,
@@ -518,8 +445,6 @@ export async function enqueueCutClip(
     waybill_code: pe.waybill_code,
     target_start: resolved.clipStart.toISOString(),
     target_end: resolved.clipEnd.toISOString(),
-    work_started_at: workStartedIso,
-    work_ended_at: workEndedIso,
     cut_start: new Date(cutStartMs).toISOString(),
     cut_end: new Date(cutEndMs).toISOString(),
     segments: sortedSegments.map((s: SegmentFile) => ({
@@ -528,6 +453,9 @@ export async function enqueueCutClip(
       ended_at: s.ended_at,
       duration_seconds: s.duration_seconds,
     })),
+    // is_partial + covered_range + gaps + total_gap_seconds là GHI
+    // NHẬN DỮ LIỆU — feed vào order_proof_clips để panel dashboard
+    // hiện "clip thiếu N giây". Không vẽ gì lên video (chốt 2026-07-05).
     partial_coverage: isPartial,
     covered_range: {
       lower: new Date(coveredStartMs).toISOString(),
@@ -535,11 +463,6 @@ export async function enqueueCutClip(
     },
     gaps,
     total_gap_seconds: Math.round(totalGapMs / 1000),
-    // Chống nghi cắt ghép (2 tầng): dấu 2s tại gap 30-60s (định vị) +
-    // màn đen full-length ở gap ≥60s (phản ánh độ dài). Agent version
-    // cũ không đọc marks[] → cắt như cũ, không lỗi. Config MIN_GAP_*
-    // ở env, mặc định 30s/60s/2s.
-    marks,
     // Cọc #8 force_recut: agent xóa `_clips/{pe_id}.mp4` cũ trước khi
     // check idempotent. Chỉ set khi user bấm [Thử lại] — auto-poll
     // enqueue để undefined = idempotent tái sử dụng file cũ hợp lệ.

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AlertTriangle } from "lucide-react";
+import { apiFetch, useImpersonatingOrgId } from "@/lib/api-fetch";
 
 /**
  * 1.2: banner persistent "camera không phải H.264".
@@ -26,14 +27,17 @@ const POLL_INTERVAL_MS = 30_000;
 
 export default function CodecWarningBanner() {
   const [items, setItems] = useState<WarningItem[]>([]);
+  const impersonatingOrgId = useImpersonatingOrgId();
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
-        const res = await fetch("/api/cameras/codec-warnings", {
-          cache: "no-store",
-        });
+        const res = await apiFetch(
+          "/api/cameras/codec-warnings",
+          { cache: "no-store" },
+          impersonatingOrgId,
+        );
         if (!res.ok) return;
         const data = (await res.json()) as { items?: WarningItem[] };
         if (!cancelled) setItems(data.items ?? []);
@@ -47,7 +51,7 @@ export default function CodecWarningBanner() {
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+  }, [impersonatingOrgId]);
 
   if (items.length === 0) return null;
 

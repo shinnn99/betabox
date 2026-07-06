@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, requirePermissionStrict, isError } from "@/lib/supabase/guard";
+import { getScopedClient } from "@/lib/supabase/scoped-client";
 import { audit } from "@/lib/audit";
 
 interface RouteContext {
@@ -13,10 +13,9 @@ export async function GET(_req: Request, { params }: RouteContext) {
   if (isError(ctx)) return ctx;
   const { id } = await params;
 
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("warehouses")
-    .select("id, code, name, address, status, session_fallback_seconds, created_at, updated_at")
+  const scoped = await getScopedClient(ctx);
+  const { data, error } = await scoped
+    .select("warehouses", "id, code, name, address, status, session_fallback_seconds, created_at, updated_at")
     .eq("id", id)
     .maybeSingle();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

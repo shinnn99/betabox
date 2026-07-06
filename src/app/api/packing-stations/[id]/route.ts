@@ -69,11 +69,30 @@ export async function DELETE(_req: Request, { params }: RouteContext) {
 
   const admin = createAdminClient();
 
+  // Cross-tenant guard: verify station thuộc org trước mọi tác động
+  // cascade. Nếu attacker gửi station_id org khác, refuse 404 SỚM —
+  // không cascade sang staff_work_sessions/station_device_assignments
+  // org khác. Update packing_stations dưới cũng có org filter (defense-
+  // in-depth), nhưng verify trước tránh cascade oan.
+  const { data: stationOwn } = await admin
+    .from("packing_stations")
+    .select("id")
+    .eq("id", id)
+    .eq("organization_id", ctx.organizationId)
+    .maybeSingle();
+  if (!stationOwn) {
+    return NextResponse.json(
+      { error: "not_found", message: "Không tìm thấy bàn." },
+      { status: 404 },
+    );
+  }
+
   // Refuse if station has an active work session — operator should end it
   // first. Otherwise archiving silently breaks the live dashboard.
   const { count: activeSessions } = await admin
     .from("staff_work_sessions")
     .select("id", { count: "exact", head: true })
+    .eq("organization_id", ctx.organizationId)
     .eq("station_id", id)
     .eq("status", "active");
   if ((activeSessions ?? 0) > 0) {
@@ -93,6 +112,7 @@ export async function DELETE(_req: Request, { params }: RouteContext) {
       unassigned_at: new Date().toISOString(),
       status: "ended",
     })
+    .eq("organization_id", ctx.organizationId)
     .eq("station_id", id)
     .is("unassigned_at", null);
 
