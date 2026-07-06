@@ -2,6 +2,11 @@ import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { decryptPassword, encryptPassword } from "./crypto";
 import { buildRtspUrl } from "./rtsp";
+import {
+  buildCodecInvalidationPatch,
+  detectConnectionChange,
+} from "./codec-invalidation";
+import { enqueueProbeCodec } from "@/lib/agent-commands/enqueue";
 
 // -- Org-scoped in-process cache for listCameras-side joins ----------------
 //
@@ -512,6 +517,15 @@ export async function updateCamera(
 
   if (Object.keys(update).length === 0) return null;
 
+  // HIGH-11: nếu đổi field kết nối (ip/rtsp_port/rtsp_path/username/password),
+  // reset codec_detected snapshot cũ + enqueue probe mới. Atomic ở UPDATE
+  // để tránh cửa sổ "connection mới + codec cũ".
+  const connectionChanged = detectConnectionChange(input);
+  const shouldInvalidateCodec = connectionChanged.length > 0;
+  if (shouldInvalidateCodec) {
+    Object.assign(update, buildCodecInvalidationPatch());
+  }
+
   const admin = createAdminClient();
   const { data, error } = await admin
     .from("cameras")
@@ -522,6 +536,38 @@ export async function updateCamera(
     .maybeSingle();
   if (error) throw error;
   if (data) invalidateCameraCaches(organizationId);
+
+  // Best-effort enqueue probe. Camera update đã ổn — probe fail chỉ nghĩa
+  // là snapshot codec sẽ ở null cho đến khi user thao tác lại (VD bấm
+  // "Kiểm codec" trên UI). KHÔNG throw để không rollback update.
+  if (data && shouldInvalidateCodec) {
+    try {
+      const { data: agent } = await admin
+        .from("warehouse_agents")
+        .select("id")
+        .eq("organization_id", organizationId)
+        .eq("status", "active")
+        .order("last_seen_at", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .maybeSingle();
+      if (agent) {
+        await enqueueProbeCodec({
+          organizationId,
+          agentId: agent.id,
+          cameraId: id,
+        });
+      } else {
+        console.warn(
+          `[updateCamera] codec invalidated (${connectionChanged.join(",")}) camera=${id} — no active agent to enqueue probe`,
+        );
+      }
+    } catch (probeErr) {
+      console.error(
+        `[updateCamera] codec invalidated (${connectionChanged.join(",")}) camera=${id} — enqueue probe failed: ${(probeErr as Error).message}`,
+      );
+    }
+  }
+
   return data ? toPublicCamera(data as CameraRow) : null;
 }
 
