@@ -172,7 +172,7 @@ export async function markSessionStopped(
   opts: { errorMessage?: string | null } = {},
 ): Promise<void> {
   const admin = createAdminClient();
-  await admin
+  const { error } = await admin
     .from("camera_recording_sessions")
     .update({
       status: opts.errorMessage ? "error" : "stopped",
@@ -180,6 +180,13 @@ export async function markSessionStopped(
       error_message: opts.errorMessage ?? null,
     })
     .eq("id", sessionId);
+  if (error) {
+    // Session giữ status cũ (recording/error) — dashboard sẽ hiển thị sai.
+    // Log để ops dọn tay. Không throw để caller (stop route) vẫn hoàn thành.
+    console.error(
+      `[markSessionStopped] update failed session=${sessionId} intended_status=${opts.errorMessage ? "error" : "stopped"} code=${error.code ?? "?"} message=${error.message}`,
+    );
+  }
 }
 
 // ---------- Files ----------
@@ -259,12 +266,17 @@ export async function syncCameraFiles(
       return { scanned: 0, inserted: 0, updated: 0, deleted: 0 };
     }
     const admin = createAdminClient();
-    const { data: deleted } = await admin
+    const { data: deleted, error: delErr } = await admin
       .from("camera_recording_files")
       .delete({ count: "exact" })
       .eq("organization_id", organizationId)
       .eq("camera_id", camera.id)
       .select("id");
+    if (delErr) {
+      console.error(
+        `[syncCameraFiles] purge failed camera=${camera.id} code=${delErr.code ?? "?"} message=${delErr.message}`,
+      );
+    }
     return {
       scanned: 0,
       inserted: 0,
@@ -348,12 +360,17 @@ export async function syncCameraFiles(
     // Directory exists but contains nothing we recognize. Same logic:
     // drop stale DB rows for this camera.
     const admin = createAdminClient();
-    const { data: deleted } = await admin
+    const { data: deleted, error: delErr } = await admin
       .from("camera_recording_files")
       .delete({ count: "exact" })
       .eq("organization_id", organizationId)
       .eq("camera_id", camera.id)
       .select("id");
+    if (delErr) {
+      console.error(
+        `[syncCameraFiles] purge failed camera=${camera.id} code=${delErr.code ?? "?"} message=${delErr.message}`,
+      );
+    }
     return {
       scanned: 0,
       inserted: 0,
@@ -511,11 +528,16 @@ export async function syncCameraFiles(
     .map((r) => r.id as string);
   let deleted = 0;
   if (orphanIds.length > 0) {
-    const { data: del } = await admin
+    const { data: del, error: delErr } = await admin
       .from("camera_recording_files")
       .delete({ count: "exact" })
       .in("id", orphanIds)
       .select("id");
+    if (delErr) {
+      console.error(
+        `[syncCameraFiles] orphan delete failed camera=${camera.id} count=${orphanIds.length} code=${delErr.code ?? "?"} message=${delErr.message}`,
+      );
+    }
     deleted = del?.length ?? 0;
   }
 

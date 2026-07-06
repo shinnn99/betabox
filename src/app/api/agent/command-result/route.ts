@@ -158,7 +158,7 @@ export async function POST(req: Request) {
         const warning = typeof body.result.warning === "string"
           ? body.result.warning.trim().slice(0, 100)
           : null;
-        await admin
+        const { error: camErr } = await admin
           .from("cameras")
           .update({
             codec_detected: codec,
@@ -169,8 +169,13 @@ export async function POST(req: Request) {
           })
           .eq("id", cameraId)
           .eq("organization_id", updated.organization_id);
+        if (camErr) {
+          console.error(
+            `[command-result] probe_codec callback update failed cmd=${body.command_id} camera=${cameraId} code=${camErr.code ?? "?"} message=${camErr.message}`,
+          );
+        }
       } else if (body.status === "failed") {
-        await admin
+        const { error: camErr } = await admin
           .from("cameras")
           .update({
             codec_probed_at: nowIso,
@@ -179,6 +184,11 @@ export async function POST(req: Request) {
           })
           .eq("id", cameraId)
           .eq("organization_id", updated.organization_id);
+        if (camErr) {
+          console.error(
+            `[command-result] probe_codec failure callback update failed cmd=${body.command_id} camera=${cameraId} code=${camErr.code ?? "?"} message=${camErr.message}`,
+          );
+        }
       }
     }
   }
@@ -212,7 +222,7 @@ export async function POST(req: Request) {
       if (typeof body.result?.transport_used === "string") {
         testResult.transport_used = body.result.transport_used;
       }
-      await admin
+      const { error: camErr } = await admin
         .from("cameras")
         .update({
           last_test_result: testResult,
@@ -221,6 +231,11 @@ export async function POST(req: Request) {
         })
         .eq("id", cameraId)
         .eq("organization_id", updated.organization_id);
+      if (camErr) {
+        console.error(
+          `[command-result] test_camera_connection callback update failed cmd=${body.command_id} camera=${cameraId} code=${camErr.code ?? "?"} message=${camErr.message}`,
+        );
+      }
     }
   }
 

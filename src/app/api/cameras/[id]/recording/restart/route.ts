@@ -118,7 +118,7 @@ export async function POST(req: Request, { params }: RouteContext) {
     });
     startCommandId = enq.command_id;
   } catch (err) {
-    await admin
+    const { error: markErr } = await admin
       .from("camera_recording_sessions")
       .update({
         status: "error",
@@ -126,6 +126,11 @@ export async function POST(req: Request, { params }: RouteContext) {
         error_message: `enqueue_failed: ${(err as Error).message}`,
       })
       .eq("id", newSession.id);
+    if (markErr) {
+      console.error(
+        `[recording.restart] failed to mark session error after enqueue failure session=${newSession.id} code=${markErr.code ?? "?"} message=${markErr.message}`,
+      );
+    }
     return NextResponse.json(
       { error: "enqueue_failed", message: (err as Error).message },
       { status: 500 },

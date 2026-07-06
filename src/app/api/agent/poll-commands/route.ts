@@ -150,10 +150,15 @@ export async function POST(req: Request) {
   }
 
   const nowIso = new Date().toISOString();
-  await admin
+  const { error: seenErr } = await admin
     .from("warehouse_agents")
     .update({ last_seen_at: nowIso })
     .eq("id", agent.id);
+  if (seenErr) {
+    console.warn(
+      `[poll-commands] last_seen_at update failed agent=${agent.id} code=${seenErr.code ?? "?"} message=${seenErr.message}`,
+    );
+  }
 
   // agent_state là optional. Agent Lát 2 gửi kèm `active_recordings`
   // = danh sách session ffmpeg thực sự sống trên máy agent. Cloud dùng
@@ -170,7 +175,7 @@ export async function POST(req: Request) {
   const activeRecordings = parseAgentState(parsedBody);
   if (activeRecordings.length > 0) {
     const sessionIds = activeRecordings.map((r) => r.session_id);
-    await admin
+    const { error: sessErr } = await admin
       .from("camera_recording_sessions")
       .update({
         status: "recording",
@@ -181,6 +186,14 @@ export async function POST(req: Request) {
       .in("id", sessionIds)
       .eq("organization_id", agent.organization_id)
       .in("status", ["recording", "error"]);
+    if (sessErr) {
+      // Business-critical: rescue session error→recording fail = dashboard
+      // hiển thị sai state. Log để ops thấy; không throw để poll response
+      // vẫn trả commands (agent tiếp tục chạy).
+      console.error(
+        `[poll-commands] rescue session update failed agent=${agent.id} count=${sessionIds.length} code=${sessErr.code ?? "?"} message=${sessErr.message}`,
+      );
+    }
   }
 
   return NextResponse.json({
