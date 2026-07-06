@@ -335,7 +335,7 @@ export async function enqueueCutClip(
   const { data: pe, error: peErr } = await admin
     .from("packing_events")
     .select(
-      "id, organization_id, warehouse_id, station_id, staff_id, work_session_id, scanned_at, proof_camera_id, waybill_code, work_started_at, work_ended_at",
+      "id, organization_id, warehouse_id, station_id, staff_id, work_session_id, scanned_at, proof_camera_id, waybill_code, work_started_at, work_ended_at, work_duration_seconds, timing_status",
     )
     .eq("id", args.packingEventId)
     .eq("organization_id", args.organizationId)
@@ -355,6 +355,8 @@ export async function enqueueCutClip(
       scanned_at: pe.scanned_at,
       proof_camera_id: pe.proof_camera_id,
       work_ended_at: pe.work_ended_at,
+      work_duration_seconds: pe.work_duration_seconds,
+      timing_status: pe.timing_status,
     },
   });
 
