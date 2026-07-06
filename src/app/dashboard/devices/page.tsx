@@ -1636,14 +1636,21 @@ function DeviceActionMenu({
 
   const isCamera = device.kind === "camera";
   const isRecording = isCamera && device.recording?.is_recording;
-  // Chặn "Bắt đầu ghi" khi agent offline: enqueue vẫn được nhưng agent
-  // không xử lý được ngay → người dùng tưởng đã ghi mà thực tế chưa.
+  // Chặn "Bắt đầu ghi" khi agent kho hoặc camera không sẵn sàng: enqueue
+  // vẫn được nhưng người dùng tưởng đã ghi mà thực tế chưa. Sản phẩm bằng
+  // chứng — thà chặn cứng buộc user Test kết nối trước còn hơn Start vào
+  // camera chết rồi tưởng đang ghi.
   // Với "Dừng ghi" thì cho phép enqueue kể cả agent offline: agent lên
   // lại sẽ nhận command và dừng.
   const agentOnline =
     isCamera && device.camera_online_state !== "warehouse_disconnected";
+  // Camera phải Online mới cho Start. offline / not_probed / warehouse_disconnected
+  // đều chặn. Đang recording thì cho Stop bất kể trạng thái.
+  const cameraOnline = isCamera && device.camera_online_state === "online";
   const canRecord =
-    isCamera && device.status === "active" && (isRecording || agentOnline);
+    isCamera &&
+    device.status === "active" &&
+    (isRecording || (agentOnline && cameraOnline));
 
   const run = (fn: () => void) => {
     onClose();
@@ -1677,9 +1684,11 @@ function DeviceActionMenu({
                 }`}
                 title={
                   !canRecord
-                    ? !agentOnline
-                      ? "Agent kho mất kết nối — không thể bắt đầu ghi mới."
-                      : "Camera chưa Online — Test kết nối trước khi ghi."
+                    ? isCamera && device.status !== "active"
+                      ? "Camera đang Tạm ngưng — chỉnh sửa và đổi Trạng thái sang Đang hoạt động."
+                      : !agentOnline
+                        ? "Agent kho mất kết nối — không thể bắt đầu ghi mới."
+                        : "Camera chưa Online — Test kết nối trước khi ghi."
                     : undefined
                 }
               >
