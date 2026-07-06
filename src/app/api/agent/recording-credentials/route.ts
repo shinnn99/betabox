@@ -155,10 +155,15 @@ export async function POST(req: Request) {
     };
   });
 
-  await admin
+  const { error: seenErr } = await admin
     .from("warehouse_agents")
     .update({ last_seen_at: new Date().toISOString() })
     .eq("id", agent.id);
+  if (seenErr) {
+    console.warn(
+      `[recording-credentials] last_seen_at update failed agent=${agent.id} code=${seenErr.code ?? "?"} message=${seenErr.message}`,
+    );
+  }
 
   return NextResponse.json({ ok: true, items });
 }

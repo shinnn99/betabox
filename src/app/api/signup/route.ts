@@ -194,7 +194,7 @@ export async function POST(req: Request) {
   // (ip, email, order, limit) như trước không được PostgREST đảm bảo bounded
   // — có thể update sai row hoặc 0 row silent (bug agent 1 phát hiện 2026-07-06).
   const admin = createAdminClient();
-  const { data: attempt } = await admin
+  const { data: attempt, error: attemptErr } = await admin
     .from("signup_attempts")
     .insert({
       ip,
@@ -203,6 +203,14 @@ export async function POST(req: Request) {
     })
     .select("id")
     .single();
+  if (attemptErr) {
+    // Audit-critical: signup_attempts là bằng chứng rate-limit + audit trail.
+    // Fail = mất trace. Log để ops thấy — KHÔNG fail-close signup nghiệp vụ
+    // (không muốn ai đó DoS rate-limit table làm hỏng đăng ký hoàn toàn).
+    console.error(
+      `[signup] attempt insert failed ip=${ip} email_hash=${(email || "<empty>").slice(0, 3)}*** code=${attemptErr.code ?? "?"} message=${attemptErr.message}`,
+    );
+  }
   const attemptId = attempt?.id as string | undefined;
 
   // ── Validate input
@@ -340,10 +348,17 @@ export async function POST(req: Request) {
     // ở đầu route (không dùng ip+email+order+limit — PostgREST không đảm bảo
     // bounded update, có thể update sai row hoặc 0 row silent).
     if (attemptId) {
-      await admin
+      const { error: succErr } = await admin
         .from("signup_attempts")
         .update({ succeeded: true })
         .eq("id", attemptId);
+      if (succErr) {
+        // Signup thành công nhưng flag succeeded chưa flip → rate-limit
+        // count vẫn tăng. Log để ops audit; không rollback nghiệp vụ.
+        console.error(
+          `[signup] attempt succeeded flag update failed attempt=${attemptId} code=${succErr.code ?? "?"} message=${succErr.message}`,
+        );
+      }
     }
 
     return NextResponse.json(

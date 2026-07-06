@@ -243,10 +243,15 @@ export async function POST(req: Request) {
     }
   }
 
-  await admin
+  const { error: seenErr } = await admin
     .from("warehouse_agents")
     .update({ last_seen_at: nowIso })
     .eq("id", agent.id);
+  if (seenErr) {
+    console.warn(
+      `[camera-probe] last_seen_at update failed agent=${agent.id} code=${seenErr.code ?? "?"} message=${seenErr.message}`,
+    );
+  }
 
   return NextResponse.json({ ok: true, updated });
 }

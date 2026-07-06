@@ -82,10 +82,15 @@ export async function POST(req: Request) {
   if (timeDriftSeconds !== null) {
     updates.time_drift_seconds = timeDriftSeconds;
   }
-  await admin
+  const { error: seenErr } = await admin
     .from("warehouse_agents")
     .update(updates)
     .eq("id", agent.id);
+  if (seenErr) {
+    console.warn(
+      `[heartbeat] last_seen_at update failed agent=${agent.id} code=${seenErr.code ?? "?"} message=${seenErr.message}`,
+    );
+  }
 
   return NextResponse.json({ ok: true, last_seen_at: now });
 }
