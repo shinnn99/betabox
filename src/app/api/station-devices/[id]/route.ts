@@ -122,15 +122,43 @@ export async function DELETE(_req: Request, { params }: RouteContext) {
 
   const admin = createAdminClient();
 
-  // Close current assignment if any.
-  await admin
+  // HIGH-8: verify device thuộc org TRƯỚC khi update assignment.
+  // Trước đây UPDATE assignment chạy trước ownership check → attacker
+  // cầm UUID device org khác có thể end assignment cross-tenant.
+  const { data: existing, error: lookupErr } = await admin
+    .from("station_devices")
+    .select("id")
+    .eq("id", id)
+    .eq("organization_id", ctx.organizationId)
+    .maybeSingle();
+  if (lookupErr) {
+    return NextResponse.json(
+      { error: "lookup_failed", message: lookupErr.message },
+      { status: 500 },
+    );
+  }
+  if (!existing) {
+    // Policy-consistent 404 — không leak "device tồn tại nhưng khác org".
+    return NextResponse.json({ error: "not_found" }, { status: 404 });
+  }
+
+  // Close current assignment — cũng scope organization_id để defense-in-depth
+  // (nếu FK cross-org tồn tại do drift, không misfire).
+  const { error: assignErr } = await admin
     .from("station_device_assignments")
     .update({
       unassigned_at: new Date().toISOString(),
       status: "ended",
     })
     .eq("device_id", id)
+    .eq("organization_id", ctx.organizationId)
     .is("unassigned_at", null);
+  if (assignErr) {
+    return NextResponse.json(
+      { error: "assignment_update_failed", message: assignErr.message },
+      { status: 500 },
+    );
+  }
 
   const { error } = await admin
     .from("station_devices")
