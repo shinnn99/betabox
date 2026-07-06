@@ -1,3 +1,18 @@
+-- ============================================================================
+-- KNOWN DUPLICATE VERSION — DO NOT RENAME.
+--
+-- File này CÙNG version `20260704160000` với
+-- `_drop_organizations_metadata_columns.sql`. MCP query prod 2026-07-07 xác
+-- nhận cả 2 đã chạy nhưng `schema_migrations` chỉ ghi 1 row (file này).
+--
+-- Reconciliation: `20260707140000_reconcile_duplicate_20260704160000.sql`
+-- (idempotent, đảm bảo state đúng trên fresh clone).
+--
+-- KHÔNG TẠO file cùng version 20260704160000 khác. CI guard
+-- `scripts/check-migration-versions.mjs` chặn file thứ 3.
+-- Chi tiết: docs/remediation-2026-07-b0.md
+-- ============================================================================
+
 -- N1: index đúng shape cho query hot của dashboard + live view.
 --
 -- Bối cảnh (đã verify pg_indexes DB thật 2026-07-04, không grep repo):

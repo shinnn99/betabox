@@ -183,14 +183,20 @@ export async function POST(req: Request) {
 
   let updated = 0;
   if (rowsToUpsert.length > 0) {
-    // Batch UPDATE qua RPC — 1 round-trip cho toàn bộ probe, thay N
-    // update tuần tự. Không dùng .upsert() vì cameras có NOT NULL columns
-    // (name, camera_code, ip) không có default; upsert-with-id chỉ UPDATE
-    // khi row tồn tại nhưng nếu race (row bị xóa giữa allowedById.get và
-    // upsert) sẽ INSERT fail. RPC UPDATE ... FROM (subquery) sạch hơn.
-    const { data: updatedCount, error } = await admin.rpc(
-      "apply_camera_probes",
+    // Batch UPDATE qua RPC v2 — 1 round-trip cho toàn bộ probe, tenant
+    // filter đã đưa vào RPC (WHERE c.organization_id = p_organization_id).
+    // Caller PHẢI khai p_organization_id lấy từ HMAC-verified agent context
+    // (agent.organization_id), KHÔNG lấy mù từ request body.
+    //
+    // Bảo vệ hai tầng:
+    //   Tầng 1 (đã có): route pre-filter cameraIds qua SELECT eq(org)
+    //     → rowsToUpsert chỉ chứa camera đúng org.
+    //   Tầng 2 (mới): RPC v2 UPDATE ... WHERE c.organization_id = ...
+    //     → dù caller build sai payload, DB vẫn từ chối.
+    const { data: rpcResult, error } = await admin.rpc(
+      "apply_camera_probes_v2",
       {
+        p_organization_id: agent.organization_id,
         p_probes: rowsToUpsert.map((r) => ({
           id: r.id,
           last_probe_ok: r.last_probe_ok,
@@ -199,8 +205,41 @@ export async function POST(req: Request) {
         })),
       },
     );
-    if (!error && typeof updatedCount === "number") {
-      updated = updatedCount;
+
+    // B1.1a: RPC error → fail request. Không âm thầm 200 với updated=0
+    // (agent sẽ nghĩ probe đã ghi thành công → không retry).
+    if (error) {
+      console.error(
+        `[camera-probe] apply_camera_probes_v2 failed agent=${agent.id} code=${error.code ?? "?"} message=${error.message}`,
+      );
+      return NextResponse.json(
+        { error: "probe_apply_failed" },
+        { status: 500 },
+      );
+    }
+
+    // Parse response { requested, updated, rejected }.
+    if (rpcResult && typeof rpcResult === "object") {
+      const r = rpcResult as {
+        requested?: number;
+        updated?: number;
+        rejected?: number;
+      };
+      updated = typeof r.updated === "number" ? r.updated : 0;
+      const requested = typeof r.requested === "number" ? r.requested : rowsToUpsert.length;
+      const rejected = typeof r.rejected === "number" ? r.rejected : 0;
+
+      // B1.1a: rejected > 0 = dấu hiệu race (camera vừa move org?) hoặc
+      // bug logic (pre-filter và RPC filter lệch) hoặc tấn công (payload
+      // build cross-tenant). Log structured warning KHÔNG chứa camera_ids
+      // (chống rò danh sách camera Org khác qua log). Không tiết lộ chi
+      // tiết cho agent — response generic vẫn 200 vì tầng 1 pre-filter
+      // đã đảm bảo không có camera Org khác trong payload.
+      if (rejected > 0) {
+        console.warn(
+          `[camera-probe] rpc_reject agent=${agent.id} org=${agent.organization_id} requested=${requested} updated=${updated} rejected=${rejected}`,
+        );
+      }
     }
   }
 
