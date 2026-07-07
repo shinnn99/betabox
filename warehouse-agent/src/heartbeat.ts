@@ -1,5 +1,6 @@
-import { signBody } from "./signing";
-import { fetchWithRetry } from "./fetch-error";
+import { signBodyV2 } from "./signing";
+import { AGENT_API_PATHS } from "./agent-api-paths";
+import { fetchWithRetrySigned } from "./fetch-error";
 
 /**
  * Heartbeat có RETRY. Nếu tất cả retry đều fail, throw để caller quyết
@@ -24,19 +25,20 @@ export async function sendHeartbeat(params: {
     bodyObj.time_drift_seconds = driftSeconds;
   }
   const body = JSON.stringify(bodyObj);
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
-  const res = await fetchWithRetry(
-    `${params.backendUrl}/api/warehouse/heartbeat`,
-    {
+  const res = await fetchWithRetrySigned(
+    `${params.backendUrl}${AGENT_API_PATHS.heartbeat}`,
+    () => ({
       method: "POST",
-      headers,
+      headers: signBodyV2({
+        agentCode: params.agentCode,
+        agentSecret: params.agentSecret,
+        method: "POST",
+        canonicalPath: AGENT_API_PATHS.heartbeat,
+        body,
+      }),
       body,
       redirect: "manual",
-    },
+    }),
     { label: "heartbeat" },
   );
   return { ok: res.ok, status: res.status, driftSeconds };

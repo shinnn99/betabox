@@ -75,7 +75,7 @@ export async function POST(req: Request) {
   const admin = createAdminClient();
   const { data: agent, error: agentErr } = await admin
     .from("warehouse_agents")
-    .select("id, organization_id, status, secret")
+    .select("id, organization_id, status, secret, hmac_v2_enforced_at")
     .eq("code", headers.code)
     .maybeSingle();
   if (agentErr) {
@@ -94,6 +94,7 @@ export async function POST(req: Request) {
     canonicalPath: AGENT_API_PATHS.clipUploadComplete,
     headers,
     agentId: agent.id,
+    hmacV2EnforcedAt: agent.hmac_v2_enforced_at,
     secret: agent.secret as string,
   });
   if (!verdict.ok) {

@@ -123,6 +123,40 @@ export async function fetchWithRetry(
 }
 
 /**
+ * Biến thể cho request HMAC v2: mỗi attempt phải sinh headers mới (nonce
+ * mới + timestamp mới). Nếu tái dùng RequestInit cũ, backend reject
+ * attempt sau là replay.
+ *
+ * Caller pass `initFactory` — trả về RequestInit mới mỗi lần gọi (ký lại
+ * body → sinh nonce + timestamp). Body string giống nhau giữa các
+ * attempt để backend đọc body content chuẩn; chỉ headers đổi.
+ */
+export async function fetchWithRetrySigned(
+  input: string | URL,
+  initFactory: () => RequestInit,
+  options?: FetchWithRetryOptions,
+): Promise<Response> {
+  const maxAttempts = options?.maxAttempts ?? 4;
+  const initialDelayMs = options?.initialDelayMs ?? 500;
+  const backoffFactor = options?.backoffFactor ?? 3;
+
+  let lastErr: unknown;
+  let delayMs = initialDelayMs;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fetch(input, initFactory());
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableFetchError(err)) throw err;
+      if (attempt === maxAttempts) break;
+      await new Promise((r) => setTimeout(r, delayMs));
+      delayMs *= backoffFactor;
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * Log rate limiter theo key. Mục đích: chặn spam log khi cùng một lỗi
  * lặp lại liên tục (VD Vercel POP reset gặp mỗi 15s → 240 dòng/giờ).
  *

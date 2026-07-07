@@ -1,8 +1,9 @@
 import { SerialPort } from "serialport";
-import { signBody } from "./signing";
+import { signBodyV2 } from "./signing";
+import { AGENT_API_PATHS } from "./agent-api-paths";
 import {
   describeFetchError,
-  fetchWithRetry,
+  fetchWithRetrySigned,
   LogRateLimiter,
 } from "./fetch-error";
 
@@ -90,20 +91,21 @@ export async function postDiscovery(params: {
   ports: PortInfo[];
 }): Promise<DiscoveryResult | null> {
   const body = JSON.stringify({ ports: params.ports });
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
   try {
-    const res = await fetchWithRetry(
-      `${params.backendUrl}/api/warehouse/discovery`,
-      {
+    const res = await fetchWithRetrySigned(
+      `${params.backendUrl}${AGENT_API_PATHS.discovery}`,
+      () => ({
         method: "POST",
-        headers,
+        headers: signBodyV2({
+          agentCode: params.agentCode,
+          agentSecret: params.agentSecret,
+          method: "POST",
+          canonicalPath: AGENT_API_PATHS.discovery,
+          body,
+        }),
         body,
         redirect: "manual",
-      },
+      }),
       { label: "discovery" },
     );
     if (!res.ok) {

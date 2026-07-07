@@ -1,5 +1,6 @@
-import { signBody } from "./signing";
-import { fetchWithRetry } from "./fetch-error";
+import { signBodyV2 } from "./signing";
+import { AGENT_API_PATHS } from "./agent-api-paths";
+import { fetchWithRetrySigned } from "./fetch-error";
 
 export interface AgentCommand {
   id: string;
@@ -27,17 +28,21 @@ export async function pollCommands(params: {
   agentSecret: string;
 }): Promise<AgentCommand[]> {
   const body = JSON.stringify({});
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
-  const res = await fetchWithRetry(`${params.backendUrl}/api/agent/poll-commands`, {
-    method: "POST",
-    headers,
-    body,
-    redirect: "manual",
-  });
+  const res = await fetchWithRetrySigned(
+    `${params.backendUrl}${AGENT_API_PATHS.pollCommands}`,
+    () => ({
+      method: "POST",
+      headers: signBodyV2({
+        agentCode: params.agentCode,
+        agentSecret: params.agentSecret,
+        method: "POST",
+        canonicalPath: AGENT_API_PATHS.pollCommands,
+        body,
+      }),
+      body,
+      redirect: "manual",
+    }),
+  );
   if (!res.ok) {
     throw new Error(`poll-commands ${res.status}`);
   }
@@ -73,17 +78,21 @@ export async function pollCommandsWithState(params: {
     agent_state: { active_recordings: params.activeRecordings },
     encoding_busy: params.encodingBusy ?? false,
   });
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
-  const res = await fetchWithRetry(`${params.backendUrl}/api/agent/poll-commands`, {
-    method: "POST",
-    headers,
-    body,
-    redirect: "manual",
-  });
+  const res = await fetchWithRetrySigned(
+    `${params.backendUrl}${AGENT_API_PATHS.pollCommands}`,
+    () => ({
+      method: "POST",
+      headers: signBodyV2({
+        agentCode: params.agentCode,
+        agentSecret: params.agentSecret,
+        method: "POST",
+        canonicalPath: AGENT_API_PATHS.pollCommands,
+        body,
+      }),
+      body,
+      redirect: "manual",
+    }),
+  );
   if (!res.ok) {
     throw new Error(`poll-commands ${res.status}`);
   }
@@ -106,17 +115,21 @@ export async function fetchRecordingCredentials(params: {
   cameraIds: string[];
 }): Promise<CredentialItem[]> {
   const body = JSON.stringify({ camera_ids: params.cameraIds });
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
-  const res = await fetchWithRetry(`${params.backendUrl}/api/agent/recording-credentials`, {
-    method: "POST",
-    headers,
-    body,
-    redirect: "manual",
-  });
+  const res = await fetchWithRetrySigned(
+    `${params.backendUrl}${AGENT_API_PATHS.recordingCredentials}`,
+    () => ({
+      method: "POST",
+      headers: signBodyV2({
+        agentCode: params.agentCode,
+        agentSecret: params.agentSecret,
+        method: "POST",
+        canonicalPath: AGENT_API_PATHS.recordingCredentials,
+        body,
+      }),
+      body,
+      redirect: "manual",
+    }),
+  );
   if (!res.ok) {
     throw new Error(`recording-credentials ${res.status}`);
   }
@@ -140,17 +153,21 @@ export async function fetchAllActiveCameraCredentials(params: {
   agentSecret: string;
 }): Promise<CredentialItem[]> {
   const body = JSON.stringify({ camera_ids: [], all_active: true });
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
-  const res = await fetchWithRetry(`${params.backendUrl}/api/agent/recording-credentials`, {
-    method: "POST",
-    headers,
-    body,
-    redirect: "manual",
-  });
+  const res = await fetchWithRetrySigned(
+    `${params.backendUrl}${AGENT_API_PATHS.recordingCredentials}`,
+    () => ({
+      method: "POST",
+      headers: signBodyV2({
+        agentCode: params.agentCode,
+        agentSecret: params.agentSecret,
+        method: "POST",
+        canonicalPath: AGENT_API_PATHS.recordingCredentials,
+        body,
+      }),
+      body,
+      redirect: "manual",
+    }),
+  );
   if (!res.ok) {
     throw new Error(`recording-credentials all_active ${res.status}`);
   }
@@ -187,18 +204,22 @@ export async function postRecordingStatus(params: {
     codec_detected: params.codecDetected ?? null,
     codec_warning: params.codecWarning ?? null,
   });
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
   try {
-    const res = await fetchWithRetry(`${params.backendUrl}/api/agent/recording-status`, {
-      method: "POST",
-      headers,
-      body,
-      redirect: "manual",
-    });
+    const res = await fetchWithRetrySigned(
+      `${params.backendUrl}${AGENT_API_PATHS.recordingStatus}`,
+      () => ({
+        method: "POST",
+        headers: signBodyV2({
+          agentCode: params.agentCode,
+          agentSecret: params.agentSecret,
+          method: "POST",
+          canonicalPath: AGENT_API_PATHS.recordingStatus,
+          body,
+        }),
+        body,
+        redirect: "manual",
+      }),
+    );
     return { ok: res.ok, status: res.status };
   } catch {
     return { ok: false, status: 0 };
@@ -230,18 +251,22 @@ export async function postRecordingFiles(params: {
   files: SegmentFilePayload[];
 }): Promise<PostRecordingFilesResult> {
   const body = JSON.stringify({ files: params.files });
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
   try {
-    const res = await fetchWithRetry(`${params.backendUrl}/api/agent/recording-files`, {
-      method: "POST",
-      headers,
-      body,
-      redirect: "manual",
-    });
+    const res = await fetchWithRetrySigned(
+      `${params.backendUrl}${AGENT_API_PATHS.recordingFiles}`,
+      () => ({
+        method: "POST",
+        headers: signBodyV2({
+          agentCode: params.agentCode,
+          agentSecret: params.agentSecret,
+          method: "POST",
+          canonicalPath: AGENT_API_PATHS.recordingFiles,
+          body,
+        }),
+        body,
+        redirect: "manual",
+      }),
+    );
     if (!res.ok) return { ok: false, status: res.status };
     const json = (await res.json()) as {
       ok: boolean;
@@ -277,17 +302,21 @@ export async function fetchKnownRecordingFiles(params: {
     camera_ids: params.cameraIds,
     since_iso: params.sinceIso,
   });
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
-  const res = await fetchWithRetry(`${params.backendUrl}/api/agent/recording-files/known`, {
-    method: "POST",
-    headers,
-    body,
-    redirect: "manual",
-  });
+  const res = await fetchWithRetrySigned(
+    `${params.backendUrl}${AGENT_API_PATHS.recordingFilesKnown}`,
+    () => ({
+      method: "POST",
+      headers: signBodyV2({
+        agentCode: params.agentCode,
+        agentSecret: params.agentSecret,
+        method: "POST",
+        canonicalPath: AGENT_API_PATHS.recordingFilesKnown,
+        body,
+      }),
+      body,
+      redirect: "manual",
+    }),
+  );
   if (!res.ok) {
     throw new Error(`recording-files/known ${res.status}`);
   }
@@ -353,18 +382,22 @@ export async function postClipCutResult(
     error_message: params.errorMessage ?? null,
     generation_params: params.generationParams ?? {},
   });
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
   try {
-    const res = await fetchWithRetry(`${params.backendUrl}/api/agent/clip-cut-result`, {
-      method: "POST",
-      headers,
-      body,
-      redirect: "manual",
-    });
+    const res = await fetchWithRetrySigned(
+      `${params.backendUrl}${AGENT_API_PATHS.clipCutResult}`,
+      () => ({
+        method: "POST",
+        headers: signBodyV2({
+          agentCode: params.agentCode,
+          agentSecret: params.agentSecret,
+          method: "POST",
+          canonicalPath: AGENT_API_PATHS.clipCutResult,
+          body,
+        }),
+        body,
+        redirect: "manual",
+      }),
+    );
     return { ok: res.ok, status: res.status };
   } catch {
     return { ok: false, status: 0 };
@@ -387,18 +420,22 @@ export async function fetchClipUploadUrl(params: {
     clip_id: params.clipId,
     packing_event_id: params.packingEventId,
   });
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
   try {
-    const res = await fetchWithRetry(`${params.backendUrl}/api/agent/clip-upload-url`, {
-      method: "POST",
-      headers,
-      body,
-      redirect: "manual",
-    });
+    const res = await fetchWithRetrySigned(
+      `${params.backendUrl}${AGENT_API_PATHS.clipUploadUrl}`,
+      () => ({
+        method: "POST",
+        headers: signBodyV2({
+          agentCode: params.agentCode,
+          agentSecret: params.agentSecret,
+          method: "POST",
+          canonicalPath: AGENT_API_PATHS.clipUploadUrl,
+          body,
+        }),
+        body,
+        redirect: "manual",
+      }),
+    );
     if (!res.ok) {
       let msg = "";
       try {
@@ -433,20 +470,21 @@ export async function notifyClipUploadComplete(params: {
     packing_event_id: params.packingEventId,
     file_size_bytes: params.fileSizeBytes,
   });
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
   try {
-    const res = await fetchWithRetry(
-      `${params.backendUrl}/api/agent/clip-upload-complete`,
-      {
+    const res = await fetchWithRetrySigned(
+      `${params.backendUrl}${AGENT_API_PATHS.clipUploadComplete}`,
+      () => ({
         method: "POST",
-        headers,
+        headers: signBodyV2({
+          agentCode: params.agentCode,
+          agentSecret: params.agentSecret,
+          method: "POST",
+          canonicalPath: AGENT_API_PATHS.clipUploadComplete,
+          body,
+        }),
         body,
         redirect: "manual",
-      },
+      }),
     );
     if (!res.ok) {
       let msg = "";
@@ -479,17 +517,21 @@ export async function reportCommandResult(params: {
     result: params.result ?? null,
     error: params.error ?? null,
   });
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
-  const res = await fetchWithRetry(`${params.backendUrl}/api/agent/command-result`, {
-    method: "POST",
-    headers,
-    body,
-    redirect: "manual",
-  });
+  const res = await fetchWithRetrySigned(
+    `${params.backendUrl}${AGENT_API_PATHS.commandResult}`,
+    () => ({
+      method: "POST",
+      headers: signBodyV2({
+        agentCode: params.agentCode,
+        agentSecret: params.agentSecret,
+        method: "POST",
+        canonicalPath: AGENT_API_PATHS.commandResult,
+        body,
+      }),
+      body,
+      redirect: "manual",
+    }),
+  );
   let parsed: unknown = null;
   try {
     parsed = await res.json();

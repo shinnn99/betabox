@@ -116,9 +116,12 @@ export async function consumeNonce(
 
 /**
  * B1.3 orchestrator: verify signature (v1 hoặc v2) + consume nonce nếu v2.
- *
- * Route mới NÊN gọi hàm này thay vì `verifyAgentSignature`. Trong window
- * rollout, cả v1 và v2 đều accepted; telemetry tăng counter theo version.
+ * B1.4 (Lát B): sau signature verify, check per-agent `hmac_v2_enforced_at`.
+ *   Nếu agent đã enforce v2 và request là v1 → reject 401. Order matter:
+ *   signature verify TRƯỚC enforcement check → không dùng endpoint làm
+ *   oracle dò agent code (attacker gửi request v1 với code hợp lệ nhưng
+ *   secret sai → vẫn bị reject signature verify trước; check version chỉ
+ *   ăn khi signature đã đúng nghĩa là agent thật, không leak info).
  */
 export async function verifyAgentRequest(
   admin: SupabaseClient,
@@ -129,6 +132,11 @@ export async function verifyAgentRequest(
     headers: AgentAuthHeaders;
     agentId: string;
     secret: string;
+    /**
+     * B1.4: nullable timestamp per-agent. Nếu <= now() và request v1 →
+     * reject. Route caller đọc column từ warehouse_agents rồi truyền vào.
+     */
+    hmacV2EnforcedAt?: string | null;
     now?: number;
   },
 ): Promise<AgentAuthSuccess | AgentAuthFailure> {
@@ -154,7 +162,25 @@ export async function verifyAgentRequest(
 
   if (!sigResult.ok) return sigResult;
 
-  // Step 2: consume nonce (chỉ v2). Signature invalid không consume →
+  // Step 2 (B1.4): per-agent v2 enforcement. Đặt SAU signature verify để
+  // không leak "code này có tồn tại và enforce_at không" cho attacker
+  // không có secret. Response error là 401 chung — log riêng ở caller.
+  if (params.hmacV2EnforcedAt) {
+    const enforceMs = Date.parse(params.hmacV2EnforcedAt);
+    const nowMs = params.now ?? Date.now();
+    if (
+      Number.isFinite(enforceMs) &&
+      enforceMs <= nowMs &&
+      sigResult.version === "v1"
+    ) {
+      console.warn(
+        `[agent-auth] v2 enforced agent=${params.agentId} route=${params.canonicalPath} received=v1`,
+      );
+      return { ok: false, status: 401, error: "bad_signature" };
+    }
+  }
+
+  // Step 3: consume nonce (chỉ v2). Signature invalid không consume →
   // chống DoS bảng nonce.
   if (params.headers.version === "v2") {
     const nonceHeaders = params.headers as AgentAuthHeadersV2;

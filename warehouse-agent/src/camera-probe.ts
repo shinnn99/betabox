@@ -1,7 +1,8 @@
 import net from "node:net";
 import { URL } from "node:url";
-import { signBody } from "./signing";
-import { describeFetchError, fetchWithRetry } from "./fetch-error";
+import { signBodyV2 } from "./signing";
+import { AGENT_API_PATHS } from "./agent-api-paths";
+import { describeFetchError, fetchWithRetrySigned } from "./fetch-error";
 
 /**
  * Lát 2: mỗi 30s TCP-connect RTSP port của mọi camera đang có ffmpeg
@@ -102,18 +103,22 @@ export async function reportProbes(params: {
 }): Promise<void> {
   if (params.probes.length === 0) return;
   const body = JSON.stringify({ probes: params.probes });
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
   try {
-    const res = await fetchWithRetry(`${params.backendUrl}/api/agent/camera-probe`, {
-      method: "POST",
-      headers,
-      body,
-      redirect: "manual",
-    });
+    const res = await fetchWithRetrySigned(
+      `${params.backendUrl}${AGENT_API_PATHS.cameraProbe}`,
+      () => ({
+        method: "POST",
+        headers: signBodyV2({
+          agentCode: params.agentCode,
+          agentSecret: params.agentSecret,
+          method: "POST",
+          canonicalPath: AGENT_API_PATHS.cameraProbe,
+          body,
+        }),
+        body,
+        redirect: "manual",
+      }),
+    );
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       console.warn(

@@ -1,5 +1,6 @@
-import { signBody } from "./signing";
-import { fetchWithRetry } from "./fetch-error";
+import { signBodyV2 } from "./signing";
+import { AGENT_API_PATHS } from "./agent-api-paths";
+import { fetchWithRetrySigned } from "./fetch-error";
 
 export interface ScanPayload {
   /**
@@ -35,18 +36,21 @@ export async function sendScan(params: {
   payload: ScanPayload;
 }): Promise<SendResult> {
   const body = JSON.stringify(params.payload);
-  const headers = signBody({
-    agentCode: params.agentCode,
-    agentSecret: params.agentSecret,
-    body,
-  });
-
-  const res = await fetchWithRetry(`${params.backendUrl}/api/warehouse/scans`, {
-    method: "POST",
-    headers,
-    body,
-    redirect: "manual",
-  });
+  const res = await fetchWithRetrySigned(
+    `${params.backendUrl}${AGENT_API_PATHS.scans}`,
+    () => ({
+      method: "POST",
+      headers: signBodyV2({
+        agentCode: params.agentCode,
+        agentSecret: params.agentSecret,
+        method: "POST",
+        canonicalPath: AGENT_API_PATHS.scans,
+        body,
+      }),
+      body,
+      redirect: "manual",
+    }),
+  );
 
   // A redirect means our request was intercepted (e.g. by an auth proxy)
   // and never reached the route. Treat it as a hard failure so we don't

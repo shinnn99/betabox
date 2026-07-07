@@ -1,8 +1,9 @@
 import { promises as fsp } from "node:fs";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { fetchWithRetry } from "./fetch-error";
-import { signBody } from "./signing";
+import { fetchWithRetrySigned } from "./fetch-error";
+import { signBodyV2 } from "./signing";
+import { AGENT_API_PATHS } from "./agent-api-paths";
 
 /**
  * HIGH-13 (B4): DB-verified `.stale` recovery + quarantine.
@@ -87,25 +88,23 @@ export async function verifyStaleMarker(
     bucket_path: args.marker.bucket_path,
   });
 
-  const routePath = "/api/agent/verify-clip-stale-marker";
-  const url = `${args.backendUrl.replace(/\/$/, "")}${routePath}`;
-
-  // Signature v1 (backward-compat với B1.3). Agent v0.4 sẽ upgrade v2.
-  const headers = signBody({
-    agentCode: args.agentCode,
-    agentSecret: args.agentSecret,
-    body,
-  });
+  const url = `${args.backendUrl.replace(/\/$/, "")}${AGENT_API_PATHS.verifyClipStaleMarker}`;
 
   let response: Response;
   try {
-    response = await fetchWithRetry(
+    response = await fetchWithRetrySigned(
       url,
-      {
+      () => ({
         method: "POST",
-        headers,
+        headers: signBodyV2({
+          agentCode: args.agentCode,
+          agentSecret: args.agentSecret,
+          method: "POST",
+          canonicalPath: AGENT_API_PATHS.verifyClipStaleMarker,
+          body,
+        }),
         body,
-      },
+      }),
       { maxAttempts: 3, initialDelayMs: 500, label: "verify-stale" },
     );
   } catch (err) {
