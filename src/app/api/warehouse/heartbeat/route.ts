@@ -4,6 +4,7 @@ import {
   readAgentHeaders,
   verifyAgentRequest,
 } from "@/lib/warehouse/agent-auth";
+import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
 
 export const runtime = "nodejs";
@@ -48,7 +49,7 @@ export async function POST(req: Request) {
   const verdict = await verifyAgentRequest(admin, {
     rawBody,
     method: "POST",
-    canonicalPath: "/api/warehouse/heartbeat",
+    canonicalPath: AGENT_API_PATHS.heartbeat,
     headers,
     agentId: agent.id,
     secret: agent.secret as string,

@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   readAgentHeaders,
-  verifyAgentSignature,
+  verifyAgentRequest,
 } from "@/lib/warehouse/agent-auth";
+import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
+import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -155,14 +157,18 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "agent_disabled" }, { status: 403 });
   }
 
-  const verdict = verifyAgentSignature({
+  const verdict = await verifyAgentRequest(admin, {
     rawBody,
+    method: "POST",
+    canonicalPath: AGENT_API_PATHS.clipCutResult,
     headers,
+    agentId: agent.id,
     secret: agent.secret as string,
   });
   if (!verdict.ok) {
     return NextResponse.json({ error: verdict.error }, { status: verdict.status });
   }
+  recordAgentSigVersion(agent.id, verdict.version);
 
   // Verify clip thuộc org của agent + pe khớp payload.
   const { data: clip } = await admin

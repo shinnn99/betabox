@@ -77,6 +77,7 @@ node scripts/check-migration-versions.mjs
 node scripts/check-tenant-scoped-writes.mjs
 node scripts/check-audit-destruct-error.mjs
 node scripts/check-apply-camera-probes-legacy.mjs
+node scripts/check-agent-routes-use-verify-agent-request.mjs
 ```
 
 ## Security boundaries
