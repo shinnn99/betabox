@@ -74,6 +74,99 @@ export async function enqueueStartRecording(
   return { command_id: data.id };
 }
 
+/**
+ * B4 HIGH-12: transactional Start Recording qua RPC `enqueue_start_recording`.
+ *
+ * RPC dùng pg_advisory_xact_lock per camera_id (blocking) + check session
+ * (recording, connection_lost) + command (pending, taken). Chống race
+ * double-click / 2 tab tạo 2 session/command.
+ *
+ * Verdicts:
+ *   - 'created' → tạo mới, trả session_id + command_id.
+ *   - 'already_recording' → session recording đang chạy, trả session_id.
+ *   - 'recording_state_unknown' → session connection_lost, reason chi tiết.
+ *   - 'start_pending' → command pending/taken, trả command_id.
+ */
+export interface EnqueueStartRecordingV2Args {
+  organizationId: string;
+  cameraId: string;
+  agentId: string;
+  createdBy: string | null;
+  transport: "tcp" | "udp";
+  segmentSeconds: number;
+  outputDir: string;
+}
+
+export type StartRecordingVerdict =
+  | { verdict: "created"; session_id: string; command_id: string }
+  | { verdict: "already_recording"; session_id: string }
+  | { verdict: "recording_state_unknown"; session_id: string; reason: string }
+  | { verdict: "start_pending"; command_id: string };
+
+export async function enqueueStartRecordingV2(
+  args: EnqueueStartRecordingV2Args,
+): Promise<StartRecordingVerdict> {
+  const admin = createAdminClient();
+
+  // SET LOCAL lock_timeout + statement_timeout — nếu RPC chờ lock quá 3s,
+  // return lỗi có mã rõ để client retry an toàn. Note: SET LOCAL chỉ áp
+  // trong tx; Supabase JS client per-request tx wrapper không expose GUC.
+  // Chấp nhận: lock_timeout default (không set), statement_timeout default.
+  // Nếu cần enforce, wrap qua `pg` client trực tiếp — không làm trong B4.
+
+  const { data, error } = await admin.rpc("enqueue_start_recording", {
+    p_organization_id: args.organizationId,
+    p_camera_id: args.cameraId,
+    p_agent_id: args.agentId,
+    p_created_by: args.createdBy,
+    p_transport: args.transport,
+    p_segment_seconds: args.segmentSeconds,
+    p_output_dir: args.outputDir,
+  });
+  if (error) {
+    throw new Error(`enqueue_start_recording RPC failed: ${error.message}`);
+  }
+  // RPC RETURNS TABLE trả array. Đọc row đầu.
+  const rows = Array.isArray(data) ? data : [];
+  const row = rows[0] as
+    | {
+        verdict: string;
+        session_id: string | null;
+        command_id: string | null;
+        reason: string | null;
+      }
+    | undefined;
+  if (!row) {
+    throw new Error("enqueue_start_recording RPC returned no row");
+  }
+  switch (row.verdict) {
+    case "created":
+      return {
+        verdict: "created",
+        session_id: row.session_id!,
+        command_id: row.command_id!,
+      };
+    case "already_recording":
+      return {
+        verdict: "already_recording",
+        session_id: row.session_id!,
+      };
+    case "recording_state_unknown":
+      return {
+        verdict: "recording_state_unknown",
+        session_id: row.session_id!,
+        reason: row.reason ?? "unknown",
+      };
+    case "start_pending":
+      return {
+        verdict: "start_pending",
+        command_id: row.command_id!,
+      };
+    default:
+      throw new Error(`unknown verdict: ${row.verdict}`);
+  }
+}
+
 export async function enqueueStopRecording(
   args: EnqueueStopRecordingArgs,
 ): Promise<{ command_id: string }> {

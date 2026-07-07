@@ -6,11 +6,7 @@ import {
 import { audit } from "@/lib/audit";
 import { getCameraRow } from "@/lib/camera/service";
 import { createAdminClient } from "@/lib/supabase/admin";
-import {
-  getActiveSession,
-  insertSession,
-} from "@/lib/camera/recording-service";
-import { enqueueStartRecording } from "@/lib/agent-commands/enqueue";
+import { enqueueStartRecordingV2 } from "@/lib/agent-commands/enqueue";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -22,15 +18,18 @@ export const dynamic = "force-dynamic";
 /**
  * Lát 2 SaaS refactor: recording/start chuyển từ spawn ffmpeg trong
  * Next.js process → enqueue command cho agent. Web Vercel không spawn
- * được ffmpeg VÀ không tới được camera LAN. Đóng cọc BLOCKS-GO-LIVE
- * Lát 2 (double-spawn) — chỉ còn 1 đường ghi qua agent.
+ * được ffmpeg VÀ không tới được camera LAN.
  *
- * Flow:
- *   1. Verify camera thuộc org.
- *   2. Kiểm session đang chạy → trả 409 (idempotent).
- *   3. Insert session status='recording'.
- *   4. Enqueue start_recording command cho agent poll → agent spawn ffmpeg.
- *   5. Trả 202 với session_id + command_id.
+ * B4 HIGH-12: rewrite qua RPC transactional `enqueue_start_recording`.
+ * RPC dùng advisory xact lock per camera + check session (recording,
+ * connection_lost) + command (pending, taken) trong 1 transaction.
+ * Idempotent cho race double-click / 2 tab.
+ *
+ * Verdicts từ RPC → HTTP status:
+ *   - 'created' → 202 Accepted với session_id + command_id.
+ *   - 'already_recording' → 200 OK (idempotent, không phải error).
+ *   - 'recording_state_unknown' → 409 Conflict với reason.
+ *   - 'start_pending' → 200 OK với command_id (idempotent).
  */
 const DEFAULT_SEGMENT = Number(process.env.RECORDING_SEGMENT_SECONDS ?? 60);
 const DEFAULT_TRANSPORT = ((): "tcp" | "udp" => {
@@ -53,18 +52,6 @@ export async function POST(req: Request, { params }: RouteContext) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
-  const existing = await getActiveSession(ctx.organizationId, id);
-  if (existing) {
-    return NextResponse.json(
-      {
-        error: "already_recording",
-        message: "Camera đang được ghi.",
-        session: existing,
-      },
-      { status: 409 },
-    );
-  }
-
   const admin = createAdminClient();
   const { data: agent } = await admin
     .from("warehouse_agents")
@@ -85,81 +72,78 @@ export async function POST(req: Request, { params }: RouteContext) {
   const segmentSeconds = body.segment_seconds ?? DEFAULT_SEGMENT;
   const outputDir = `_agent_managed/${cameraRow.camera_code}`;
 
-  const inserted = await insertSession({
-    organizationId: ctx.organizationId,
-    cameraId: id,
-    transport,
-    segmentSeconds,
-    outputDir,
-    createdBy: ctx.userId,
-  });
-
-  if (inserted.kind === "already_active") {
-    return NextResponse.json(
-      {
-        error: "already_recording",
-        message: "Camera đang được ghi (race).",
-        session: inserted.session,
-      },
-      { status: 409 },
-    );
-  }
-
-  const session = inserted.session;
-
-  let commandId: string;
+  let verdict: Awaited<ReturnType<typeof enqueueStartRecordingV2>>;
   try {
-    const enq = await enqueueStartRecording({
+    verdict = await enqueueStartRecordingV2({
       organizationId: ctx.organizationId,
-      agentId: agent.id,
       cameraId: id,
-      sessionId: session.id,
+      agentId: agent.id,
+      createdBy: ctx.userId,
+      transport,
+      segmentSeconds,
+      outputDir,
     });
-    commandId = enq.command_id;
   } catch (err) {
-    const { error: markErr } = await admin
-      .from("camera_recording_sessions")
-      .update({
-        status: "error",
-        stopped_at: new Date().toISOString(),
-        error_message: `enqueue_failed: ${(err as Error).message}`,
-      })
-      .eq("id", session.id);
-    if (markErr) {
-      // Session giữ 'recording' — dashboard nhầm alive. Log để ops dọn tay.
-      console.error(
-        `[recording.start] failed to mark session error after enqueue failure session=${session.id} code=${markErr.code ?? "?"} message=${markErr.message}`,
-      );
-    }
     return NextResponse.json(
       { error: "enqueue_failed", message: (err as Error).message },
       { status: 500 },
     );
   }
 
-  await audit({
-    organizationId: ctx.organizationId,
-    actorUserId: ctx.userId,
-    actorEmail: ctx.email,
-    action: "camera.recording.start.enqueued",
-    targetType: "camera",
-    targetId: id,
-    metadata: {
-      session_id: session.id,
-      command_id: commandId,
-      agent_id: agent.id,
-      transport_requested: transport,
-      segment_seconds: segmentSeconds,
-    },
-  });
+  if (verdict.verdict === "created") {
+    await audit({
+      organizationId: ctx.organizationId,
+      actorUserId: ctx.userId,
+      actorEmail: ctx.email,
+      action: "camera.recording.start.enqueued",
+      targetType: "camera",
+      targetId: id,
+      metadata: {
+        session_id: verdict.session_id,
+        command_id: verdict.command_id,
+        agent_id: agent.id,
+        transport_requested: transport,
+        segment_seconds: segmentSeconds,
+      },
+    });
+    return NextResponse.json(
+      {
+        ok: true,
+        session_id: verdict.session_id,
+        command_id: verdict.command_id,
+        agent_id: agent.id,
+      },
+      { status: 202 },
+    );
+  }
 
+  if (verdict.verdict === "already_recording") {
+    // Idempotent — không audit lại, trả 200.
+    return NextResponse.json({
+      ok: true,
+      idempotent: "already_recording",
+      session_id: verdict.session_id,
+      message: "Camera đang được ghi.",
+    });
+  }
+
+  if (verdict.verdict === "start_pending") {
+    // Command chưa xử — idempotent trả command_id hiện có.
+    return NextResponse.json({
+      ok: true,
+      idempotent: "start_pending",
+      command_id: verdict.command_id,
+      message: "Start command đã enqueued, agent sẽ xử lý.",
+    });
+  }
+
+  // recording_state_unknown → 409
   return NextResponse.json(
     {
-      ok: true,
-      session_id: session.id,
-      command_id: commandId,
-      agent_id: agent.id,
+      error: "recording_state_unknown",
+      session_id: verdict.session_id,
+      message: verdict.reason,
     },
-    { status: 202 },
+    { status: 409 },
   );
 }
