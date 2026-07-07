@@ -1,5 +1,10 @@
 import { promises as fs } from "node:fs";
 import { dirname } from "node:path";
+import {
+  atomicWriteFile,
+  quarantineCorruptQueue,
+  SerializedWriter,
+} from "./atomic-file";
 
 /**
  * Payload gửi cho POST /api/agent/recording-files. Một record đại diện
@@ -24,13 +29,24 @@ export interface QueuedReport {
 }
 
 /**
- * JSONL queue cho segment report chưa gửi được. Cùng pattern với
- * ScanQueue của Lát 1 — append lỗi, rewrite lúc retry. MVP volume
- * (mỗi camera ~1 segment/phút, mỗi kho ~4 camera → 240 segment/giờ)
- * chấp nhận được với append + rewrite.
+ * HIGH-19 (B4): JSONL queue cho segment report — atomic + fsync +
+ * serialized writer + corrupt quarantine (không silent-drop).
+ *
+ * Volume: mỗi camera ~1 segment/phút, mỗi kho ~4 camera → 240 segment/giờ.
+ * SerializedWriter coalesce 50ms đủ nhẹ cho nhịp này.
  */
 export class SegmentReportQueue {
-  constructor(private readonly filePath: string) {}
+  private readonly writer: SerializedWriter<QueuedReport[]>;
+
+  constructor(private readonly filePath: string) {
+    this.writer = new SerializedWriter(50, async (items) => {
+      const body =
+        items.length === 0
+          ? ""
+          : items.map((i) => JSON.stringify(i)).join("\n") + "\n";
+      await atomicWriteFile(this.filePath, body);
+    });
+  }
 
   async append(report: SegmentReport): Promise<void> {
     await fs.mkdir(dirname(this.filePath), { recursive: true });
@@ -62,27 +78,34 @@ export class SegmentReportQueue {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw err;
     }
-    return raw
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .map((line) => {
-        try {
-          return JSON.parse(line) as QueuedReport;
-        } catch {
-          return null;
-        }
-      })
-      .filter((x): x is QueuedReport => x !== null);
+    const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+    const items: QueuedReport[] = [];
+    let corrupt = 0;
+    for (const line of lines) {
+      try {
+        items.push(JSON.parse(line) as QueuedReport);
+      } catch {
+        corrupt++;
+      }
+    }
+    if (corrupt > 0) {
+      const dest = await quarantineCorruptQueue(
+        this.filePath,
+        `parse_${corrupt}_lines`,
+      );
+      console.error(
+        `[segment-queue] ${corrupt} corrupt line(s) in ${this.filePath} — file quarantined to ${dest ?? "<failed>"}`,
+      );
+      return items;
+    }
+    return items;
   }
 
   async rewrite(items: QueuedReport[]): Promise<void> {
-    await fs.mkdir(dirname(this.filePath), { recursive: true });
-    if (items.length === 0) {
-      await fs.writeFile(this.filePath, "", "utf8");
-      return;
-    }
-    const body = items.map((i) => JSON.stringify(i)).join("\n") + "\n";
-    await fs.writeFile(this.filePath, body, "utf8");
+    return this.writer.schedule(items);
+  }
+
+  async flushNow(): Promise<void> {
+    return this.writer.flushNow();
   }
 }
