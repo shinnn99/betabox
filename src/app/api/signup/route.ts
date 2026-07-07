@@ -89,10 +89,13 @@ async function verifyTurnstile(token: string | undefined, ip: string): Promise<
     remoteip: ip,
   });
 
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 5_000);
   try {
     const res = await fetch(TURNSTILE_VERIFY_URL, {
       method: "POST",
       body: formData,
+      signal: ac.signal,
     });
     const data = (await res.json()) as { success: boolean; "error-codes"?: string[] };
     if (!data.success) {
@@ -106,6 +109,8 @@ async function verifyTurnstile(token: string | undefined, ip: string): Promise<
   } catch (err) {
     console.error("[signup] Turnstile fetch error:", err);
     return { ok: false, error: "captcha_verify_error", status: 502 };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

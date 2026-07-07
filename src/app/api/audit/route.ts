@@ -7,7 +7,8 @@ export async function GET(req: Request) {
   if (isError(ctx)) return ctx;
 
   const url = new URL(req.url);
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "100", 10), 500);
+  const rawLimit = parseInt(url.searchParams.get("limit") ?? "100", 10);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
 
   const scoped = await getScopedClient(ctx);
   const { data, error } = await scoped

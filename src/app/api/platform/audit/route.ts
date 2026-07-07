@@ -8,7 +8,8 @@ export async function GET(req: Request) {
   if (ctx instanceof NextResponse) return ctx;
 
   const url = new URL(req.url);
-  const limit = Math.min(Number(url.searchParams.get("limit") ?? 100), 500);
+  const rawLimit = Number(url.searchParams.get("limit") ?? 100);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
 
   const admin = createAdminClient();
   const { data: rows, error } = await admin

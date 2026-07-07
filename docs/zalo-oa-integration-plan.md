@@ -1,7 +1,23 @@
 # Kế hoạch tích hợp Zalo OA Bot — Thông báo cá nhân nhân sự đóng hàng
 
+> ⚠️ **OUTDATED 2026-07-07** — chưa triển khai. Doc tham chiếu file đã xóa
+> trong loạt refactor 2026-07:
+>   - `src/app/api/order-proof/scans/[packingEventId]/clip/route.ts` (xóa e5a1e54)
+>   - `doGenerate()` (chuyển sang agent pipeline Safe Retry)
+>   - `src/instrumentation.ts` + `sweepStaleSessions()` (không tồn tại)
+>   - Ghi chú "chưa có supabase/migrations" (nay có 60+ file)
+>
+> Trước khi implement phase Zalo OA, PHẢI refresh:
+>   - Đường cắt clip hiện tại: agent-side qua `enqueueCutClip` (xem
+>     `src/lib/agent-commands/enqueue.ts`).
+>   - Trigger `VIDEO_READY` nên hook vào callback
+>     `/api/agent/clip-upload-complete` (route sau khi RPC
+>     `promote_clip_generation` thành công).
+>   - Reaper session mới có state `connection_lost` (B2 CRIT-2), không
+>     còn `sweepStaleSessions`.
+
 > Tài liệu lập kế hoạch trước khi code. Lưu lại để tiếp tục phát triển ở các phase sau.
-> Ngày tạo: 2026-06-28. Phase: MVP.
+> Ngày tạo: 2026-06-28. Phase: MVP. Outdated review: 2026-07-07.
 
 ## 1. Mục tiêu
 
