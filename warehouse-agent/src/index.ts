@@ -47,6 +47,10 @@ import { installFatalHandlers, swallow } from "./fatal";
 import { uploadWithTimeout } from "./upload";
 import { PidRegistry } from "./pid-registry";
 import { recoverZombieFfmpeg } from "./ffmpeg-boot-recovery";
+import {
+  verifyStaleMarker,
+  quarantineStaleGeneration,
+} from "./stale-recovery";
 
 /**
  * Rate limiter dùng chung cho các fetch loop trong index.ts (heartbeat,
@@ -1225,7 +1229,19 @@ async function main(): Promise<void> {
   // "video thuần", không burn, không overlay. Thông tin đơn ở panel
   // dashboard. Không có kế hoạch thêm lại font ở agent.
   try {
-    const cleanup = await cleanupOrphanClipArtifacts(clipsDir);
+    // HIGH-13 (B4): inject DB verifier + quarantine helper. Recovery chỉ
+    // rename tmp → canonical khi backend xác nhận marker khớp
+    // order_proof_clips row. Nếu backend unavailable, giữ nguyên files.
+    const cleanup = await cleanupOrphanClipArtifacts(clipsDir, undefined, {
+      verifyMarker: (marker) =>
+        verifyStaleMarker({
+          backendUrl: config.backendUrl,
+          agentCode: config.agentCode,
+          agentSecret: config.agentSecret,
+          marker,
+        }),
+      quarantine: (args) => quarantineStaleGeneration(args),
+    });
     const hasAction =
       cleanup.concat_removed +
         cleanup.stale_recovered +
@@ -1377,6 +1393,9 @@ async function main(): Promise<void> {
     // được ghi. Không await — process.exit sẽ chạy sau delay.
     swallow(lifecycle.shutdown(), "lifecycle.shutdown");
     swallow(segmentIndex.stop(), "segmentIndex.stop");
+    // HIGH-19 (B4): flush pending queue writes để không mất scan/segment
+    // report chưa flush do coalesce timer.
+    swallow(queue.flushNow(), "queue.flushNow");
     setTimeout(() => process.exit(0), 1500);
   };
   process.on("SIGINT", shutdown);

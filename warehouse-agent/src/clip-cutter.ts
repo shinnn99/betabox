@@ -388,9 +388,25 @@ const CLIP_TMP_SUFFIX = ".tmp.mp4";
 const CLIP_BAK_SUFFIX = ".bak.mp4";
 const CLIP_CONCAT_SUFFIX = ".concat.txt";
 
+/**
+ * HIGH-13 (B4): DB verifier — inject qua args. Nếu undefined, recovery
+ * skip (an toàn: giữ nguyên .stale + .tmp, KHÔNG xóa canonical) và tăng
+ * counter stale_recovery_failed để ops thấy.
+ *
+ * Trả StaleVerdict typed: 'recover' → OK rename; 'quarantine' → agent
+ * move file sang _quarantine/; 'unavailable' → skip cycle này.
+ */
+export interface StaleRecoveryDeps {
+  verifyMarker: (marker: import("./stale-recovery").StaleMarker) =>
+    Promise<import("./stale-recovery").StaleVerdict>;
+  quarantine: (args: import("./stale-recovery").QuarantineArgs) =>
+    Promise<{ ok: boolean; dir?: string; error?: string }>;
+}
+
 export async function cleanupOrphanClipArtifacts(
   clipsDir: string,
   staleThresholdMs = 24 * 60 * 60 * 1000,
+  deps?: StaleRecoveryDeps,
 ): Promise<CleanupResult> {
   const fs = await import("node:fs/promises");
   const out: CleanupResult = {
@@ -421,10 +437,7 @@ export async function cleanupOrphanClipArtifacts(
     const tmpName = staleEntry.name.slice(0, -CLIP_STALE_MARKER_SUFFIX.length);
     const tmpAbs = path.join(clipsDir, tmpName);
 
-    let markerContent: {
-      clip_id?: string;
-      packing_event_id?: string;
-    } | null = null;
+    let markerContent: import("./stale-recovery").StaleMarker | null = null;
     try {
       const raw = await fs.readFile(staleAbs, "utf8");
       markerContent = JSON.parse(raw);
@@ -436,14 +449,36 @@ export async function cleanupOrphanClipArtifacts(
       continue;
     }
 
-    const peId = markerContent?.packing_event_id;
-    if (!peId || !/^[0-9a-f-]{36}$/i.test(peId)) {
-      console.warn(
-        `[clip-cleanup] .stale marker thiếu packing_event_id hợp lệ: ${staleEntry.name}`,
-      );
+    // HIGH-13 (B4): validate marker shape TRƯỚC khi bất cứ đụng canonical
+    // nào. Corrupt marker → quarantine ngay (nếu deps.quarantine available)
+    // hoặc skip (safe fallback).
+    const { validateMarker, buildQuarantineDir: _unused } = await import(
+      "./stale-recovery"
+    );
+    void _unused;
+    const shapeCheck = validateMarker(markerContent);
+    if (!shapeCheck.ok) {
+      if (deps?.quarantine && markerContent) {
+        const q = await deps.quarantine({
+          clipsDir,
+          staleAbs,
+          tmpAbs,
+          marker: markerContent as import("./stale-recovery").StaleMarker,
+          reason: `marker_${shapeCheck.reason}`,
+        });
+        console.warn(
+          `[clip-cleanup] stale marker malformed reason=${shapeCheck.reason} quarantine_ok=${q.ok} dir=${q.dir ?? "-"}`,
+        );
+      } else {
+        console.warn(
+          `[clip-cleanup] stale marker malformed reason=${shapeCheck.reason} — no quarantine helper, skip`,
+        );
+      }
       out.stale_recovery_failed++;
       continue;
     }
+
+    const peId = markerContent!.packing_event_id;
 
     if (!existsSync(tmpAbs)) {
       // Tmp mất — recovery không làm được. Xóa marker mồ côi.
@@ -455,19 +490,64 @@ export async function cleanupOrphanClipArtifacts(
       continue;
     }
 
+    // HIGH-13 (B4): DB-verified recovery. Backend so clip_id+pe_id+
+    // bucket_path với order_proof_clips. Nếu backend unavailable, GIỮ
+    // nguyên .stale + .tmp (không xóa canonical) và tăng counter cho ops.
+    if (!deps?.verifyMarker) {
+      // No verifier available — không thực hiện recovery an toàn.
+      // Giữ nguyên file, tăng counter để ops thấy.
+      console.warn(
+        `[clip-cleanup] stale recovery skipped pe=${peId} — no verifier configured`,
+      );
+      out.stale_recovery_failed++;
+      continue;
+    }
+
+    const verdict = await deps.verifyMarker(markerContent!);
+    if (verdict.kind === "unavailable") {
+      // Backend không trả lời được. Giữ nguyên .stale + .tmp cho lần
+      // cleanup sau. KHÔNG xóa canonical.
+      console.warn(
+        `[clip-cleanup] stale recovery unavailable pe=${peId} reason=${verdict.reason} — leaving files intact`,
+      );
+      out.stale_recovery_failed++;
+      continue;
+    }
+    if (verdict.kind === "quarantine") {
+      if (!deps.quarantine) {
+        console.warn(
+          `[clip-cleanup] stale marker quarantine verdict but no quarantine helper reason=${verdict.reason}`,
+        );
+        out.stale_recovery_failed++;
+        continue;
+      }
+      const q = await deps.quarantine({
+        clipsDir,
+        staleAbs,
+        tmpAbs,
+        marker: markerContent!,
+        reason: verdict.reason,
+        extra: verdict.extra,
+      });
+      console.warn(
+        `[clip-cleanup] stale generation quarantined pe=${peId} reason=${verdict.reason} quarantine_ok=${q.ok} dir=${q.dir ?? "-"} — canonical NOT touched`,
+      );
+      out.stale_recovery_failed++;
+      continue;
+    }
+
+    // verdict.kind === 'recover'
     const canonicalAbs = path.join(clipsDir, `${peId}.mp4`);
     try {
       // Nếu canonical hiện tại tồn tại (clip cũ), unlink trước.
-      // Safe-retry: DB đã trỏ bucket, canonical này là clip cũ đã
-      // superseded → xóa an toàn.
+      // Safe-retry: DB đã trỏ bucket ĐÚNG clip_id (verifier đã match),
+      // canonical này là clip cũ đã superseded → xóa an toàn.
       if (existsSync(canonicalAbs)) {
         await fs.unlink(canonicalAbs);
       }
       await fs.rename(tmpAbs, canonicalAbs);
       await fs.unlink(staleAbs).catch(() => undefined);
-      // Xóa .bak nếu có (cùng command_id prefix)
-      // Format `.bak.mp4`: `{pe}.{cmd}.bak.mp4`. Marker name trước
-      // .stale: `{pe}.{cmd}.tmp.mp4`. Suy ra bak: swap tmp → bak.
+      // Xóa .bak nếu có
       const bakName = tmpName.replace(CLIP_TMP_SUFFIX, CLIP_BAK_SUFFIX);
       const bakAbs = path.join(clipsDir, bakName);
       if (existsSync(bakAbs)) {
@@ -476,11 +556,11 @@ export async function cleanupOrphanClipArtifacts(
       recoveredTmpNames.add(tmpName);
       out.stale_recovered++;
       console.log(
-        `[clip-cleanup] recovered stale generation: pe=${peId} tmp=${tmpName} → canonical`,
+        `[clip-cleanup] recovered stale generation (DB-verified): pe=${peId} tmp=${tmpName} → canonical`,
       );
     } catch (err) {
       console.error(
-        `[clip-cleanup] stale recovery failed pe=${peId}: ${(err as Error).message}`,
+        `[clip-cleanup] stale recovery rename failed pe=${peId}: ${(err as Error).message}`,
       );
       out.stale_recovery_failed++;
     }
