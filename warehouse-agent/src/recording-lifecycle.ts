@@ -360,6 +360,19 @@ export class RecordingLifecycle {
     });
 
     if (!outcome.ok) {
+      // `already_recording` không phải error: ffmpeg đã sống ở lần call
+      // trước (VD short-retry callback thắng long-retry callback). Coi là
+      // success — reset counters + report 'recording' để đồng bộ UI. Nếu
+      // không, caller sẽ scheduleLongRetry / reportStatus 'degraded' →
+      // UI hiện Lỗi ghi dù thực tế ghi bình thường.
+      if (outcome.reason === "already_recording") {
+        state.shortRetryCount = 0;
+        state.inLongRetry = false;
+        state.longRetryFailCount = 0;
+        state.prolongedReported = false;
+        await this.reportStatus(spec, "recording", null);
+        return true;
+      }
       const kind = classifyErrorFromStderr(outcome.stderrTail);
       console.warn(
         `[recording-lifecycle] start failed camera=${spec.cameraCode} reason=${outcome.reason} kind=${kind}`,
@@ -504,6 +517,22 @@ export class RecordingLifecycle {
     const state = this.states.get(spec.cameraId);
     if (!state) return;
     if (state.stopped) return;
+
+    // Guard: nếu ffmpeg đã đang chạy (short-retry callback từ onUnexpectedExit
+    // đã spawn OK trước khi long-retry timer chạy tới), long-retry KHÔNG
+    // được gọi startInternal — sẽ nhận `already_recording` rồi
+    // classifyErrorFromStderr("") mặc định 'transient' → reportStatus
+    // 'degraded' → UI Lỗi ghi dù ffmpeg vẫn ghi bình thường. Coi là success:
+    // reset counters + reportStatus 'recording' để đồng bộ UI, không schedule
+    // long-retry tiếp.
+    if (isRecording(spec.cameraId)) {
+      state.shortRetryCount = 0;
+      state.inLongRetry = false;
+      state.longRetryFailCount = 0;
+      state.prolongedReported = false;
+      await this.reportStatus(spec, "recording", null);
+      return;
+    }
 
     const ok = await this.startInternal(spec, /*isFreshStart=*/ false);
     const stateAfter = this.states.get(spec.cameraId);
