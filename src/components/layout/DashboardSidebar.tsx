@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { X, ChevronLeft, ChevronRight, Video } from "lucide-react";
+import { X, ChevronLeft, ChevronRight } from "lucide-react";
 import { NAV_SECTIONS } from "@/lib/nav";
+import { useImpersonatingOrgId } from "@/lib/api-fetch";
 import OrgSwitcherCard from "./OrgSwitcherCard";
 
 interface Props {
@@ -21,6 +22,7 @@ export default function DashboardSidebar({
   onToggleCollapse,
 }: Props) {
   const pathname = usePathname();
+  const impersonatingOrgId = useImpersonatingOrgId();
 
   const navRef = useRef<HTMLElement>(null);
   const itemRefs = useRef<Map<string, HTMLElement>>(new Map());
@@ -123,18 +125,23 @@ export default function DashboardSidebar({
           )}
         </button>
 
-        <div className="flex items-center px-4 pt-4 pb-2 shrink-0">
+        <div
+          className={`flex items-center px-4 pt-4 shrink-0 ${
+            impersonatingOrgId ? "pb-2" : "pb-4"
+          }`}
+        >
           <Link
             href="/dashboard"
             className="flex items-center gap-2.5 min-w-0 flex-1"
           >
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-emerald-500 to-green-600 flex items-center justify-center shadow-md shadow-emerald-500/30 shrink-0">
-              <Video className="h-5 w-5 text-white" />
+            <div className="h-10 w-10 rounded-xl overflow-hidden flex items-center justify-center shrink-0">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/logo.png" alt="Beta Box" className="h-full w-full object-contain" />
             </div>
             {!collapsed && (
               <div className="flex flex-col min-w-0 leading-tight">
-                <span className="text-base font-extrabold text-emerald-600 truncate">
-                  Beta OC
+                <span className="text-lg font-extrabold text-emerald-600 truncate">
+                  Beta Box
                 </span>
                 <span className="text-[11px] text-slate-500 truncate">
                   Giám sát đóng hàng
@@ -150,7 +157,7 @@ export default function DashboardSidebar({
           </button>
         </div>
 
-        <OrgSwitcherCard collapsed={collapsed} />
+        {impersonatingOrgId && <OrgSwitcherCard collapsed={collapsed} />}
 
         <nav
           ref={navRef}

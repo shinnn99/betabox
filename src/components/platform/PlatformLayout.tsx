@@ -17,7 +17,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ShieldCheck,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { usePlatformSession } from "@/lib/usePlatformSession";
@@ -121,13 +120,14 @@ export default function PlatformLayout({
               href="/platform"
               className="flex items-center gap-2.5 min-w-0 flex-1"
             >
-              <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-emerald-500 to-green-600 flex items-center justify-center shadow-md shadow-emerald-500/30 shrink-0">
-                <ShieldCheck className="h-5 w-5 text-white" />
+              <div className="h-10 w-10 rounded-xl overflow-hidden flex items-center justify-center shrink-0">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src="/logo.png" alt="Beta Box" className="h-full w-full object-contain" />
               </div>
               {!collapsed && (
                 <div className="flex flex-col min-w-0 leading-tight">
-                  <span className="text-base font-extrabold text-emerald-600 truncate">
-                    Beta OC
+                  <span className="text-lg font-extrabold text-emerald-600 truncate">
+                    Beta Box
                   </span>
                   <span className="text-[11px] text-slate-500 truncate">
                     Quản trị nền tảng
@@ -218,7 +218,7 @@ export default function PlatformLayout({
                 )}
                 <div className="min-w-0">
                   <p className="lg:hidden text-xl font-extrabold text-emerald-600 leading-none tracking-tight">
-                    Beta OC
+                    Beta Box
                   </p>
                   <h1 className="text-sm lg:text-lg font-semibold text-slate-800 leading-tight mt-0.5 truncate">
                     {pageTitle ?? "Quản trị nền tảng"}
