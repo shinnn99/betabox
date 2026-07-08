@@ -554,6 +554,12 @@ export class RecordingLifecycle {
     const state = this.states.get(spec.cameraId);
     if (!state) return;
     if (state.stopped) return;
+    // Flip inLongRetry TRƯỚC khi set timer. notifyProbeResult check flag
+    // này để biết state có đủ điều kiện fast recovery — nếu không set,
+    // ca boot fail transient (chưa spawn thành công lần nào) sẽ không
+    // được fast recovery, phải đợi hết long-retry timer 5' đầy đủ. Bug
+    // v0.4.2: chỉ onUnexpectedExit set flag → hik_01 mãi chờ 5'.
+    state.inLongRetry = true;
     if (state.pendingTimer) {
       clearTimeout(state.pendingTimer);
     }
