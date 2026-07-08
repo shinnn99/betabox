@@ -1347,6 +1347,12 @@ async function main(): Promise<void> {
     const targets = [...localTargets, ...allActiveTargets];
     if (targets.length === 0) return;
     const results = await probeTargets(targets);
+    // Fast recovery: probe biết trước ffmpeg — nếu camera sống lại
+    // (probe ok 2 nhịp liên tiếp) trong khi state đang chờ long-retry
+    // timer 5', trigger spawn ngay không đợi hết timer.
+    for (const r of results) {
+      lifecycle.notifyProbeResult(r.camera_id, r.ok);
+    }
     await reportProbes({
       backendUrl: config.backendUrl,
       agentCode: config.agentCode,

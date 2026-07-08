@@ -59,6 +59,11 @@ interface CamLifecycleState {
   pendingTimer: NodeJS.Timeout | null;
   // Cờ đã bị stop chủ động — tránh retry sau khi user đã stop.
   stopped: boolean;
+  // Số nhịp probe OK liên tiếp gần đây (chỉ ý nghĩa khi inLongRetry=true).
+  // Đếm để trigger fast recovery: khi >= 2 nhịp OK liên tiếp thì cancel
+  // long-retry timer 5' và spawn ngay, không đợi timer đủ. Reset về 0 khi
+  // probe fail hoặc sau khi trigger fast recovery.
+  probeOkStreak: number;
 }
 
 export interface LifecycleDeps {
@@ -138,6 +143,48 @@ export class RecordingLifecycle {
       });
     }
     return out;
+  }
+
+  /**
+   * Callback từ probe loop: fast recovery từ long-retry khi camera sống lại.
+   *
+   * Gốc bug: long-retry timer 5 phút — camera flap 30s vẫn phải chờ đủ 5
+   * phút mới ghi lại. UX kho không chấp nhận được.
+   *
+   * Fix: probe loop chạy 30s/nhịp — nếu thấy camera đang long-retry vừa
+   * probe OK 2 nhịp liên tiếp → cancel timer 5' + spawn ngay. Đợi 2 nhịp
+   * (không phải 1) để chống flicker false-positive khi mạng jitter.
+   *
+   * KHÔNG áp cho state không phải long-retry: recording đang chạy không
+   * cần re-trigger; short-retry đã có backoff riêng; state.stopped=true là
+   * user stop chủ động, tôn trọng.
+   */
+  notifyProbeResult(cameraId: string, ok: boolean): void {
+    const state = this.states.get(cameraId);
+    if (!state) return;
+    if (state.stopped) return;
+    if (!state.inLongRetry) return;
+
+    if (!ok) {
+      state.probeOkStreak = 0;
+      return;
+    }
+    state.probeOkStreak++;
+    if (state.probeOkStreak < 2) return;
+
+    // 2 nhịp OK liên tiếp: cancel timer 5', spawn ngay. Reset streak về 0
+    // để không trigger loop nếu longRetryAttempt fail rồi lại probe OK
+    // (streak sẽ đếm lại từ đầu, tối thiểu 60s trước lần fast recovery
+    // kế tiếp — không spam agent).
+    state.probeOkStreak = 0;
+    if (state.pendingTimer) {
+      clearTimeout(state.pendingTimer);
+      state.pendingTimer = null;
+    }
+    console.log(
+      `[recording-lifecycle] probe recovered camera=${state.spec.cameraCode}, fast retry (was waiting long-retry timer)`,
+    );
+    swallow(this.longRetryAttempt(state.spec), "longRetryAttempt[probe-recovered]");
   }
 
   /**
@@ -336,6 +383,7 @@ export class RecordingLifecycle {
       prolongedReported: false,
       pendingTimer: null,
       stopped: false,
+      probeOkStreak: 0,
     };
     state.spec = spec;
     state.stopped = false;
@@ -370,6 +418,7 @@ export class RecordingLifecycle {
         state.inLongRetry = false;
         state.longRetryFailCount = 0;
         state.prolongedReported = false;
+        state.probeOkStreak = 0;
         await this.reportStatus(spec, "recording", null);
         return true;
       }
@@ -427,6 +476,7 @@ export class RecordingLifecycle {
     state.inLongRetry = false;
     state.longRetryFailCount = 0;
     state.prolongedReported = false;
+    state.probeOkStreak = 0;
     await this.reportStatus(
       spec,
       "recording",
@@ -530,6 +580,7 @@ export class RecordingLifecycle {
       state.inLongRetry = false;
       state.longRetryFailCount = 0;
       state.prolongedReported = false;
+      state.probeOkStreak = 0;
       await this.reportStatus(spec, "recording", null);
       return;
     }
