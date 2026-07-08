@@ -369,7 +369,7 @@ export default function DashboardPage() {
             tone="emerald"
             footnote={
               devices && devices.total > devices.online
-                ? `${devices.total - devices.online} máy quét offline`
+                ? `${devices.total - devices.online} thiết bị offline`
                 : "Tất cả online"
             }
             footnoteTone={devices && devices.total > devices.online ? "amber" : "muted"}

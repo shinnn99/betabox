@@ -234,7 +234,7 @@ export async function GET() {
       (d) => d.device_type === "camera" || d.device_type === "scanner",
     );
     const devicesOnline = realDevices.filter(
-      (d) => d.connection_status === "online" || d.status === "active",
+      (d) => d.connection_status === "connected" || d.status === "active",
     ).length;
     const devicesOffline = realDevices.length - devicesOnline;
 
@@ -247,8 +247,8 @@ export async function GET() {
     for (const d of realDevices) {
       if (deviceAlerts.length >= 5) break;
       const isOffline =
-        d.connection_status === "offline" ||
-        (d.status !== "active" && d.connection_status !== "online");
+        d.connection_status === "disconnected" ||
+        (d.status !== "active" && d.connection_status !== "connected");
       if (isOffline) {
         deviceAlerts.push({
           id: d.id,

@@ -456,7 +456,7 @@ export async function GET() {
     for (const sd of stationDevicesList) {
       if (sd.device_type === "camera") continue;
       if (sd.device_type !== "scanner") continue;
-      const online = sd.connection_status === "online";
+      const online = sd.connection_status === "connected";
       deviceRows.push({
         id: `sd:${sd.id}`,
         kind: "scanner",
@@ -542,7 +542,7 @@ export async function GET() {
     }
     for (const sd of stationDevicesList) {
       if (alerts.length >= 8) break;
-      if (sd.device_type === "scanner" && sd.connection_status !== "online") {
+      if (sd.device_type === "scanner" && sd.connection_status !== "connected") {
         const lastSeenMs = sd.last_seen_at ? now - new Date(sd.last_seen_at).getTime() : null;
         const minutesAgo = lastSeenMs ? Math.round(lastSeenMs / 60000) : null;
         alerts.push({

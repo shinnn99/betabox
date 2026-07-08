@@ -91,8 +91,14 @@ export const NAV_SECTIONS: NavSection[] = [
         href: "/dashboard/staff",
         icon: Users,
       },
+    ],
+  },
+  {
+    id: "reports",
+    label: "Báo cáo",
+    children: [
       {
-        id: "reports",
+        id: "reports-performance",
         label: "Báo cáo hiệu suất",
         href: "/dashboard/reports",
         icon: BarChart3,

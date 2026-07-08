@@ -423,7 +423,7 @@ function DeviceChips({ devices }: { devices: StationDevice[] }) {
         // connection_status chỉ có ý nghĩa với thiết bị kết nối qua agent
         // (scanner/printer/scale). Camera RTSP luôn 'unknown' trong DB nên ẩn.
         const showConn = d.device_type !== "camera" && !!d.connection_status;
-        const online = d.connection_status === "online";
+        const online = d.connection_status === "connected";
         const connText = d.connection_status
           ? CONN_STATUS_LABEL[d.connection_status] ?? d.connection_status
           : "";
