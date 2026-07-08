@@ -37,6 +37,7 @@ export interface ScanEventPublic {
   clip: ScanClipSummary | null;
   agent_offline_seconds: number;
   agent_time_drift_seconds: number | null;
+  manual_error: boolean;
 }
 
 export interface ScanClipSummary {
@@ -59,7 +60,7 @@ export interface ScanClipSummary {
 
 const PACKING_COLUMNS = `
   id, waybill_code, scanned_at, status, assignment_method,
-  timing_status, work_duration_seconds,
+  timing_status, work_duration_seconds, manual_error,
   station:packing_stations ( id, code, name ),
   warehouse:warehouses ( id, name ),
   staff:staff_profiles ( id, full_name, staff_code ),
@@ -74,6 +75,7 @@ type PackingJoinRow = {
   assignment_method: string;
   timing_status: string;
   work_duration_seconds: number | null;
+  manual_error: boolean | null;
   station: { id: string; code: string; name: string } | { id: string; code: string; name: string }[] | null;
   warehouse: { id: string; name: string } | { id: string; name: string }[] | null;
   staff: { id: string; full_name: string; staff_code: string } | { id: string; full_name: string; staff_code: string }[] | null;
@@ -174,6 +176,7 @@ async function attachClipsToEvents(
     clip: clipByEvent.get(e.id) ?? null,
     agent_offline_seconds: agentOfflineSeconds,
     agent_time_drift_seconds: agentTimeDriftSeconds,
+    manual_error: e.manual_error === true,
   }));
 }
 

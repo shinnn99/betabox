@@ -7,6 +7,8 @@ import {
   Camera,
   Circle,
   Clock,
+  Flag,
+  FlagOff,
   HardDrive,
   LayoutGrid,
   List,
@@ -27,6 +29,7 @@ import {
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import DateRangePicker from "@/components/ui/DateRangePicker";
 import { useToast } from "@/components/ui/Toast";
+import { apiFetch } from "@/lib/api-fetch";
 import {
   useWatchClipState,
   formatOfflineDuration,
@@ -90,6 +93,10 @@ interface ScanRow {
   clip: ClipSummary | null;
   agent_offline_seconds: number;
   agent_time_drift_seconds: number | null;
+  // Đơn được quản lý kho đánh dấu lỗi thủ công (khiếu nại, đóng
+  // sai, sai người). Row highlight rose + badge, và tính vào cột
+  // "Số đơn lỗi" trong /dashboard/reports.
+  manual_error: boolean;
 }
 
 const BUCKET_TTL_HOURS = 72;
@@ -205,6 +212,12 @@ export default function VideosPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
+  // Selection cho bulk-mark manual_error. Set các row id đang tick,
+  // reset khi filter/refresh mode "fresh" (danh sách đổi hoàn toàn).
+  // "silent" refresh giữ selection vì id giữ nguyên — nếu row biến
+  // mất khỏi list mới, effect dưới tự dọn id-lạc.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [marking, setMarking] = useState(false);
   // Modal state: null = đóng. Khi mở, mang cả scan + mode để modal biết
   // phải render "view" (ready ngay) / "generate" (retry + poll) / "watch"
   // (poll tiếp).
@@ -301,9 +314,109 @@ export default function VideosPage() {
   );
 
   useEffect(() => {
+    setSelectedIds(new Set());
     void load("fresh");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [waybillSearch, from, to]);
+
+  // Dọn id không còn trong list (bị lọc bởi silent refresh) để bulk
+  // bar không đếm "ma". Ref-set để so nhanh.
+  useEffect(() => {
+    if (selectedIds.size === 0) return;
+    const present = new Set(rows.map((r) => r.id));
+    let stale = false;
+    for (const id of selectedIds) {
+      if (!present.has(id)) {
+        stale = true;
+        break;
+      }
+    }
+    if (!stale) return;
+    setSelectedIds((prev) => {
+      const next = new Set<string>();
+      for (const id of prev) if (present.has(id)) next.add(id);
+      return next;
+    });
+  }, [rows, selectedIds]);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAllCurrent = useCallback(() => {
+    setSelectedIds((prev) => {
+      // Nếu đã chọn HẾT rows hiện tại → uncheck. Không nếu chỉ chọn
+      // 1 phần → select-all thêm phần còn thiếu.
+      const allSelected =
+        rows.length > 0 && rows.every((r) => prev.has(r.id));
+      if (allSelected) return new Set();
+      const next = new Set(prev);
+      for (const r of rows) next.add(r.id);
+      return next;
+    });
+  }, [rows]);
+
+  // Toggle server-side + optimistic. Nếu server fail, revert + toast.
+  const markError = useCallback(
+    async (flagged: boolean) => {
+      if (selectedIds.size === 0) return;
+      const ids = Array.from(selectedIds);
+      setMarking(true);
+      // Optimistic: cập nhật ngay để user thấy phản hồi. Nếu POST fail
+      // sẽ revert lại giá trị cũ per-id.
+      const prevMap = new Map<string, boolean>();
+      for (const r of rows) if (ids.includes(r.id)) prevMap.set(r.id, r.manual_error);
+      setRows((prev) =>
+        prev.map((r) =>
+          ids.includes(r.id) ? { ...r, manual_error: flagged } : r,
+        ),
+      );
+      try {
+        const res = await apiFetch("/api/order-proof/scans/mark-error", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ids, flagged }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setRows((prev) =>
+            prev.map((r) =>
+              prevMap.has(r.id)
+                ? { ...r, manual_error: prevMap.get(r.id) ?? false }
+                : r,
+            ),
+          );
+          toast.error(
+            data.message ?? data.error ?? "Không cập nhật được đánh dấu lỗi",
+          );
+          return;
+        }
+        toast.success(
+          flagged
+            ? `Đã đánh dấu ${data.updated ?? ids.length} đơn là lỗi`
+            : `Đã bỏ đánh dấu ${data.updated ?? ids.length} đơn`,
+        );
+        setSelectedIds(new Set());
+      } catch (err) {
+        setRows((prev) =>
+          prev.map((r) =>
+            prevMap.has(r.id)
+              ? { ...r, manual_error: prevMap.get(r.id) ?? false }
+              : r,
+          ),
+        );
+        toast.error((err as Error).message);
+      } finally {
+        setMarking(false);
+      }
+    },
+    [selectedIds, rows, toast],
+  );
 
   /**
    * Auto-poll list mỗi 15s để cập nhật:
@@ -415,6 +528,20 @@ export default function VideosPage() {
           </div>
         )}
 
+        {selectedIds.size > 0 && (
+          <BulkActionBar
+            selectedCount={selectedIds.size}
+            flaggedSelectedCount={rows.reduce(
+              (n, r) => n + (selectedIds.has(r.id) && r.manual_error ? 1 : 0),
+              0,
+            )}
+            marking={marking}
+            onMarkError={() => void markError(true)}
+            onUnmarkError={() => void markError(false)}
+            onClear={() => setSelectedIds(new Set())}
+          />
+        )}
+
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm">
           <div className="px-4 lg:px-5 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
             <p className="text-sm font-semibold text-slate-800">
@@ -452,12 +579,17 @@ export default function VideosPage() {
               loading={loading}
               rows={rows}
               openFor={openFor}
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
+              onToggleSelectAll={toggleSelectAllCurrent}
             />
           ) : (
             <GridView
               loading={loading}
               rows={rows}
               openFor={openFor}
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
             />
           )}
 
@@ -567,16 +699,43 @@ function ListView({
   loading,
   rows,
   openFor,
+  selectedIds,
+  onToggleSelect,
+  onToggleSelectAll,
 }: {
   loading: boolean;
   rows: ScanRow[];
   openFor: (r: ScanRow) => (mode: ModalMode) => void;
+  selectedIds: Set<string>;
+  onToggleSelect: (id: string) => void;
+  onToggleSelectAll: () => void;
 }) {
+  // "select-all" checkbox trạng thái 3 pha: none / partial / all.
+  // Dùng ref để set indeterminate (attribute không expose qua JSX).
+  const allSelected =
+    rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
+  const someSelected =
+    !allSelected && rows.some((r) => selectedIds.has(r.id));
+  const headerCheckboxRef = (el: HTMLInputElement | null) => {
+    if (el) el.indeterminate = someSelected;
+  };
+
   return (
     <div>
       <table className="w-full text-sm border-separate border-spacing-0">
         <thead>
           <tr className="bg-slate-50 text-left text-[11px] tracking-wider text-slate-500 sticky top-0 z-10 [&>th:first-child]:rounded-tl-2xl [&>th:last-child]:rounded-tr-2xl [&>th]:border-b [&>th]:border-slate-100">
+            <th className="bg-slate-50 px-3 py-2.5 font-semibold w-10">
+              <input
+                type="checkbox"
+                ref={headerCheckboxRef}
+                checked={allSelected}
+                onChange={onToggleSelectAll}
+                disabled={rows.length === 0}
+                aria-label="Chọn tất cả trên trang"
+                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+              />
+            </th>
             <th className="bg-slate-50 px-3 py-2.5 font-semibold w-40">Thời gian</th>
             <th className="bg-slate-50 px-3 py-2.5 font-semibold w-44">Mã vận đơn</th>
             <th className="bg-slate-50 px-3 py-2.5 font-semibold">Kho · Bàn</th>
@@ -592,7 +751,7 @@ function ListView({
         <tbody>
           {loading && (
             <tr>
-              <td colSpan={8} className="px-3 py-10 text-center text-slate-400">
+              <td colSpan={9} className="px-3 py-10 text-center text-slate-400">
                 <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
                 Đang tải...
               </td>
@@ -601,7 +760,7 @@ function ListView({
           {!loading && rows.length === 0 && (
             <tr>
               <td
-                colSpan={8}
+                colSpan={9}
                 className="px-3 py-12 text-center text-slate-400 text-sm"
               >
                 Không có lần quét nào khớp bộ lọc.
@@ -614,6 +773,8 @@ function ListView({
                 key={r.id}
                 scan={r}
                 onOpen={openFor(r)}
+                selected={selectedIds.has(r.id)}
+                onToggleSelect={onToggleSelect}
               />
             ))}
         </tbody>
@@ -626,10 +787,14 @@ function GridView({
   loading,
   rows,
   openFor,
+  selectedIds,
+  onToggleSelect,
 }: {
   loading: boolean;
   rows: ScanRow[];
   openFor: (r: ScanRow) => (mode: ModalMode) => void;
+  selectedIds: Set<string>;
+  onToggleSelect: (id: string) => void;
 }) {
   if (loading) {
     return (
@@ -654,6 +819,8 @@ function GridView({
           key={r.id}
           scan={r}
           onOpen={openFor(r)}
+          selected={selectedIds.has(r.id)}
+          onToggleSelect={onToggleSelect}
         />
       ))}
     </div>
@@ -840,12 +1007,30 @@ function ScanActions({
 function ScanRowView({
   scan,
   onOpen,
+  selected,
+  onToggleSelect,
 }: {
   scan: ScanRow;
   onOpen: (mode: ModalMode) => void;
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
 }) {
+  // manual_error tô nền rose nhẹ — đủ để nổi bật giữa list mà không
+  // đè lên hover state. Hover đè rose-100 → rose-100/60 giữ signal.
+  const rowClass = scan.manual_error
+    ? "bg-rose-50/70 hover:bg-rose-100/60"
+    : "hover:bg-slate-50";
   return (
-    <tr className="[&>td]:border-t [&>td]:border-slate-100 hover:bg-slate-50 align-top">
+    <tr className={`[&>td]:border-t [&>td]:border-slate-100 align-top ${rowClass}`}>
+      <td className="px-3 py-2.5">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggleSelect(scan.id)}
+          aria-label={`Chọn đơn ${scan.waybill_code}`}
+          className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+        />
+      </td>
       <td className="px-3 py-2.5 text-xs text-slate-700 whitespace-nowrap">
         <div className="inline-flex items-center gap-1">
           <Clock className="h-3 w-3 text-slate-400" />
@@ -854,6 +1039,12 @@ function ScanRowView({
       </td>
       <td className="px-3 py-2.5 font-mono text-xs font-semibold text-slate-800">
         {scan.waybill_code}
+        {scan.manual_error && (
+          <div className="inline-flex items-center gap-1 text-[10px] font-sans font-semibold text-rose-700 bg-rose-100 px-1.5 py-0.5 rounded mt-1">
+            <Flag className="h-2.5 w-2.5" />
+            Đơn lỗi
+          </div>
+        )}
         {scan.timing_status === "open" && (
           <div className="text-[10px] text-blue-700 mt-1 font-sans">
             Đang đóng
@@ -913,52 +1104,79 @@ function ScanRowView({
 function ScanCardView({
   scan,
   onOpen,
+  selected,
+  onToggleSelect,
 }: {
   scan: ScanRow;
   onOpen: (mode: ModalMode) => void;
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
 }) {
   const clip = scan.clip;
   const state = clipCellState(clip);
   const canPlay = state === "ready_cloud";
 
   return (
-    <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
-      <button
-        type="button"
-        onClick={canPlay ? () => onOpen("view") : undefined}
-        disabled={!canPlay}
-        className={`relative w-full aspect-video bg-slate-900 group ${
-          canPlay ? "cursor-pointer" : "cursor-default"
-        }`}
-      >
-        <div
-          className="absolute inset-0 bg-gradient-to-br from-slate-800 to-black"
-          style={{
-            backgroundImage:
-              "radial-gradient(ellipse at 40% 50%, rgba(16,185,129,0.12) 0%, transparent 60%)",
-          }}
-        />
-        {canPlay && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="h-10 w-10 rounded-full bg-white/15 backdrop-blur-md group-hover:bg-white/25 flex items-center justify-center transition-colors">
-              <Play className="h-4 w-4 text-white translate-x-0.5" />
-            </div>
-          </div>
-        )}
-        {scan.camera && (
-          <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-sm text-white text-[10px] font-mono">
-            {scan.camera.camera_code}
-          </div>
-        )}
-        {canPlay && clip?.duration_seconds != null && (
+    <div
+      className={`bg-white rounded-lg border shadow-sm overflow-hidden ${
+        scan.manual_error ? "border-rose-300 ring-1 ring-rose-200" : "border-slate-200"
+      }`}
+    >
+      <div className="relative">
+        <button
+          type="button"
+          onClick={canPlay ? () => onOpen("view") : undefined}
+          disabled={!canPlay}
+          className={`relative w-full aspect-video bg-slate-900 group ${
+            canPlay ? "cursor-pointer" : "cursor-default"
+          }`}
+        >
           <div
-            className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-sm text-white text-[10px] font-mono inline-flex items-center gap-1"
-            title={clipDurationTooltip(clip)}
-          >
-            <Clock className="h-3 w-3" /> {formatDuration(clip.duration_seconds)}
+            className="absolute inset-0 bg-gradient-to-br from-slate-800 to-black"
+            style={{
+              backgroundImage:
+                "radial-gradient(ellipse at 40% 50%, rgba(16,185,129,0.12) 0%, transparent 60%)",
+            }}
+          />
+          {canPlay && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="h-10 w-10 rounded-full bg-white/15 backdrop-blur-md group-hover:bg-white/25 flex items-center justify-center transition-colors">
+                <Play className="h-4 w-4 text-white translate-x-0.5" />
+              </div>
+            </div>
+          )}
+          {scan.camera && (
+            <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-sm text-white text-[10px] font-mono">
+              {scan.camera.camera_code}
+            </div>
+          )}
+          {canPlay && clip?.duration_seconds != null && (
+            <div
+              className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-sm text-white text-[10px] font-mono inline-flex items-center gap-1"
+              title={clipDurationTooltip(clip)}
+            >
+              <Clock className="h-3 w-3" /> {formatDuration(clip.duration_seconds)}
+            </div>
+          )}
+        </button>
+        {/* Checkbox tách khỏi <button> để tránh interactive-lồng-interactive
+            (button chứa input là a11y invalid, có browser sẽ nuốt click). */}
+        <div className="absolute top-1.5 right-1.5 z-10 inline-flex items-center justify-center h-6 w-6 rounded bg-black/50 backdrop-blur-sm">
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={() => onToggleSelect(scan.id)}
+            aria-label={`Chọn đơn ${scan.waybill_code}`}
+            className="h-3.5 w-3.5 rounded border-white/60 text-emerald-500 focus:ring-emerald-500 cursor-pointer bg-transparent"
+          />
+        </div>
+        {scan.manual_error && (
+          <div className="absolute bottom-1.5 left-1.5 z-10 inline-flex items-center gap-1 text-[10px] font-semibold text-white bg-rose-600 px-1.5 py-0.5 rounded shadow">
+            <Flag className="h-2.5 w-2.5" />
+            Đơn lỗi
           </div>
         )}
-      </button>
+      </div>
       <div className="p-2.5 space-y-1.5">
         <p className="font-mono text-xs font-semibold text-slate-800 truncate">
           {scan.waybill_code}
@@ -983,6 +1201,86 @@ function ScanCardView({
           <ScanActions scan={scan} onOpen={onOpen} />
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Bulk bar hiện khi có ≥1 row được tick. Ưu tiên nút [Đánh dấu lỗi]
+ * (primary rose) — hành động chính. Nếu tất cả row đã đánh dấu → chỉ
+ * hiện [Bỏ đánh dấu]. Mix → hiện cả hai để user chọn ý định.
+ *
+ * Đặt sticky top để không bị cuộn khuất khi user chọn giữa list dài.
+ */
+function BulkActionBar({
+  selectedCount,
+  flaggedSelectedCount,
+  marking,
+  onMarkError,
+  onUnmarkError,
+  onClear,
+}: {
+  selectedCount: number;
+  flaggedSelectedCount: number;
+  marking: boolean;
+  onMarkError: () => void;
+  onUnmarkError: () => void;
+  onClear: () => void;
+}) {
+  const allFlagged = flaggedSelectedCount === selectedCount;
+  const noneFlagged = flaggedSelectedCount === 0;
+  return (
+    <div className="sticky top-2 z-30 bg-white rounded-2xl border border-rose-200 shadow-md px-4 py-2.5 flex items-center gap-3 flex-wrap">
+      <div className="flex items-center gap-2 text-sm text-slate-700 flex-1 min-w-0">
+        <span className="inline-flex items-center justify-center h-6 min-w-[24px] px-1.5 rounded-full bg-emerald-100 text-emerald-700 text-xs font-semibold">
+          {selectedCount}
+        </span>
+        <span>
+          đã chọn
+          {flaggedSelectedCount > 0 && (
+            <span className="text-slate-500">
+              {" · "}
+              {flaggedSelectedCount} đang có dấu lỗi
+            </span>
+          )}
+        </span>
+      </div>
+      {!allFlagged && (
+        <button
+          onClick={onMarkError}
+          disabled={marking}
+          className="h-8 px-3 rounded-lg bg-rose-500 hover:bg-rose-600 text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
+        >
+          {marking ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Flag className="h-3 w-3" />
+          )}
+          Đánh dấu lỗi
+        </button>
+      )}
+      {!noneFlagged && (
+        <button
+          onClick={onUnmarkError}
+          disabled={marking}
+          className="h-8 px-3 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
+        >
+          {marking ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <FlagOff className="h-3 w-3" />
+          )}
+          Bỏ đánh dấu
+        </button>
+      )}
+      <button
+        onClick={onClear}
+        disabled={marking}
+        className="h-8 px-2 rounded-lg text-slate-500 hover:bg-slate-100 text-xs inline-flex items-center gap-1 disabled:opacity-60"
+        title="Bỏ chọn tất cả"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }

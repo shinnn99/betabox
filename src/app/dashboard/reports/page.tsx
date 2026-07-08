@@ -33,6 +33,7 @@ interface StaffStat {
   video_count: number;
   valid_orders: number;
   duplicated_orders: number;
+  manual_error_orders: number;
   active_days: number;
   avg_videos_per_day: number;
   avg_duration_seconds: number | null;
@@ -276,6 +277,12 @@ export default function ReportsPage() {
                   <th className="px-4 py-3 font-semibold text-right">Số video đóng hàng</th>
                   <th className="px-4 py-3 font-semibold text-right">Số đơn</th>
                   <th className="px-4 py-3 font-semibold text-right">Số đơn lặp</th>
+                  <th
+                    className="px-4 py-3 font-semibold text-right"
+                    title="Đơn được đánh dấu lỗi thủ công từ trang Bằng chứng giao hàng (khiếu nại, đóng sai, sai người)."
+                  >
+                    Số đơn lỗi
+                  </th>
                   <th className="px-4 py-3 font-semibold text-right">TB video/ngày</th>
                   <th className="px-4 py-3 font-semibold text-right">Thời gian đóng/đơn</th>
                 </tr>
@@ -283,7 +290,7 @@ export default function ReportsPage() {
               <tbody>
                 {staff.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-400">
+                    <td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-400">
                       {loading ? "Đang tải…" : "Không có dữ liệu"}
                     </td>
                   </tr>
@@ -303,6 +310,15 @@ export default function ReportsPage() {
                       </td>
                       <td className="px-4 py-3 text-right font-mono text-slate-600">
                         {s.duplicated_orders.toLocaleString("vi-VN")}
+                      </td>
+                      <td
+                        className={`px-4 py-3 text-right font-mono ${
+                          s.manual_error_orders > 0
+                            ? "text-rose-600 font-semibold"
+                            : "text-slate-500"
+                        }`}
+                      >
+                        {s.manual_error_orders.toLocaleString("vi-VN")}
                       </td>
                       <td className="px-4 py-3 text-right font-mono text-slate-700">
                         {s.avg_videos_per_day.toFixed(1)}

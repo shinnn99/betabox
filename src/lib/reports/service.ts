@@ -19,6 +19,10 @@ export interface StaffStat {
   video_count: number;
   valid_orders: number;
   duplicated_orders: number;
+  // Đơn được đánh dấu lỗi thủ công từ /dashboard/videos. Chỉ đếm
+  // trong nhóm status='valid' (đơn thật sự có nghiệp vụ đóng gói),
+  // duplicated không tính để không đếm 2 lần.
+  manual_error_orders: number;
   active_days: number;
   avg_videos_per_day: number;
   avg_duration_seconds: number | null;
@@ -77,6 +81,7 @@ type EventRow = {
   work_duration_seconds: number | null;
   order_id: string | null;
   staff_id: string | null;
+  manual_error: boolean | null;
 };
 
 async function fetchEvents(
@@ -91,7 +96,7 @@ async function fetchEvents(
   for (;;) {
     const { data, error } = await admin
       .from("packing_events")
-      .select("id, business_date, status, work_duration_seconds, order_id, staff_id")
+      .select("id, business_date, status, work_duration_seconds, order_id, staff_id, manual_error")
       .eq("organization_id", organizationId)
       .gte("business_date", fromDate)
       .lte("business_date", toDate)
@@ -237,6 +242,7 @@ function aggregateStaff(
   type Bucket = {
     valid: number;
     duplicated: number;
+    manual_error: number;
     videos: number;
     durSum: number;
     durCount: number;
@@ -249,7 +255,15 @@ function aggregateStaff(
     const key = r.staff_id ?? UNASSIGNED;
     let b = byStaff.get(key);
     if (!b) {
-      b = { valid: 0, duplicated: 0, videos: 0, durSum: 0, durCount: 0, dates: new Set() };
+      b = {
+        valid: 0,
+        duplicated: 0,
+        manual_error: 0,
+        videos: 0,
+        durSum: 0,
+        durCount: 0,
+        dates: new Set(),
+      };
       byStaff.set(key, b);
     }
     if (r.status === "valid") {
@@ -260,6 +274,7 @@ function aggregateStaff(
         b.durCount += 1;
       }
       if (clipEventIds.has(r.id)) b.videos += 1;
+      if (r.manual_error === true) b.manual_error += 1;
     } else if (r.status === "duplicated") {
       b.duplicated += 1;
     }
@@ -278,6 +293,7 @@ function aggregateStaff(
       video_count: b.videos,
       valid_orders: b.valid,
       duplicated_orders: b.duplicated,
+      manual_error_orders: b.manual_error,
       active_days: activeDays,
       avg_videos_per_day: denominator > 0 ? b.videos / denominator : 0,
       avg_duration_seconds: b.durCount > 0 ? b.durSum / b.durCount : null,
