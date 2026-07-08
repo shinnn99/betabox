@@ -62,6 +62,12 @@ import {
  */
 const fetchLogLimiter = new LogRateLimiter();
 import { probeTargets, reportProbes } from "./camera-probe";
+import {
+  listCandidateSubnets,
+  rankCandidateSubnets,
+  scanForCameras,
+  validatePrivateCidr,
+} from "./lan-discovery";
 
 /**
  * The agent runs three things on timers:
@@ -1021,6 +1027,80 @@ async function main(): Promise<void> {
           commandId: command.id,
           status: "failed",
           error: `probe_failed: ${probe.reason}`,
+        });
+      }
+      return;
+    }
+
+    if (command.type === "discover_lan") {
+      // Quét LAN từ máy trong kho — cloud không thấy được 192.168.x
+      // của mạng khách nên phải chạy ở agent. Cloud enqueue command,
+      // agent chạy scanForCameras local rồi callback qua command-result.
+      const p = command.payload as {
+        mode?: "quick" | "full";
+        subnets?: string[] | null;
+      };
+      const mode: "quick" | "full" = p.mode === "full" ? "full" : "quick";
+      console.log(
+        `[COMMAND DISCOVER_LAN] ${command.id} mode=${mode} subnets=${p.subnets?.join("|") ?? "auto"}`,
+      );
+      try {
+        // Validate subnets do cloud gửi — cloud đã check, nhưng agent
+        // check lại phòng payload hỏng. Nếu invalid, fail rõ để cloud
+        // biết chứ không chạy scan quá phạm vi.
+        if (p.subnets && p.subnets.length > 0) {
+          for (const s of p.subnets) {
+            if (!validatePrivateCidr(s)) {
+              await reportCommandResult({
+                backendUrl: config.backendUrl,
+                agentCode: config.agentCode,
+                agentSecret: config.agentSecret,
+                commandId: command.id,
+                status: "failed",
+                error: `invalid_subnet:${s}`,
+              });
+              return;
+            }
+          }
+        }
+
+        // available_subnets = list interface của máy agent (dùng cho
+        // dropdown ở UI). Rank để đưa subnet có sẵn camera lên đầu,
+        // subnet ảo (docker/vpn) xuống cuối.
+        const availableSubnets = rankCandidateSubnets(listCandidateSubnets());
+
+        const scan = await scanForCameras({
+          mode,
+          subnets:
+            p.subnets && p.subnets.length > 0
+              ? p.subnets
+              : availableSubnets.map((c) => c.cidr),
+        });
+
+        await reportCommandResult({
+          backendUrl: config.backendUrl,
+          agentCode: config.agentCode,
+          agentSecret: config.agentSecret,
+          commandId: command.id,
+          status: "done",
+          result: {
+            scan_mode: scan.scan_mode,
+            scanned_subnets: scan.scanned_subnets,
+            available_subnets: availableSubnets,
+            devices: scan.devices,
+          },
+        });
+      } catch (err) {
+        console.warn(
+          `[discover_lan] ${command.id} FAILED: ${(err as Error).message}`,
+        );
+        await reportCommandResult({
+          backendUrl: config.backendUrl,
+          agentCode: config.agentCode,
+          agentSecret: config.agentSecret,
+          commandId: command.id,
+          status: "failed",
+          error: (err as Error).message,
         });
       }
       return;

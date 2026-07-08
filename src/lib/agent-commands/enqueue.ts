@@ -389,6 +389,53 @@ export async function enqueueTestCameraDraft(
 }
 
 /**
+ * LAN discovery: enqueue job quét camera trên mạng nội bộ của kho.
+ *
+ * Trước đây scan chạy trực tiếp trên Next.js server. Đúng khi backend
+ * còn nằm cùng LAN với camera; sai khi lên SaaS (Vercel POP không thấy
+ * 192.168.x của kho). Chuyển sang command-queue: cloud enqueue, agent
+ * chạy `scanForCameras` local rồi callback qua command-result.
+ *
+ * Payload:
+ *   - mode: "quick" | "full" — copy nghĩa từ scanForCameras.
+ *   - subnets: null → agent tự dùng listCandidateSubnets(); nếu có →
+ *     agent scan chính xác list này (đã validate ở caller).
+ *
+ * Kết quả agent report:
+ *   { scan_mode, scanned_subnets, available_subnets, devices }
+ *   Route GET /api/cameras/discover?command_id đọc từ agent_commands.result.
+ */
+export interface EnqueueDiscoverLanArgs {
+  organizationId: string;
+  agentId: string;
+  mode: "quick" | "full";
+  subnets: string[] | null;
+}
+
+export async function enqueueDiscoverLan(
+  args: EnqueueDiscoverLanArgs,
+): Promise<{ command_id: string }> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("agent_commands")
+    .insert({
+      organization_id: args.organizationId,
+      agent_id: args.agentId,
+      type: "discover_lan",
+      payload: {
+        mode: args.mode,
+        subnets: args.subnets,
+      },
+    })
+    .select("id")
+    .single();
+  if (error || !data) {
+    throw new Error(`enqueue discover_lan failed: ${error?.message}`);
+  }
+  return { command_id: data.id };
+}
+
+/**
  * 3c: enqueue job upload_clip. Agent đọc clip từ ổ local, xin
  * signed URL, PUT lên bucket, báo complete.
  */

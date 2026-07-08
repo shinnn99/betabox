@@ -20,7 +20,7 @@
 ; chỉnh w32time.
 
 #define AppName        "Betacom Warehouse Agent"
-#define AppVersion     "0.4.3"
+#define AppVersion     "0.5.0"
 #define AppPublisher   "Betacom"
 #define AppURL         "https://betabox.vercel.app"
 #define ServiceName    "BetacomAgent"

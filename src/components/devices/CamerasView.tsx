@@ -646,19 +646,22 @@ function DiscoverTab({
         mode,
       });
       try {
+        // Pha 1: POST enqueue. Cloud pick agent kho online, insert
+        // agent_commands (type=discover_lan), trả command_id. Nếu 0 agent
+        // hoặc offline → HTTP 400 với message hiện luôn ở banner đỏ.
         const body: Record<string, unknown> = { mode };
         if (cidr) body.cidr = cidr;
-        const res = await fetch("/api/cameras/discover", {
+        const enqueueRes = await fetch("/api/cameras/discover", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
           cache: "no-store",
         });
-        const data = (await res.json()) as
-          | DiscoverResponse
+        const enqueueData = (await enqueueRes.json()) as
+          | { command_id: string; agent_id: string; status: "pending" }
           | DiscoverErrorResponse;
-        if (!res.ok) {
-          const err = data as DiscoverErrorResponse;
+        if (!enqueueRes.ok) {
+          const err = enqueueData as DiscoverErrorResponse;
           if (err.available_subnets) setCandidates(err.available_subnets);
           setState({
             kind: "error",
@@ -667,23 +670,76 @@ function DiscoverTab({
           });
           return;
         }
-        const payload = data as DiscoverResponse;
-        const subnet = payload.selected_subnet ?? payload.subnet ?? cidr;
-        const scanned = payload.scanned_subnets ?? (subnet ? [subnet] : []);
-        const nextCandidates = payload.available_subnets ?? candidates;
-        if (payload.available_subnets) setCandidates(payload.available_subnets);
-        // Lock the dropdown onto the FIRST scanned subnet so "Quét lại"
-        // hits a known target. In multi-subnet scans this is the
-        // top-ranked one — the dropdown shows the rest in `candidates`.
-        if (scanned[0]) setPickedCidr(scanned[0]);
-        setState({
-          kind: "result",
-          subnet,
-          scanned_subnets: scanned,
-          mode: payload.scan_mode ?? mode,
-          devices: payload.devices,
-          candidates: nextCandidates,
-        });
+        const { command_id } = enqueueData as {
+          command_id: string;
+          agent_id: string;
+          status: "pending";
+        };
+
+        // Pha 2: poll GET mỗi 1s. Timeout 45s = quick 3-5s + agent poll
+        // interval (~5s) + full mode 15-30s + margin. Quá timeout coi
+        // như fail (agent có thể vẫn xử xong, nhưng UI không đợi nữa).
+        const startedAt = Date.now();
+        const POLL_INTERVAL_MS = 1000;
+        const POLL_TIMEOUT_MS = 45_000;
+        while (true) {
+          if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+            setState({
+              kind: "error",
+              message:
+                "Quét mạng quá lâu chưa xong (>45s). Agent kho có thể tạm bận, thử lại hoặc dùng Thêm thủ công.",
+              candidates,
+            });
+            return;
+          }
+          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+          const pollRes = await fetch(
+            `/api/cameras/discover?command_id=${encodeURIComponent(command_id)}`,
+            { method: "GET", cache: "no-store" },
+          );
+          const pollData = (await pollRes.json()) as
+            | { status: "pending" }
+            | { status: "failed"; error: string; message: string }
+            | (DiscoverResponse & { status: "done" });
+          if (!pollRes.ok) {
+            setState({
+              kind: "error",
+              message:
+                (pollData as { message?: string }).message ??
+                "Không đọc được kết quả quét.",
+              candidates,
+            });
+            return;
+          }
+          if (pollData.status === "pending") continue;
+          if (pollData.status === "failed") {
+            setState({
+              kind: "error",
+              message: pollData.message ?? pollData.error ?? "Quét mạng thất bại.",
+              candidates,
+            });
+            return;
+          }
+          // status === "done"
+          const payload = pollData as DiscoverResponse;
+          const subnet = payload.selected_subnet ?? payload.subnet ?? cidr;
+          const scanned = payload.scanned_subnets ?? (subnet ? [subnet] : []);
+          const nextCandidates = payload.available_subnets ?? candidates;
+          if (payload.available_subnets) setCandidates(payload.available_subnets);
+          // Lock the dropdown onto the FIRST scanned subnet so "Quét lại"
+          // hits a known target. In multi-subnet scans this is the
+          // top-ranked one — the dropdown shows the rest in `candidates`.
+          if (scanned[0]) setPickedCidr(scanned[0]);
+          setState({
+            kind: "result",
+            subnet,
+            scanned_subnets: scanned,
+            mode: payload.scan_mode ?? mode,
+            devices: payload.devices,
+            candidates: nextCandidates,
+          });
+          return;
+        }
       } catch (e) {
         setState({
           kind: "error",
