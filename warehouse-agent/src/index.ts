@@ -1405,6 +1405,12 @@ async function main(): Promise<void> {
   //       khi CommandLine ẩn, nên chỉ tin (a) làm tín hiệu cứng.
   // Nếu (a) hoặc (b) còn dấu hiệu ffmpeg sống → KHÔNG declare alive=[],
   // KHÔNG spawn (sẽ tạo ffmpeg thứ 2). Log rõ để ops rescue tay.
+  // Verify TRƯỚC (rẻ, không network). Chỉ SKIP lifecycle.boot khi verify
+  // phát hiện PID còn sống — đây mới là ca 2-ffmpeg thật.
+  // Network fail khi callBootDeclare (reboot máy khách, mạng chưa lên) là
+  // ca thường 100% — KHÔNG được skip lifecycle.boot vì máy đã verify sạch.
+  // Cứ spawn, session cloud sẽ được đóng lần declare thành công sau (retry
+  // của heartbeat/status update sẽ cập nhật).
   let bootDeclareSkipped = false;
   try {
     const regVerify = await verifyRegistryClean(pidRegistry);
@@ -1421,7 +1427,28 @@ async function main(): Promise<void> {
         console.error(`  [boot-declare] marker pid=${r.pid} cmd=${r.cmdLine.slice(0, 120)}`);
       }
       bootDeclareSkipped = true;
-    } else {
+    }
+  } catch (err) {
+    // Verify (isProcessAlive/sweep) throw = local process query fail.
+    // Cực hiếm. Log rồi bỏ qua — KHÔNG skip lifecycle.boot (mạng lỗi hay
+    // process query lỗi đều không nghĩa là có zombie). Chỉ verify tường
+    // minh (còn PID sống) mới chặn.
+    console.error(
+      `[boot-declare] verify error, continue: ${(err as Error).message}`,
+    );
+  }
+
+  // Gọi endpoint sau khi verify pass. Fail (network chưa lên khi boot,
+  // Vercel down, HMAC lệch) KHÔNG chặn lifecycle.boot — reboot khách
+  // luôn có gap mạng ngắn sau boot, không được block vì thế.
+  //
+  // Trade-off: session cloud treo connection_lost sẽ không được đóng lần
+  // này → RPC enqueue_start_recording có thể trả recording_state_unknown
+  // → lifecycle.boot spawn sẽ fail cho các cam có session treo. Nhưng
+  // retry layer (long-retry, error_prolonged) sẽ tiếp tục thử; hoặc lần
+  // agent restart tiếp mạng lên sẽ đóng.
+  if (!bootDeclareSkipped) {
+    try {
       const decl = await callBootDeclare({
         backendUrl: config.backendUrl,
         agentCode: config.agentCode,
@@ -1431,15 +1458,11 @@ async function main(): Promise<void> {
       console.log(
         `[boot-declare] status=${decl.status} ${JSON.stringify(decl.body).slice(0, 200)}`,
       );
+    } catch (err) {
+      console.warn(
+        `[boot-declare] call failed (network?): ${(err as Error).message} — lifecycle.boot vẫn chạy, retry sẽ đóng session sau`,
+      );
     }
-  } catch (err) {
-    // Verify hoặc callBootDeclare throw → không biết máy sạch hay không.
-    // Cùng logic cứu cánh: KHÔNG spawn (thà không ghi còn hơn 2 ffmpeg).
-    // Đánh dấu skip để nhánh dưới chặn lifecycle.boot.
-    console.error(
-      `[boot-declare] error: ${(err as Error).message} — skip lifecycle.boot để an toàn`,
-    );
-    bootDeclareSkipped = true;
   }
 
   if (bootDeclareSkipped) {
