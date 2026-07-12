@@ -26,9 +26,42 @@ const execAsync = promisify(exec);
 export interface BootRecoveryResult {
   totalEntries: number;
   killed: number;
+  killedByRegistryTrust: number; // 3 tầng: kill vì registry nói của mình + không đọc được CommandLine để verify
   alreadyDead: number;
   pidReused: number;
   errors: number;
+}
+
+/**
+ * Chỉ check PID còn sống hay không — KHÔNG cần đọc CommandLine.
+ * Signal 0 test tồn tại process (POSIX). Windows: dùng `tasklist /FI "PID eq X"`
+ * đếm dòng — không phụ thuộc quyền đọc CommandLine của LocalSystem process.
+ *
+ * Nguồn tin: "process còn sống" LUÔN đọc được; "CommandLine là gì" tùy quyền.
+ * Xây fallback trên thứ luôn đọc được.
+ */
+async function isProcessAlive(pid: number): Promise<boolean> {
+  if (process.platform === "win32") {
+    try {
+      const { stdout } = await execAsync(
+        `tasklist /FI "PID eq ${pid}" /NH /FO CSV`,
+        { timeout: 5000, windowsHide: true, encoding: "utf8" } as never,
+      );
+      // Nếu PID không tồn tại, tasklist in "INFO: No tasks are running which
+      // match the specified criteria." (stderr với /NH vẫn có message stdout
+      // trên một số Windows). Chắc: parse — line CSV chứa dấu phẩy và tên
+      // exe → nếu có "ffmpeg.exe" hoặc tên bất kỳ .exe trong dòng đầu → sống.
+      return /\.exe/i.test(String(stdout));
+    } catch {
+      return false;
+    }
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -130,6 +163,17 @@ async function killProcessTree(pid: number): Promise<boolean> {
   }
 }
 
+/**
+ * Tầng 1 (chính xác nhất): đọc registry, xử từng entry.
+ *   - CommandLine đọc được + khớp marker "ffmpeg" → kill (kill_by_cmdline).
+ *   - CommandLine đọc được + KHÔNG khớp → PID reuse, KHÔNG kill (chống giết nhầm).
+ *   - CommandLine KHÔNG đọc được (null/rỗng) + process CÒN SỐNG → tin registry,
+ *     kill (kill_by_registry_trust). Đây là fallback đóng ca LocalSystem-hidden.
+ *   - CommandLine không đọc được + process ĐÃ CHẾT → already_dead, xóa entry.
+ *
+ * Điểm cứng: **"process còn sống" đọc bằng tasklist PID-only, luôn đọc được;
+ * "CommandLine là gì" tùy quyền.** Fallback trên thứ luôn đọc được.
+ */
 export async function recoverZombieFfmpeg(
   registry: PidRegistry,
 ): Promise<BootRecoveryResult> {
@@ -137,6 +181,7 @@ export async function recoverZombieFfmpeg(
   const result: BootRecoveryResult = {
     totalEntries: entries.length,
     killed: 0,
+    killedByRegistryTrust: 0,
     alreadyDead: 0,
     pidReused: 0,
     errors: 0,
@@ -145,8 +190,37 @@ export async function recoverZombieFfmpeg(
   for (const entry of entries) {
     try {
       const cmdLine = await getProcessCommandLine(entry.pid);
-      if (cmdLine === null) {
-        // Process đã tự chết trong lúc agent down. Xóa entry.
+      if (cmdLine !== null) {
+        // CommandLine đọc được → phân biệt ffmpeg vs PID reuse chính xác.
+        if (!commandLineMatches(cmdLine, entry.fingerprint)) {
+          result.pidReused++;
+          console.warn(
+            `[boot-recovery] entry camera=${entry.cameraCode} pid=${entry.pid} PID reused by other process, NOT killing. cmd=${cmdLine.slice(0, 80)}`,
+          );
+          await registry.remove(entry.cameraId);
+          continue;
+        }
+        const killed = await killProcessTree(entry.pid);
+        if (killed) {
+          result.killed++;
+          console.log(
+            `[boot-recovery] killed zombie ffmpeg camera=${entry.cameraCode} pid=${entry.pid}`,
+          );
+        } else {
+          result.errors++;
+          console.error(
+            `[boot-recovery] failed to kill camera=${entry.cameraCode} pid=${entry.pid}`,
+          );
+        }
+        await registry.remove(entry.cameraId);
+        continue;
+      }
+
+      // CommandLine null: có thể (a) PID không tồn tại, HOẶC (b) PID sống
+      // nhưng không đọc được CommandLine (LocalSystem hidden). Phân biệt
+      // bằng isProcessAlive — chỉ PID, không cần quyền.
+      const alive = await isProcessAlive(entry.pid);
+      if (!alive) {
         result.alreadyDead++;
         console.log(
           `[boot-recovery] entry camera=${entry.cameraCode} pid=${entry.pid} already dead, removing`,
@@ -155,28 +229,21 @@ export async function recoverZombieFfmpeg(
         continue;
       }
 
-      if (!commandLineMatches(cmdLine, entry.fingerprint)) {
-        // PID đã bị OS tái sử dụng cho process khác (không phải ffmpeg).
-        // KHÔNG kill — sẽ giết nhầm. Xóa entry.
-        result.pidReused++;
-        console.warn(
-          `[boot-recovery] entry camera=${entry.cameraCode} pid=${entry.pid} PID reused by other process, NOT killing. cmd=${cmdLine.slice(0, 80)}`,
-        );
-        await registry.remove(entry.cameraId);
-        continue;
-      }
-
-      // PID còn sống + là ffmpeg zombie → kill tree.
+      // Fallback: PID sống + không đọc được CommandLine → tin registry.
+      // Rủi ro giết nhầm gần 0 (registry chỉ chứa PID agent tự spawn),
+      // nhưng nếu PID đã bị OS reuse cho process khác trong lúc CommandLine
+      // ẩn thì có thể sai. Chấp nhận: xác suất PID-reuse chính khoảnh khắc
+      // này thấp hơn nhiều xác suất zombie ffmpeg thật.
       const killed = await killProcessTree(entry.pid);
       if (killed) {
-        result.killed++;
-        console.log(
-          `[boot-recovery] killed zombie ffmpeg camera=${entry.cameraCode} pid=${entry.pid}`,
+        result.killedByRegistryTrust++;
+        console.warn(
+          `[boot-recovery] killed by registry-trust (CommandLine hidden) camera=${entry.cameraCode} pid=${entry.pid}`,
         );
       } else {
         result.errors++;
         console.error(
-          `[boot-recovery] failed to kill camera=${entry.cameraCode} pid=${entry.pid}`,
+          `[boot-recovery] registry-trust kill failed camera=${entry.cameraCode} pid=${entry.pid}`,
         );
       }
       await registry.remove(entry.cameraId);
@@ -189,6 +256,26 @@ export async function recoverZombieFfmpeg(
   }
 
   return result;
+}
+
+/**
+ * Verify sau boot recovery: quét registry SAU khi xử xong, chưa entry nào
+ * còn sống. Nếu còn PID sống = kill fail hoặc entry chưa xóa. Trả về danh
+ * sách PID còn sống (empty = sạch).
+ *
+ * Đây là tầng 3 — cứu cánh cuối, XÂY TRÊN THỨ LUÔN ĐỌC ĐƯỢC (`isProcessAlive`,
+ * không phụ thuộc CommandLine). Kể cả CommandLine mù hoàn toàn trên máy nào
+ * đó, tầng này vẫn chặn được ca 2-ffmpeg.
+ */
+export async function verifyRegistryClean(
+  registry: PidRegistry,
+): Promise<{ stillAlivePids: number[] }> {
+  const entries = await registry.list();
+  const still: number[] = [];
+  for (const e of entries) {
+    if (await isProcessAlive(e.pid)) still.push(e.pid);
+  }
+  return { stillAlivePids: still };
 }
 
 /**

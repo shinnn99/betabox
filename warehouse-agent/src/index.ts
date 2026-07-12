@@ -46,7 +46,15 @@ import { describeFetchError, LogRateLimiter } from "./fetch-error";
 import { installFatalHandlers, swallow } from "./fatal";
 import { uploadWithTimeout } from "./upload";
 import { PidRegistry } from "./pid-registry";
-import { recoverZombieFfmpeg } from "./ffmpeg-boot-recovery";
+import {
+  recoverZombieFfmpeg,
+  verifyRegistryClean,
+} from "./ffmpeg-boot-recovery";
+import {
+  sweepMarkerOrphans,
+  verifyMarkerSweptClean,
+} from "./ffmpeg-marker-sweep";
+import { callBootDeclare } from "./boot-declare";
 import {
   verifyStaleMarker,
   quarantineStaleGeneration,
@@ -1354,11 +1362,16 @@ async function main(): Promise<void> {
   // Chạy tuần tự (await) chứ không fire-and-forget: cần chờ zombie chết
   // trước khi spawn mới. Fail của boot recovery không block agent —
   // chỉ log rồi tiếp tục.
+  // Tầng 1 — B2 CRIT-1: đọc pid-registry, xử từng entry.
+  // Chính xác nhất: CommandLine đọc được → phân biệt ffmpeg vs PID reuse.
+  // Fallback: CommandLine ẩn (LocalSystem hidden) nhưng process sống →
+  // tin registry (kill_by_registry_trust). Cứng: `isProcessAlive` chỉ dùng
+  // PID (tasklist), không phụ thuộc quyền đọc CommandLine.
   try {
     const rec = await recoverZombieFfmpeg(pidRegistry);
     if (rec.totalEntries > 0) {
       console.log(
-        `[boot-recovery] result total=${rec.totalEntries} killed=${rec.killed} already_dead=${rec.alreadyDead} pid_reused=${rec.pidReused} errors=${rec.errors}`,
+        `[boot-recovery] result total=${rec.totalEntries} killed=${rec.killed} killed_by_registry_trust=${rec.killedByRegistryTrust} already_dead=${rec.alreadyDead} pid_reused=${rec.pidReused} errors=${rec.errors}`,
       );
     }
   } catch (err) {
@@ -1367,18 +1380,96 @@ async function main(): Promise<void> {
     );
   }
 
-  // Boot recording lifecycle: đọc desired file, gọi cloud lấy credential
-  // (retry mãi nếu mạng chưa lên — log leo thang theo ngưỡng), spawn
-  // song song bằng allSettled. Chạy nền để không block startup.
-  // Sau khi boot xong, kích boot recovery của segment index dựa trên
-  // camera đã sống dậy (backfill segment sinh trong lúc agent chết).
-  swallow(
-    lifecycle.boot().then(() => {
-      const active = lifecycle.activeCameraInfos();
-      return segmentIndex.bootRecovery(active);
-    }),
-    "lifecycle.boot+bootRecovery",
-  );
+  // Tầng 2 — Lưới marker: ffmpeg có CommandLine marker `recordingRoot`
+  // mà KHÔNG trong pid-registry → kill nốt. Đóng ca registry mất/hỏng/
+  // chưa kịp ghi khi crash cứng. LƯU Ý: nếu CommandLine ẩn (LocalSystem
+  // hidden), tầng này vô dụng — chấp nhận, vì tầng 3 bù bằng registry+alive.
+  try {
+    const sweep = await sweepMarkerOrphans({ recordingRoot });
+    if (sweep.totalFfmpeg > 0 || sweep.markerMatches.length > 0) {
+      console.log(
+        `[boot-marker-sweep] total_ffmpeg=${sweep.totalFfmpeg} marker_matches=${sweep.markerMatches.length} killed=${sweep.killed} kill_failed=${sweep.killFailed}`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[boot-marker-sweep] fatal error, continuing: ${(err as Error).message}`,
+    );
+  }
+
+  // Tầng 3 — CỨU CÁNH CUỐI: verify sau kill. Xây trên `isProcessAlive`
+  // (tasklist PID-only, LUÔN đọc được), KHÔNG dùng CommandLine.
+  // Kiểm 2 nguồn:
+  //   (a) `verifyRegistryClean`: PID trong registry còn sống → kill fail.
+  //   (b) `verifyMarkerSweptClean`: ffmpeg có marker còn — nhánh này bị null
+  //       khi CommandLine ẩn, nên chỉ tin (a) làm tín hiệu cứng.
+  // Nếu (a) hoặc (b) còn dấu hiệu ffmpeg sống → KHÔNG declare alive=[],
+  // KHÔNG spawn (sẽ tạo ffmpeg thứ 2). Log rõ để ops rescue tay.
+  let bootDeclareSkipped = false;
+  try {
+    const regVerify = await verifyRegistryClean(pidRegistry);
+    const markerVerify = await verifyMarkerSweptClean({ recordingRoot });
+
+    if (regVerify.stillAlivePids.length > 0 || markerVerify.remaining.length > 0) {
+      console.error(
+        `[boot-declare] SKIP — kill fail: registry_still_alive=${regVerify.stillAlivePids.length} marker_remaining=${markerVerify.remaining.length}. Không declare alive=[], không spawn mới. Vận hành phải rescue tay.`,
+      );
+      for (const pid of regVerify.stillAlivePids) {
+        console.error(`  [boot-declare] registry pid=${pid} still alive`);
+      }
+      for (const r of markerVerify.remaining) {
+        console.error(`  [boot-declare] marker pid=${r.pid} cmd=${r.cmdLine.slice(0, 120)}`);
+      }
+      bootDeclareSkipped = true;
+    } else {
+      const decl = await callBootDeclare({
+        backendUrl: config.backendUrl,
+        agentCode: config.agentCode,
+        agentSecret: config.agentSecret,
+        aliveCameraIds: [],
+      });
+      console.log(
+        `[boot-declare] status=${decl.status} ${JSON.stringify(decl.body).slice(0, 200)}`,
+      );
+    }
+  } catch (err) {
+    // Verify hoặc callBootDeclare throw → không biết máy sạch hay không.
+    // Cùng logic cứu cánh: KHÔNG spawn (thà không ghi còn hơn 2 ffmpeg).
+    // Đánh dấu skip để nhánh dưới chặn lifecycle.boot.
+    console.error(
+      `[boot-declare] error: ${(err as Error).message} — skip lifecycle.boot để an toàn`,
+    );
+    bootDeclareSkipped = true;
+  }
+
+  if (bootDeclareSkipped) {
+    // CỨU CÁNH CUỐI: kill fail đã xác nhận có ffmpeg zombie sống. Nếu
+    // để lifecycle.boot() chạy → RPC enqueue_start có thể trả 'created'
+    // (nếu session cũ đã stopped bởi reaper hay boot-declare lần trước)
+    // → agent spawn ffmpeg mới → 2 ffmpeg cùng cam. **KHÔNG dựa vào lớp
+    // phòng thủ RPC** — chặn cứng ở đây.
+    //
+    // Vẫn khởi các timer nền (poll, heartbeat, discovery) để cloud thấy
+    // agent alive và ops có thể rescue tay (kill zombie qua Task Manager
+    // hoặc RDP). segmentIndex vẫn watch để nếu ffmpeg zombie tiếp tục
+    // ghi thì backfill segment vào DB.
+    console.error(
+      `[boot-declare] flag=SKIPPED — SKIP lifecycle.boot() để tránh 2 ffmpeg. Ops phải rescue tay (kill zombie PID trong log trên) rồi restart agent service.`,
+    );
+  } else {
+    // Boot recording lifecycle: đọc desired file, gọi cloud lấy credential
+    // (retry mãi nếu mạng chưa lên — log leo thang theo ngưỡng), spawn
+    // song song bằng allSettled. Chạy nền để không block startup.
+    // Sau khi boot xong, kích boot recovery của segment index dựa trên
+    // camera đã sống dậy (backfill segment sinh trong lúc agent chết).
+    swallow(
+      lifecycle.boot().then(() => {
+        const active = lifecycle.activeCameraInfos();
+        return segmentIndex.bootRecovery(active);
+      }),
+      "lifecycle.boot+bootRecovery",
+    );
+  }
 
   const discoveryTimer = setInterval(() => {
     swallow(reconcile(config), "reconcile");
