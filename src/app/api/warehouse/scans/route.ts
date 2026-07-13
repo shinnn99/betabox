@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   readAgentHeaders,
@@ -12,6 +12,7 @@ import {
   type RecognizedStaff,
 } from "@/lib/warehouse/staff-qr";
 import { normalizeWaybillCode } from "@/lib/warehouse/normalize-code";
+import { hookLarkNotifyScan } from "@/lib/lark/hook-scan";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -398,6 +399,22 @@ export async function POST(req: Request) {
   let packingResult: PackingResult | null = null;
   if (scanType === "waybill") {
     packingResult = await runWaybillRpc(admin, eventId);
+    // Lark notify — schedule sau response bằng `after()` (Next.js 15+).
+    // Vercel serverless: fire-and-forget "trần" (void Promise) sẽ bị kill khi
+    // lambda freeze sau response → notify mất phi định. `after` gắn Promise
+    // vào `waitUntil`, extend lifetime tới khi settled. hookLarkNotifyScan
+    // tự catch cả lỗi đồng bộ lẫn async — không throw, không block.
+    const packingResultForNotify = packingResult;
+    const scannedAtForNotify = parsed.scanned_at;
+    const orgIdForNotify = agent.organization_id;
+    after(() => {
+      hookLarkNotifyScan({
+        admin,
+        organizationId: orgIdForNotify,
+        packingResult: packingResultForNotify,
+        scannedAtIso: scannedAtForNotify,
+      });
+    });
   }
 
   // Touch last_seen_at. Don't fail the request if it errors.

@@ -1,7 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, isError } from "@/lib/supabase/guard";
 import { normalizeWaybillCode } from "@/lib/warehouse/normalize-code";
+import { hookLarkNotifyScan } from "@/lib/lark/hook-scan";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -145,6 +146,22 @@ export async function POST(req: Request) {
   const { data: pack } = await admin
     .rpc("process_waybill_scan", { p_raw_event_id: eventId })
     .single<PackingRpcRow>();
+
+  // Lark notify — schedule sau response bằng `after()` (Next.js 15+).
+  // Vercel serverless: fire-and-forget "trần" bị kill khi lambda freeze sau
+  // response → notify mất phi định. `after` gắn Promise vào `waitUntil`,
+  // extend lifetime tới khi settled.
+  const packForNotify = pack;
+  const scannedAtForNotify = scannedAt;
+  const orgIdForNotify = ctx.organizationId;
+  after(() => {
+    hookLarkNotifyScan({
+      admin,
+      organizationId: orgIdForNotify,
+      packingResult: packForNotify,
+      scannedAtIso: scannedAtForNotify,
+    });
+  });
 
   const warning =
     pack?.status === "unmapped_scanner"
