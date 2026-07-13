@@ -591,8 +591,51 @@ export class RecordingLifecycle {
       return;
     }
 
-    const ok = await this.startInternal(spec, /*isFreshStart=*/ false);
-    const stateAfter = this.states.get(spec.cameraId);
+    // Re-fetch credentials trước retry. User có thể đổi IP/RTSP camera
+    // trên dashboard giữa chừng → spec cached (rtspUrl cũ) không dùng
+    // được nữa. Long-retry chạy mỗi 5 phút, không spam endpoint. Fail
+    // fetch (mạng, HMAC) → fallback về spec cũ (giữ nguyên hành vi cũ,
+    // không tệ hơn).
+    let effectiveSpec = spec;
+    try {
+      const creds = await fetchRecordingCredentials({
+        backendUrl: this.deps.backendUrl,
+        agentCode: this.deps.agentCode,
+        agentSecret: this.deps.agentSecret,
+        cameraIds: [spec.cameraId],
+      });
+      const cred = creds.find((c) => c.camera_id === spec.cameraId);
+      if (cred && cred.rtsp_url !== spec.rtspUrl) {
+        console.log(
+          `[recording-lifecycle] long-retry refreshed credentials camera=${spec.cameraCode} (rtsp_url changed)`,
+        );
+        effectiveSpec = {
+          ...spec,
+          rtspUrl: cred.rtsp_url,
+          transport: cred.transport,
+          segmentSeconds: cred.segment_seconds,
+        };
+        state.spec = effectiveSpec;
+        // Update probe target với URL mới để probe loop ping đúng.
+        this.probeSpecs.set(spec.cameraId, {
+          cameraCode: effectiveSpec.cameraCode,
+          rtspUrl: effectiveSpec.rtspUrl,
+        });
+      } else if (!cred) {
+        // Camera bị xóa / đổi org — không lỗi hẳn, giữ retry với spec cũ
+        // (permanent detect qua stderr sẽ dừng nếu thật sự chết).
+        console.warn(
+          `[recording-lifecycle] long-retry credentials returned no match for camera=${spec.cameraCode}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[recording-lifecycle] long-retry credentials fetch failed camera=${spec.cameraCode}: ${(err as Error).message} — dùng spec cũ`,
+      );
+    }
+
+    const ok = await this.startInternal(effectiveSpec, /*isFreshStart=*/ false);
+    const stateAfter = this.states.get(effectiveSpec.cameraId);
     if (ok) {
       // Recording sống lại — startInternal đã reset counters.
       return;
@@ -601,9 +644,9 @@ export class RecordingLifecycle {
     stateAfter.longRetryFailCount++;
     if (stateAfter.longRetryFailCount >= LONG_RETRY_ERROR_THRESHOLD && !stateAfter.prolongedReported) {
       stateAfter.prolongedReported = true;
-      await this.reportStatus(spec, "error_prolonged", `long_retry_fail_count=${stateAfter.longRetryFailCount}`);
+      await this.reportStatus(effectiveSpec, "error_prolonged", `long_retry_fail_count=${stateAfter.longRetryFailCount}`);
     }
-    this.scheduleLongRetry(spec);
+    this.scheduleLongRetry(effectiveSpec);
   }
 
   async stopOne(params: {
