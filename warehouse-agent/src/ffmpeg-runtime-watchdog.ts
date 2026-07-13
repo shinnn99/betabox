@@ -84,6 +84,10 @@ interface WatchdogState {
   killCount: number;
 }
 
+/** Timeout cho fs.readdir/stat khi ổ chậm (SMB/USB lag). v0.7.1: không có
+ *  timeout → readdir hang vô hạn → tick hang → watchdog tê liệt âm thầm. */
+const FS_OP_TIMEOUT_MS = 5000;
+
 export class FfmpegRuntimeWatchdog {
   private timer: NodeJS.Timeout | null = null;
   private stateByCameraId = new Map<string, WatchdogState>();
@@ -92,6 +96,9 @@ export class FfmpegRuntimeWatchdog {
   private readonly staleBufferMs: number;
   private readonly graceMultiplier: number;
   private readonly graceBufferMs: number;
+  /** Timestamp cuối tick() chạy xong (không quan trọng OK hay lỗi, quan
+   *  trọng là tick không treo). Đọc qua getLivenessMs() cho heartbeat. */
+  private lastTickCompletedMs: number = Date.now();
 
   constructor(
     private readonly deps: WatchdogDeps,
@@ -102,6 +109,13 @@ export class FfmpegRuntimeWatchdog {
     this.staleBufferMs = opts.staleBufferMs ?? 30_000;
     this.graceMultiplier = opts.graceMultiplier ?? 1;
     this.graceBufferMs = opts.graceBufferMs ?? 30_000;
+  }
+
+  /** ms kể từ lần tick() cuối chạy xong. Nếu > 2× checkIntervalMs thì
+   *  watchdog có thể đang treo (ổ I/O hang qua AbortSignal fail). Dùng
+   *  cho heartbeat/log để phát hiện watchdog chết ngầm. */
+  getLivenessMsAgo(): number {
+    return Date.now() - this.lastTickCompletedMs;
   }
 
   private staleThresholdMsFor(segmentSeconds: number): number {
@@ -115,11 +129,15 @@ export class FfmpegRuntimeWatchdog {
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
-      void this.tick().catch((err) => {
-        console.error(
-          `[runtime-watchdog] tick error: ${(err as Error).message}`,
-        );
-      });
+      void this.tick()
+        .catch((err) => {
+          console.error(
+            `[runtime-watchdog] tick error: ${(err as Error).message}`,
+          );
+        })
+        .finally(() => {
+          this.lastTickCompletedMs = Date.now();
+        });
     }, this.checkIntervalMs);
     console.log(
       `[runtime-watchdog] started: check=${this.checkIntervalMs}ms stale_mult=${this.staleMultiplier}x+${this.staleBufferMs}ms grace_mult=${this.graceMultiplier}x+${this.graceBufferMs}ms`,
@@ -145,8 +163,10 @@ export class FfmpegRuntimeWatchdog {
     }
 
     for (const cam of activeCameras) {
-      // Chỉ watchdog cam đang thật sự có ffmpeg. isRecording bao gồm
-      // startupSet nữa (đang spawn) — skip startup, chỉ xử recording ổn định.
+      // getActiveCameras() ở index.ts trả từ listActiveRecordings() =
+      // runningMap only, KHÔNG include startupSet. Guard isRecording() ở
+      // đây chỉ để race-safe (nếu ffmpeg vừa exit giữa hai câu lệnh).
+      // Grace period (graceStartMsFor) tự cover khoảng spawn ban đầu.
       if (!isRecording(cam.cameraId)) continue;
 
       let state = this.stateByCameraId.get(cam.cameraId);
@@ -229,7 +249,15 @@ export class FfmpegRuntimeWatchdog {
       const dayDir = path.join(camDir, yyyy, mm, dd);
       let entries: import("node:fs").Dirent[];
       try {
-        entries = await fs.readdir(dayDir, { withFileTypes: true });
+        // v0.7.1: timeout Promise.race chống hang khi ổ chậm (SMB/USB).
+        // fs.readdir/stat trên node hiện tại không nhận AbortSignal cho
+        // overload withFileTypes, nên dùng race đơn giản. Nếu timeout,
+        // op vẫn chạy background nhưng caller thoát ra — chấp nhận.
+        entries = await withTimeout(
+          fs.readdir(dayDir, { withFileTypes: true }),
+          FS_OP_TIMEOUT_MS,
+          `readdir ${dayDir}`,
+        );
       } catch {
         continue;
       }
@@ -238,7 +266,11 @@ export class FfmpegRuntimeWatchdog {
         if (!/\.mp4$/i.test(e.name)) continue;
         const full = path.join(dayDir, e.name);
         try {
-          const st = await fs.stat(full);
+          const st = await withTimeout(
+            fs.stat(full),
+            FS_OP_TIMEOUT_MS,
+            `stat ${full}`,
+          );
           // File đang mở của ffmpeg: size = 0 trên Windows (không flush
           // header cho tới khi xoay segment). Chỉ tin file size > 0.
           if (st.size <= 0) continue;
@@ -249,5 +281,31 @@ export class FfmpegRuntimeWatchdog {
       }
     }
     return latest > 0 ? latest : null;
+  }
+}
+
+/**
+ * Race op với timeout. Nếu op không xong trong timeoutMs, throw. Op vẫn
+ * chạy background (không cách cancel), nhưng caller thoát → tick không
+ * treo → interval kế tiếp chạy tiếp. Log warn để biết ổ chậm ở đâu.
+ */
+async function withTimeout<T>(
+  op: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      console.warn(
+        `[runtime-watchdog] fs timeout ${timeoutMs}ms: ${label} — ổ có thể chậm`,
+      );
+      reject(new Error(`fs op timeout: ${label}`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([op, timeout]);
+  } finally {
+    clearTimeout(timer!);
   }
 }

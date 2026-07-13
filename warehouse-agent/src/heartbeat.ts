@@ -16,6 +16,11 @@ export async function sendHeartbeat(params: {
   backendUrl: string;
   agentCode: string;
   agentSecret: string;
+  /** v0.7.1: ms kể từ watchdog tick cuối chạy xong. Nếu > 2× check
+   *  interval (60s), watchdog có thể treo âm thầm (ổ I/O hang qua
+   *  AbortSignal fail). Cloud endpoint HIỆN CHƯA đọc field này —
+   *  agent gửi kèm để log + dự phòng cloud dashboard alert sau. */
+  watchdogLastTickMsAgo?: number;
 }): Promise<{ ok: boolean; status: number; driftSeconds: number | null }> {
   // Đo drift trước heartbeat. Nếu fail, tiếp tục với null.
   const driftSeconds = await measureTimeDrift(params.backendUrl);
@@ -23,6 +28,16 @@ export async function sendHeartbeat(params: {
   const bodyObj: Record<string, unknown> = { ping: true };
   if (driftSeconds !== null) {
     bodyObj.time_drift_seconds = driftSeconds;
+  }
+  if (typeof params.watchdogLastTickMsAgo === "number") {
+    bodyObj.watchdog_last_tick_ms_ago = params.watchdogLastTickMsAgo;
+    // Log khi vượt ngưỡng — dự phòng cho ca AbortSignal fail hoặc bug
+    // khác treo watchdog. Ngưỡng 90s = 3× checkIntervalMs.
+    if (params.watchdogLastTickMsAgo > 90_000) {
+      console.warn(
+        `[heartbeat] watchdog liveness stale: ${params.watchdogLastTickMsAgo}ms — watchdog có thể treo`,
+      );
+    }
   }
   const body = JSON.stringify(bodyObj);
   const res = await fetchWithRetrySigned(

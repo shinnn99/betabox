@@ -1256,6 +1256,11 @@ async function main(): Promise<void> {
     }
   }
 
+  // v0.7.1: khai báo sớm để `ping()` (function declaration, hoisted)
+  // capture reference. Runtime chỉ được assign sau khi tạo dưới đây, nên
+  // ping() đầu tiên có thể gọi khi watchdog chưa sẵn — dùng `?.` an toàn.
+  let runtimeWatchdog: FfmpegRuntimeWatchdog | undefined;
+
   // Heartbeat so the backend dashboard knows the agent is alive.
   // sendHeartbeat đã retry 3 lần với backoff — chỉ đến đây khi tất cả
   // fail. Log qua rate limiter (lần đầu + tổng kết mỗi 5m).
@@ -1269,6 +1274,10 @@ async function main(): Promise<void> {
         backendUrl: config.backendUrl,
         agentCode: config.agentCode,
         agentSecret: config.agentSecret,
+        // v0.7.1: gửi kèm watchdog liveness để cloud dashboard sau này
+        // có thể alert khi watchdog treo (hiện endpoint không đọc, chỉ
+        // log warn ở agent khi vượt ngưỡng).
+        watchdogLastTickMsAgo: runtimeWatchdog?.getLivenessMsAgo(),
       });
       if (!r.ok) console.error(`[HEARTBEAT-FAIL ${r.status}]`);
       // Log drift khi > ngưỡng. 30s = default backend badge threshold.
@@ -1509,7 +1518,7 @@ async function main(): Promise<void> {
   // (segment 60s × 2 + 30s buffer) không có file mới → kill process → retry
   // layer respawn qua onUnexpectedExit. KHÔNG tự spawn (một đường spawn
   // duy nhất, không đá short-retry).
-  const runtimeWatchdog = new FfmpegRuntimeWatchdog({
+  runtimeWatchdog = new FfmpegRuntimeWatchdog({
     recordingRoot,
     getActiveCameras: () =>
       listActiveRecordings().map((r) => ({
@@ -1599,26 +1608,57 @@ async function main(): Promise<void> {
     }
   }, config.retryIntervalMs);
 
-  const shutdown = () => {
+  // v0.7.1: AWAIT graceful shutdown trước khi exit. Bug v0.7.0: swallow +
+  // setTimeout(exit, 1500) → agent chết sau 1.5s, ffmpeg child mất parent
+  // → OS reap ngay 0.01s (đo 2026-07-13), KHÔNG kịp nhận `q\n` để flush
+  // moov trailer → segment cuối .mp4 hỏng (moov not found).
+  //
+  // Timeout 4500ms = vừa cap Windows shutdown: WaitToKillServiceTimeout
+  // mặc định 5000ms + nssm AppStopMethodConsole/Window/Threads mỗi cái
+  // 1500ms (tổng nssm graceful 4500ms). Không đụng registry/nssm config.
+  //
+  // Với 1 cam: q\n flush ~0.1-0.5s → exit ~1s. Worst case q không ăn:
+  // stopRecording chờ 3s + SIGTERM 1.5s = 4.5s → timeout đá, force kill.
+  // Với nhiều cam: stopRecording chạy Promise.allSettled song song trong
+  // lifecycle.shutdown → thời gian bằng cam lâu nhất, không nhân số cam.
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return; // idempotent: SIGINT+SIGTERM có thể trigger cả 2
+    shuttingDown = true;
     console.log("Shutting down warehouse agent...");
     clearInterval(flushTimer);
     clearInterval(heartbeatTimer);
     clearInterval(discoveryTimer);
     clearInterval(pollTimer);
     clearInterval(cameraProbeTimer);
-    runtimeWatchdog.stop();
+    runtimeWatchdog?.stop();
     for (const s of sessions.values()) s.stop();
-    // Graceful stop mọi ffmpeg đang chạy để moov trailer segment cuối
-    // được ghi. Không await — process.exit sẽ chạy sau delay.
-    swallow(lifecycle.shutdown(), "lifecycle.shutdown");
-    swallow(segmentIndex.stop(), "segmentIndex.stop");
-    // HIGH-19 (B4): flush pending queue writes để không mất scan/segment
-    // report chưa flush do coalesce timer.
-    swallow(queue.flushNow(), "queue.flushNow");
-    setTimeout(() => process.exit(0), 1500);
+
+    const SHUTDOWN_TIMEOUT_MS = 4500;
+    const t0 = Date.now();
+    const gracefulWork = Promise.allSettled([
+      lifecycle.shutdown(),
+      segmentIndex.stop(),
+      // HIGH-19 (B4): flush pending queue writes để không mất scan/segment
+      // report chưa flush do coalesce timer.
+      queue.flushNow(),
+    ]);
+    const timeout = new Promise<"timeout">((r) =>
+      setTimeout(() => r("timeout"), SHUTDOWN_TIMEOUT_MS),
+    );
+    const outcome = await Promise.race([gracefulWork.then(() => "done" as const), timeout]);
+    const elapsedMs = Date.now() - t0;
+    if (outcome === "timeout") {
+      console.warn(
+        `[shutdown] graceful vượt ${SHUTDOWN_TIMEOUT_MS}ms → force exit. Segment cuối có thể hỏng moov.`,
+      );
+    } else {
+      console.log(`[shutdown] graceful xong trong ${elapsedMs}ms`);
+    }
+    process.exit(0);
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => { void shutdown(); });
+  process.on("SIGTERM", () => { void shutdown(); });
 
   // Silence ScannerPin-unused warning if no pins are configured.
   void ({} as ScannerPin);
