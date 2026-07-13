@@ -82,6 +82,38 @@ export interface FetchWithRetryOptions {
   backoffFactor?: number;
   /** Label để log (không dùng cho logic — chỉ debug). */
   label?: string;
+  /**
+   * Timeout MỖI attempt (ms). Bảo vệ chống Vercel POP hang (socket
+   * open không response). Không đặt = fetch treo vô hạn → poll queue
+   * chồng lên nhau → memory leak, agent zombie.
+   *
+   * CỨNG: tách theo loại request. Poll/heartbeat/probe = 30s. Upload
+   * clip file lớn cần 5-10 phút — CALLER phải pass timeoutMs riêng.
+   * Không đặt default cứng ở đây vì mỗi endpoint khác nhau.
+   *
+   * `undefined` = KHÔNG timeout (giữ nguyên hành vi cũ, chỉ dùng khi
+   * caller đã có timeout riêng bên ngoài như uploadWithTimeout).
+   */
+  timeoutMs?: number;
+}
+
+/**
+ * Wrap fetch với AbortController timeout. Trả về response nếu OK,
+ * throw error nếu timeout hoặc network fail.
+ */
+async function fetchWithTimeout(
+  input: string | URL,
+  init: RequestInit | undefined,
+  timeoutMs: number | undefined,
+): Promise<Response> {
+  if (timeoutMs === undefined) return fetch(input, init);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -105,15 +137,18 @@ export async function fetchWithRetry(
   const maxAttempts = options?.maxAttempts ?? 4;
   const initialDelayMs = options?.initialDelayMs ?? 500;
   const backoffFactor = options?.backoffFactor ?? 3;
+  const timeoutMs = options?.timeoutMs;
 
   let lastErr: unknown;
   let delayMs = initialDelayMs;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      return await fetch(input, init);
+      return await fetchWithTimeout(input, init, timeoutMs);
     } catch (err) {
       lastErr = err;
-      if (!isRetryableFetchError(err)) throw err;
+      // AbortError từ timeout retry được (giống network fail).
+      const isTimeout = (err as Error)?.name === "AbortError";
+      if (!isTimeout && !isRetryableFetchError(err)) throw err;
       if (attempt === maxAttempts) break;
       await new Promise((r) => setTimeout(r, delayMs));
       delayMs *= backoffFactor;
@@ -139,15 +174,20 @@ export async function fetchWithRetrySigned(
   const maxAttempts = options?.maxAttempts ?? 4;
   const initialDelayMs = options?.initialDelayMs ?? 500;
   const backoffFactor = options?.backoffFactor ?? 3;
+  // Default 30s cho poll/heartbeat/probe — đủ dài cho mạng flake, đủ ngắn
+  // để không kẹt agent lâu. CALLER upload clip file lớn PHẢI override
+  // (uploadWithTimeout đã có timeout riêng bên ngoài).
+  const timeoutMs = options?.timeoutMs ?? 30_000;
 
   let lastErr: unknown;
   let delayMs = initialDelayMs;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      return await fetch(input, initFactory());
+      return await fetchWithTimeout(input, initFactory(), timeoutMs);
     } catch (err) {
       lastErr = err;
-      if (!isRetryableFetchError(err)) throw err;
+      const isTimeout = (err as Error)?.name === "AbortError";
+      if (!isTimeout && !isRetryableFetchError(err)) throw err;
       if (attempt === maxAttempts) break;
       await new Promise((r) => setTimeout(r, delayMs));
       delayMs *= backoffFactor;

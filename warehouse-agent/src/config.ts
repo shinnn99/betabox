@@ -63,12 +63,21 @@ const EnvSchema = z.object({
    */
   RECORDING_CREDENTIALS_RETRY_MS: z.coerce.number().int().positive().default(10000),
   /**
-   * BLOCKS-GO-LIVE: giả định agent không offline quá số ngày này. Kho
-   * tắt máy cuối tuần / lễ dài → segment ngoài window không được
-   * boot recovery backfill. Nới trước go-live nếu vận hành có kiểu
-   * tắt máy dài.
+   * Boot recovery scan cửa sổ N ngày về trước để backfill segment file
+   * trên đĩa mà cloud chưa biết (VD mạng đứt lâu → agent vẫn ghi vào
+   * ổ, không report kịp lên cloud → boot sau bù). File cũ hơn N ngày
+   * bị filter cứng ở `scanDirForMp4`.
+   *
+   * BĂNG CỨU THƯƠNG (v0.6.3, 2026-07-13): nâng từ 2 → 30. Đủ Tết + kho
+   * nghỉ dài, chi phí scan boot chấp nhận được (30 ngày × 5 cam × 1440
+   * file/day ≈ 216k stat calls, <5s).
+   *
+   * FIX GỐC (nợ Mốc 3): thay "scan N ngày cứng" bằng "scan từ mốc file
+   * cuối cùng đã có trong DB". Số ngày cứng luôn có ca vượt (kho nghỉ
+   * dài hơn N). Cần endpoint cloud trả `latest_file_mtime` per camera,
+   * agent scan từ đó tới now. Xem cọc project_recovery_scan_gap.md.
    */
-  RECOVERY_SCAN_DAYS: z.coerce.number().int().positive().default(2),
+  RECOVERY_SCAN_DAYS: z.coerce.number().int().positive().default(30),
   /**
    * fs.watch có thể miss event trên một số filesystem Windows
    * (SMB, virtualization). Poll fallback quét thư mục camera đang
