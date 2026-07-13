@@ -143,9 +143,13 @@ export class SegmentIndex {
       console.log("[segment-index] boot recovery: no cameras, skip");
       return;
     }
+    const scanStartMs = Date.now();
     const now = new Date();
     const sinceMs = now.getTime() - this.deps.recoveryScanDays * 24 * 60 * 60 * 1000;
     const sinceIso = new Date(sinceMs).toISOString();
+    console.log(
+      `[segment-index] boot recovery: START scan window=${this.deps.recoveryScanDays}d cameras=${cameras.length}`,
+    );
 
     // 1) Scan ổ cho mọi camera.
     // Boot recovery là NGOẠI LỆ so với chính sách "không parse tên
@@ -179,6 +183,10 @@ export class SegmentIndex {
         });
       }
     }
+    const scanEndMs = Date.now();
+    console.log(
+      `[segment-index] boot recovery: scan DONE files=${diskFiles.length} took=${scanEndMs - scanStartMs}ms`,
+    );
     if (diskFiles.length === 0) {
       console.log("[segment-index] boot recovery: no mp4 files on disk within window");
       return;
