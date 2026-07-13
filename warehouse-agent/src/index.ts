@@ -55,6 +55,8 @@ import {
   verifyMarkerSweptClean,
 } from "./ffmpeg-marker-sweep";
 import { callBootDeclare } from "./boot-declare";
+import { FfmpegRuntimeWatchdog } from "./ffmpeg-runtime-watchdog";
+import { listActiveRecordings } from "./recording";
 import {
   verifyStaleMarker,
   quarantineStaleGeneration,
@@ -1502,6 +1504,22 @@ async function main(): Promise<void> {
     swallow(pollOnce(), "pollOnce");
   }, config.pollIntervalMs);
 
+  // Runtime watchdog: chống ffmpeg treo giữa ngày (không exit, không ghi).
+  // Kiểm mỗi cam mỗi 30s file segment ĐÃ ĐÓNG mới nhất. Nếu quá 150s
+  // (segment 60s × 2 + 30s buffer) không có file mới → kill process → retry
+  // layer respawn qua onUnexpectedExit. KHÔNG tự spawn (một đường spawn
+  // duy nhất, không đá short-retry).
+  const runtimeWatchdog = new FfmpegRuntimeWatchdog({
+    recordingRoot,
+    getActiveCameras: () =>
+      listActiveRecordings().map((r) => ({
+        cameraId: r.spec.cameraId,
+        cameraCode: r.spec.cameraCode,
+        segmentSeconds: r.spec.segmentSeconds,
+      })),
+  });
+  runtimeWatchdog.start();
+
   // Camera probe (mở rộng):
   //   Nguồn A — lifecycle.probeTargets(): camera đang recording hoặc đang
   //     long-retry vì tắt vật lý (giữ nguyên hành vi cũ).
@@ -1588,6 +1606,7 @@ async function main(): Promise<void> {
     clearInterval(discoveryTimer);
     clearInterval(pollTimer);
     clearInterval(cameraProbeTimer);
+    runtimeWatchdog.stop();
     for (const s of sessions.values()) s.stop();
     // Graceful stop mọi ffmpeg đang chạy để moov trailer segment cuối
     // được ghi. Không await — process.exit sẽ chạy sau delay.

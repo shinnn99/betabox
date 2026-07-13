@@ -63,6 +63,65 @@ export function listActiveRecordings(): RunningRecording[] {
   return Array.from(runningMap.values());
 }
 
+/**
+ * Kill ffmpeg cho watchdog runtime — KHÁC `stopRecording`:
+ *   - `stopRecording` = user chủ động dừng (đánh dấu `state.stopped = true`,
+ *     onUnexpectedExit sẽ SKIP → không respawn).
+ *   - `killRecordingProcessForRestart` = watchdog kill vì ffmpeg treo
+ *     (không tự exit). onUnexpectedExit chạy như bình thường → retry
+ *     layer bắt → respawn qua đường spawn duy nhất, không đá short-retry.
+ *
+ * Chỉ kill process (graceful q → SIGTERM → SIGKILL). KHÔNG chạm state
+ * lifecycle. Trả `stopped=true` khi process đã chết.
+ */
+export async function killRecordingProcessForRestart(
+  cameraId: string,
+  graceMs = 3000,
+): Promise<{ stopped: boolean; forced: boolean }> {
+  const entry = runningMap.get(cameraId);
+  if (!entry) return { stopped: false, forced: false };
+  const { child } = entry;
+
+  try {
+    child.stdin?.write("q\n");
+    child.stdin?.end();
+  } catch {
+    // stdin closed already
+  }
+
+  const startWait = Date.now();
+  while (runningMap.has(cameraId) && Date.now() - startWait < graceMs) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!runningMap.has(cameraId)) return { stopped: true, forced: false };
+
+  try {
+    child.kill("SIGTERM");
+  } catch {}
+  const startTerm = Date.now();
+  while (runningMap.has(cameraId) && Date.now() - startTerm < 1500) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!runningMap.has(cameraId)) return { stopped: true, forced: true };
+
+  try {
+    child.kill("SIGKILL");
+  } catch {}
+  if (process.platform === "win32" && child.pid) {
+    try {
+      spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+    } catch {}
+  }
+  const startForce = Date.now();
+  while (runningMap.has(cameraId) && Date.now() - startForce < 2000) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return { stopped: !runningMap.has(cameraId), forced: true };
+}
+
 function maskRtspUrl(url: string): string {
   return url.replace(/(rtsp:\/\/[^:/@]+:)([^@]+)(@)/i, "$1***$3");
 }
