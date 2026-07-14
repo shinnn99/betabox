@@ -34,6 +34,8 @@ interface WarehouseRow {
   devices_count: number;
   staff_count: number;
   session_fallback_seconds?: number | null;
+  notify_lark_webhook_url?: string | null;
+  notify_lark_enabled?: boolean;
   packing_timing_config?: {
     max_order_seconds: number | null;
     video_pre_seconds: number | null;
@@ -454,20 +456,21 @@ function WarehouseTable({
               <th className="px-4 py-3 font-medium">Thiết bị</th>
               <th className="px-4 py-3 font-medium">Nhân sự</th>
               <th className="px-4 py-3 font-medium">Trạng thái</th>
+              <th className="px-4 py-3 font-medium">Lark</th>
               <th className="px-4 py-3 font-medium text-right w-28">Thao tác</th>
             </tr>
           </thead>
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-slate-400">
+                <td colSpan={8} className="px-4 py-10 text-center text-slate-400">
                   <Loader2 className="h-5 w-5 animate-spin inline mr-2" /> Đang tải...
                 </td>
               </tr>
             )}
             {!loading && warehouses.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-slate-400">
+                <td colSpan={8} className="px-4 py-10 text-center text-slate-400">
                   Chưa có kho nào. Bấm &quot;Thêm kho&quot; để tạo kho đầu tiên.
                 </td>
               </tr>
@@ -496,6 +499,12 @@ function WarehouseTable({
                 <td className="px-4 py-3 text-slate-700">{w.staff_count} người</td>
                 <td className="px-4 py-3">
                   <StatusPill status={w.status} />
+                </td>
+                <td className="px-4 py-3">
+                  <LarkNotifyBadge
+                    hasWebhook={!!w.notify_lark_webhook_url}
+                    enabled={w.notify_lark_enabled ?? false}
+                  />
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
                   <div className="inline-flex items-center justify-end gap-1">
@@ -542,6 +551,37 @@ function StatusPill({ status }: { status: string }) {
   return (
     <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs font-medium">
       {status}
+    </span>
+  );
+}
+
+// Badge trạng thái Lark cho bảng danh sách kho — 3 trạng thái phân biệt
+// "câm vì chưa config" vs "câm vì cố ý tắt" vs "đang bật". Chống "an toàn giả":
+// nhìn 1 phát biết kho nào không nhận thông báo.
+function LarkNotifyBadge({
+  hasWebhook,
+  enabled,
+}: {
+  hasWebhook: boolean;
+  enabled: boolean;
+}) {
+  if (!hasWebhook) {
+    return (
+      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-500 text-xs font-medium">
+        Chưa cấu hình
+      </span>
+    );
+  }
+  if (!enabled) {
+    return (
+      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700 text-xs font-medium">
+        Đã tắt
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-xs font-medium">
+      Đang bật
     </span>
   );
 }
@@ -706,6 +746,8 @@ function WarehouseDialog({
       initial?.packing_timing_config?.video_pre_seconds ?? 10,
     video_default_post_seconds:
       initial?.packing_timing_config?.video_default_post_seconds ?? 60,
+    notify_lark_webhook_url: initial?.notify_lark_webhook_url ?? "",
+    notify_lark_enabled: initial?.notify_lark_enabled ?? false,
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -732,6 +774,24 @@ function WarehouseDialog({
       setErr("Video lấy sau (khi chưa có scan kế) phải trong khoảng 1–600 giây.");
       return;
     }
+    // Lark webhook validate client-side (server có validate riêng — không tin
+    // client). Match với LARK_WEBHOOK_PREFIX trong route.ts.
+    const LARK_PREFIX = "https://open.larksuite.com/open-apis/bot/v2/hook/";
+    const wh = form.notify_lark_webhook_url.trim();
+    if (wh.length > 0) {
+      if (!wh.startsWith(LARK_PREFIX)) {
+        setErr("Webhook Lark phải bắt đầu bằng " + LARK_PREFIX);
+        return;
+      }
+      const token = wh.slice(LARK_PREFIX.length);
+      if (!/^[a-f0-9-]{20,}$/i.test(token)) {
+        setErr("Token webhook Lark không đúng định dạng (UUID hoặc chuỗi hex-dash 20+ ký tự).");
+        return;
+      }
+    } else if (form.notify_lark_enabled) {
+      setErr("Không thể bật thông báo Lark khi chưa cấu hình webhook URL.");
+      return;
+    }
     setSaving(true);
     const url =
       mode === "create" ? "/api/warehouses" : `/api/warehouses/${initial!.id}`;
@@ -749,6 +809,9 @@ function WarehouseDialog({
         video_pre_seconds: form.video_pre_seconds,
         video_default_post_seconds: form.video_default_post_seconds,
       };
+      // Lark: rỗng → xóa (route sẽ tự set enabled=false).
+      body.notify_lark_webhook_url = form.notify_lark_webhook_url.trim() || null;
+      body.notify_lark_enabled = form.notify_lark_enabled;
     }
     const res = await fetch(url, {
       method,
@@ -883,6 +946,44 @@ function WarehouseDialog({
                   { value: "inactive", label: "Ngừng" },
                 ]}
               />
+            </Field>
+            <div className="pt-2 mt-2 border-t border-slate-100">
+              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2">
+                Thông báo Lark
+              </p>
+            </div>
+            <Field
+              label="Webhook Lark"
+              hint="URL webhook từ Custom Bot trong nhóm Lark quản lý kho. Dạng: https://open.larksuite.com/open-apis/bot/v2/hook/&lt;token&gt;. Để trống = tắt thông báo cho kho này."
+            >
+              <input
+                type="url"
+                value={form.notify_lark_webhook_url}
+                onChange={(e) =>
+                  setForm({ ...form, notify_lark_webhook_url: e.target.value })
+                }
+                placeholder="https://open.larksuite.com/open-apis/bot/v2/hook/..."
+                className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono"
+              />
+            </Field>
+            <Field
+              label="Bật thông báo Lark"
+              hint="Tắt nhanh khi Lark spam/lỗi mà không cần xoá webhook. Chỉ bật được khi đã cấu hình webhook."
+            >
+              <label className="inline-flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.notify_lark_enabled}
+                  onChange={(e) =>
+                    setForm({ ...form, notify_lark_enabled: e.target.checked })
+                  }
+                  disabled={form.notify_lark_webhook_url.trim().length === 0}
+                  className="h-4 w-4"
+                />
+                <span className="text-sm text-slate-700">
+                  {form.notify_lark_enabled ? "Đang bật" : "Đang tắt"}
+                </span>
+              </label>
             </Field>
           </>
         )}

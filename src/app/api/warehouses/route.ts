@@ -12,7 +12,7 @@ export async function GET() {
   const { data, error } = await scoped
     .select(
       "warehouses",
-      "id, code, name, address, status, session_fallback_seconds, created_at",
+      "id, code, name, address, status, session_fallback_seconds, notify_lark_webhook_url, notify_lark_enabled, created_at",
     )
     .order("code");
 
