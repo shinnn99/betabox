@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   XCircle,
   Info,
+  ChevronDown,
 } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { useToast } from "@/components/ui/Toast";
@@ -30,154 +31,174 @@ interface WarehouseRow {
 export default function NotificationsSettingsPage() {
   const [warehouses, setWarehouses] = useState<WarehouseRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const toast = useToast();
 
   const load = useCallback(async () => {
     setLoading(true);
-    try {
-      const res = await fetch("/api/warehouses", { cache: "no-store" });
-      const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.message ?? data.error ?? "Không tải được danh sách kho");
-        return;
-      }
-      setWarehouses(data.warehouses ?? []);
-    } finally {
+    setError("");
+    const res = await fetch("/api/warehouses", { cache: "no-store" });
+    const data = await res.json();
+    if (!res.ok) {
+      setError(data.message ?? data.error ?? "Không tải được danh sách kho.");
       setLoading(false);
+      return;
     }
-  }, [toast]);
+    setWarehouses(data.warehouses ?? []);
+    setLoading(false);
+  }, []);
 
   useEffect(() => {
-    void load();
+    load();
   }, [load]);
 
   const configured = warehouses.filter((w) => !!w.notify_lark_webhook_url);
   const enabled = configured.filter((w) => w.notify_lark_enabled);
   const disabled = configured.filter((w) => !w.notify_lark_enabled);
   const missing = warehouses.filter((w) => !w.notify_lark_webhook_url);
+  const hasSilentGap = missing.length > 0 && enabled.length > 0;
 
   return (
-    <DashboardLayout>
-      <div className="p-4 md:p-6 space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center">
-              <Bell className="h-5 w-5" />
-            </div>
-            <div>
-              <h1 className="text-xl font-semibold text-slate-800">
-                Cấu hình thông báo
-              </h1>
-              <p className="text-sm text-slate-500">
-                Cảnh báo đơn lỗi qua Lark cho quản lý kho.
+    <DashboardLayout
+      pageTitle="Cấu hình thông báo"
+      pageSubtitle="Cảnh báo đơn lỗi qua Lark cho quản lý kho"
+      pageIcon={Bell}
+    >
+      <div className="space-y-4">
+        {/* Stat cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <StatCard
+            variant="ok"
+            icon={<CheckCircle2 className="h-4 w-4" />}
+            label="Đang bật"
+            value={enabled.length}
+            hint={enabled.length > 0 ? "Đang nhận cảnh báo Lark" : "Chưa kho nào bật"}
+          />
+          <StatCard
+            variant="warn"
+            icon={<XCircle className="h-4 w-4" />}
+            label="Đã tắt"
+            value={disabled.length}
+            hint={disabled.length > 0 ? "Có webhook nhưng cố ý tắt" : "—"}
+          />
+          <StatCard
+            variant="muted"
+            icon={<AlertCircle className="h-4 w-4" />}
+            label="Chưa cấu hình"
+            value={missing.length}
+            hint={missing.length > 0 ? "KHÔNG nhận cảnh báo" : "Tất cả kho đã cấu hình"}
+          />
+        </div>
+
+        {/* Cảnh báo an-toàn-giả */}
+        {hasSilentGap && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="text-sm text-amber-900">
+              <p className="font-semibold">Cảnh báo an toàn giả</p>
+              <p className="mt-0.5">
+                Có kho đang bật + kho chưa cấu hình. Kho chưa cấu hình sẽ{" "}
+                <strong>im lặng không nhận</strong> cảnh báo — dễ nhầm là "không có lỗi".
+                Cấu hình đủ trước khi tin số liệu tổng.
               </p>
             </div>
           </div>
-          <button
-            onClick={() => void load()}
-            disabled={loading}
-            className="h-9 px-3 rounded-xl border border-slate-200 text-sm inline-flex items-center gap-2 hover:bg-slate-50 disabled:opacity-60"
-          >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            Tải lại
-          </button>
-        </div>
+        )}
 
-        {/* Panel: cảnh báo tổng thể */}
-        <div className="bg-white border border-slate-200 rounded-2xl p-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <StatCard
-              variant="ok"
-              icon={<CheckCircle2 className="h-4 w-4" />}
-              label="Đang bật"
-              value={enabled.length}
-              hint={enabled.length > 0 ? "Đang nhận cảnh báo Lark" : "Chưa kho nào bật"}
-            />
-            <StatCard
-              variant="warn"
-              icon={<XCircle className="h-4 w-4" />}
-              label="Đã tắt"
-              value={disabled.length}
-              hint={disabled.length > 0 ? "Có webhook nhưng cố ý tắt" : ""}
-            />
-            <StatCard
-              variant="muted"
-              icon={<AlertCircle className="h-4 w-4" />}
-              label="Chưa cấu hình"
-              value={missing.length}
-              hint={missing.length > 0 ? "KHÔNG nhận cảnh báo" : "Tất cả kho đã cấu hình"}
-            />
-          </div>
-
-          {missing.length > 0 && enabled.length > 0 && (
-            <div className="mt-3 flex items-start gap-2 px-3 py-2 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900">
-              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-              <div>
-                <strong>Cảnh báo an toàn giả:</strong> có kho đang bật + kho chưa cấu hình.
-                {" "}Kho chưa cấu hình sẽ <strong>im lặng không nhận</strong> cảnh báo — dễ nhầm là "không có lỗi". Cấu hình đủ trước khi tin số liệu.
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Panel: hướng dẫn tạo bot */}
-        <details className="bg-white border border-slate-200 rounded-2xl">
-          <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-slate-700 inline-flex items-center gap-2">
-            <Info className="h-4 w-4 text-slate-500" />
-            Hướng dẫn tạo Lark Custom Bot
-          </summary>
-          <div className="px-4 pb-4 text-sm text-slate-600 space-y-2">
-            <ol className="list-decimal ml-5 space-y-1.5">
-              <li>Mở nhóm Lark quản lý kho → bấm biểu tượng ⚙️ (Settings) → mục <strong>Group Bots</strong> hoặc <strong>Add-ons → Bots</strong>.</li>
-              <li>Bấm <strong>Add Bot</strong> → chọn <strong>Custom Bot</strong> (biểu tượng bot chung, không phải bot cụ thể).</li>
-              <li>Đặt tên (VD: <em>Betacom Cảnh báo đơn lỗi</em>) → không bật "Signed request" / "IP whitelist".</li>
-              <li>Copy <strong>Webhook URL</strong> — dạng <code className="text-xs bg-slate-100 px-1 rounded">{LARK_WEBHOOK_PREFIX}&lt;token&gt;</code></li>
-              <li>Dán URL vào ô "Webhook Lark" của kho tương ứng bên dưới → bấm Lưu.</li>
-            </ol>
-            <p className="text-xs text-slate-500 pt-1">
-              Chỉ chấp nhận host <code className="bg-slate-100 px-1 rounded">open.larksuite.com</code>.
-              Feishu (open.feishu.cn) không được hỗ trợ đợt này.
-            </p>
-          </div>
-        </details>
+        {/* Hướng dẫn tạo Bot — accordion */}
+        <Accordion
+          title="Hướng dẫn tạo Lark Custom Bot"
+          defaultOpen={missing.length === warehouses.length}
+        >
+          <ol className="list-decimal ml-5 space-y-1.5 text-sm text-slate-600">
+            <li>
+              Mở nhóm Lark quản lý kho → bấm biểu tượng ⚙️ (Settings) → mục{" "}
+              <strong>Group Bots</strong> hoặc <strong>Add-ons → Bots</strong>.
+            </li>
+            <li>
+              Bấm <strong>Add Bot</strong> → chọn <strong>Custom Bot</strong> (biểu tượng bot chung).
+            </li>
+            <li>
+              Đặt tên (VD: <em>Betacom Cảnh báo đơn lỗi</em>) → không bật "Signed request" / "IP whitelist".
+            </li>
+            <li>
+              Copy <strong>Webhook URL</strong> — dạng{" "}
+              <code className="text-xs bg-slate-100 px-1 rounded">{LARK_WEBHOOK_PREFIX}&lt;token&gt;</code>
+            </li>
+            <li>Dán URL vào ô "Webhook Lark" của kho tương ứng → bấm Lưu.</li>
+          </ol>
+          <p className="text-xs text-slate-500 pt-2">
+            Chỉ chấp nhận host <code className="bg-slate-100 px-1 rounded">open.larksuite.com</code>. Feishu (open.feishu.cn) không được hỗ trợ đợt này.
+          </p>
+        </Accordion>
 
         {/* Danh sách kho */}
-        <div className="bg-white border border-slate-200 rounded-2xl divide-y divide-slate-100">
-          {loading && warehouses.length === 0 && (
-            <div className="px-4 py-10 text-center text-slate-400">
-              <Loader2 className="h-5 w-5 animate-spin inline mr-2" /> Đang tải...
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+          <div className="p-4 border-b border-slate-100 flex items-center gap-3">
+            <p className="text-sm text-slate-500">
+              {warehouses.length > 0
+                ? `${warehouses.length} kho — cấu hình webhook riêng cho từng kho`
+                : "Chưa có kho nào"}
+            </p>
+            <button
+              onClick={load}
+              disabled={loading}
+              className="ml-auto h-9 px-3 rounded-xl border border-slate-200 hover:bg-slate-50 text-sm inline-flex items-center gap-2 disabled:opacity-60"
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+              Làm mới
+            </button>
+          </div>
+
+          {error && (
+            <div className="px-4 py-3 bg-red-50 text-red-600 text-sm border-b border-red-100">
+              {error}
             </div>
           )}
-          {!loading && warehouses.length === 0 && (
-            <div className="px-4 py-10 text-center text-slate-400">
-              Chưa có kho nào. Tạo kho trong <a href="/dashboard/warehouses" className="text-emerald-600 underline">Tổ chức &amp; Kho</a> trước.
-            </div>
-          )}
-          {warehouses.map((w) => (
-            <WarehouseNotifyRow key={w.id} warehouse={w} onSaved={load} />
-          ))}
+
+          <div className="divide-y divide-slate-100">
+            {loading && warehouses.length === 0 && (
+              <div className="px-4 py-10 text-center text-slate-400">
+                <Loader2 className="h-5 w-5 animate-spin inline mr-2" /> Đang tải...
+              </div>
+            )}
+            {!loading && warehouses.length === 0 && !error && (
+              <div className="px-4 py-10 text-center text-slate-400 text-sm">
+                Chưa có kho nào. Tạo kho trong{" "}
+                <a href="/dashboard/warehouses" className="text-emerald-600 hover:underline">
+                  Tổ chức &amp; Kho
+                </a>{" "}
+                trước.
+              </div>
+            )}
+            {warehouses.map((w) => (
+              <WarehouseNotifyRow key={w.id} warehouse={w} onSaved={load} toast={toast} />
+            ))}
+          </div>
         </div>
 
-        {/* Panel: debug + verify */}
-        <details className="bg-white border border-slate-200 rounded-2xl">
-          <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-slate-700 inline-flex items-center gap-2">
-            <Info className="h-4 w-4 text-slate-500" />
-            Debug &amp; Verify (nếu tin không tới nhóm)
-          </summary>
-          <div className="px-4 pb-4 text-sm text-slate-600 space-y-2">
-            <p>Nếu bấm Lưu xong quét trùng đơn mà không thấy tin trong nhóm Lark, chạy SQL trong Supabase SQL Editor:</p>
-            <pre className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs overflow-x-auto">{`SELECT event_type, status, response_status, error_message,
+        {/* Debug SQL — accordion */}
+        <Accordion title="Debug & Verify (nếu tin không tới nhóm)" defaultOpen={false}>
+          <p className="text-sm text-slate-600 mb-2">
+            Nếu bấm Lưu xong quét trùng đơn mà không thấy tin trong nhóm Lark, chạy SQL trong Supabase SQL Editor:
+          </p>
+          <pre className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs overflow-x-auto text-slate-700">{`SELECT event_type, status, response_status, error_message,
        left(response_body, 300) AS body_preview, sent_at
 FROM public.notification_logs
 WHERE warehouse_id = '<UUID_KHO>'
 ORDER BY sent_at DESC LIMIT 10;`}</pre>
-            <p className="text-xs">Xem thêm docs: <code>docs/lark-verify-real-usage.md</code></p>
-          </div>
-        </details>
+          <p className="text-xs text-slate-500 mt-2">
+            Xem thêm docs: <code className="bg-slate-100 px-1 rounded">docs/lark-verify-real-usage.md</code>
+          </p>
+        </Accordion>
       </div>
     </DashboardLayout>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
 
 function StatCard({
   variant,
@@ -193,42 +214,92 @@ function StatCard({
   hint: string;
 }) {
   const styleByVariant = {
-    ok: "bg-emerald-50 text-emerald-700 border-emerald-100",
-    warn: "bg-amber-50 text-amber-700 border-amber-100",
-    muted: "bg-slate-50 text-slate-600 border-slate-100",
+    ok: {
+      bg: "bg-white",
+      iconBg: "bg-emerald-50 text-emerald-600",
+      valueColor: "text-emerald-700",
+    },
+    warn: {
+      bg: "bg-white",
+      iconBg: "bg-amber-50 text-amber-600",
+      valueColor: "text-amber-700",
+    },
+    muted: {
+      bg: "bg-white",
+      iconBg: "bg-slate-100 text-slate-500",
+      valueColor: "text-slate-700",
+    },
   }[variant];
   return (
-    <div className={`rounded-xl border p-3 ${styleByVariant}`}>
-      <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide">
-        {icon}
-        {label}
+    <div className={`${styleByVariant.bg} rounded-2xl border border-slate-100 shadow-sm p-4`}>
+      <div className="flex items-center gap-2.5">
+        <div className={`h-8 w-8 rounded-lg flex items-center justify-center shrink-0 ${styleByVariant.iconBg}`}>
+          {icon}
+        </div>
+        <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+          {label}
+        </div>
       </div>
-      <div className="mt-1 text-2xl font-semibold">{value}</div>
-      {hint && <div className="text-xs opacity-80 mt-0.5">{hint}</div>}
+      <div className={`mt-2 text-2xl font-semibold ${styleByVariant.valueColor}`}>
+        {value}
+      </div>
+      <div className="text-xs text-slate-500 mt-0.5">{hint}</div>
     </div>
   );
+}
+
+function Accordion({
+  title,
+  defaultOpen,
+  children,
+}: {
+  title: string;
+  defaultOpen: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full px-4 py-3 flex items-center gap-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+      >
+        <Info className="h-4 w-4 text-slate-500" />
+        <span className="flex-1 text-left">{title}</span>
+        <ChevronDown
+          className={`h-4 w-4 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && <div className="px-4 pb-4 pt-1 border-t border-slate-100">{children}</div>}
+    </div>
+  );
+}
+
+interface ToastApi {
+  success: (m: string) => void;
+  error: (m: string) => void;
 }
 
 function WarehouseNotifyRow({
   warehouse,
   onSaved,
+  toast,
 }: {
   warehouse: WarehouseRow;
   onSaved: () => void;
+  toast: ToastApi;
 }) {
   const [webhookUrl, setWebhookUrl] = useState(warehouse.notify_lark_webhook_url ?? "");
   const [enabled, setEnabled] = useState(warehouse.notify_lark_enabled ?? false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [err, setErr] = useState("");
-  const toast = useToast();
 
   const handleChangeUrl = (v: string) => {
     setWebhookUrl(v);
     setDirty(true);
     setErr("");
-    // Nếu xóa URL, tự tắt toggle (form validation server làm điều này, nhưng
-    // UI phản ánh ngay cho user).
     if (v.trim().length === 0 && enabled) setEnabled(false);
   };
 
@@ -289,11 +360,13 @@ function WarehouseNotifyRow({
   return (
     <div className="p-4 space-y-3">
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <StateDot state={currentState} />
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="h-8 w-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+            <StateIcon state={currentState} />
+          </div>
           <div className="min-w-0">
-            <div className="font-medium text-slate-800 truncate">{warehouse.name}</div>
-            <div className="text-[11px] text-slate-500 font-mono">{warehouse.code}</div>
+            <p className="font-medium text-slate-800 truncate">{warehouse.name}</p>
+            <p className="text-[11px] text-slate-500 font-mono">{warehouse.code}</p>
           </div>
         </div>
         <StateBadge state={currentState} />
@@ -301,38 +374,41 @@ function WarehouseNotifyRow({
 
       <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 items-start">
         <div>
-          <label className="text-xs font-medium text-slate-600 block mb-1">Webhook Lark</label>
+          <label className="text-xs font-medium text-slate-600 block mb-1">
+            Webhook Lark
+          </label>
           <input
             type="url"
             value={webhookUrl}
             onChange={(e) => handleChangeUrl(e.target.value)}
             placeholder={LARK_WEBHOOK_PREFIX + "..."}
-            className="w-full h-9 px-3 rounded-lg border border-slate-200 text-xs font-mono focus:outline-none focus:border-emerald-500"
+            className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono focus:outline-none focus:border-emerald-400"
           />
-          {err && <p className="mt-1 text-xs text-red-600">{err}</p>}
-          {!err && !hasWebhook && (
+          {err ? (
+            <p className="mt-1 text-xs text-red-600">{err}</p>
+          ) : !hasWebhook ? (
             <p className="mt-1 text-xs text-slate-500">
               Để trống = tắt thông báo cho kho này (fail-safe im lặng).
             </p>
-          )}
+          ) : null}
         </div>
         <div className="flex flex-col items-start md:items-end gap-2">
-          <label className="inline-flex items-center gap-2 cursor-pointer text-sm">
+          <label className="inline-flex items-center gap-2 cursor-pointer text-sm select-none">
             <input
               type="checkbox"
               checked={enabled}
               onChange={(e) => handleToggle(e.target.checked)}
               disabled={!hasWebhook || saving}
-              className="h-4 w-4"
+              className="h-4 w-4 accent-emerald-500"
             />
             <span className="text-slate-700">
               {enabled ? "Đang bật" : "Đang tắt"}
             </span>
           </label>
           <button
-            onClick={() => void submit()}
+            onClick={submit}
             disabled={!dirty || saving}
-            className="h-9 px-4 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2 disabled:opacity-50"
+            className="h-9 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2 disabled:opacity-50"
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             Lưu
@@ -350,13 +426,10 @@ function WarehouseNotifyRow({
   );
 }
 
-function StateDot({ state }: { state: "on" | "off" | "missing" }) {
-  const cls = state === "on"
-    ? "bg-emerald-500"
-    : state === "off"
-      ? "bg-amber-500"
-      : "bg-slate-300";
-  return <span className={`inline-block h-2.5 w-2.5 rounded-full shrink-0 ${cls}`} />;
+function StateIcon({ state }: { state: "on" | "off" | "missing" }) {
+  if (state === "on") return <CheckCircle2 className="h-4 w-4" />;
+  if (state === "off") return <XCircle className="h-4 w-4 text-amber-600" />;
+  return <AlertCircle className="h-4 w-4 text-slate-500" />;
 }
 
 function StateBadge({ state }: { state: "on" | "off" | "missing" }) {
