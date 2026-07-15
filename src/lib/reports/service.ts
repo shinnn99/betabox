@@ -2,6 +2,14 @@ import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export type RangeKey = "7d" | "30d" | "90d";
+export type RangeValue = RangeKey | "custom";
+
+export interface CustomRange {
+  from: string; // YYYY-MM-DD
+  to: string; // YYYY-MM-DD
+}
+
+export type RangeInput = { kind: "preset"; range: RangeKey } | { kind: "custom"; range: CustomRange };
 
 export interface DailyPoint {
   business_date: string;
@@ -29,9 +37,10 @@ export interface StaffStat {
 }
 
 export interface PerformanceSummary {
-  range: RangeKey;
+  range: RangeValue;
   from: string;
   to: string;
+  days: number;
   totals: {
     total_scans: number;
     valid: number;
@@ -63,7 +72,7 @@ function toIsoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-function rangeWindow(range: RangeKey): { from: Date; to: Date; prevFrom: Date } {
+function rangeWindow(range: RangeKey): { from: Date; to: Date; prevFrom: Date; days: number } {
   const days = DAYS_BY_RANGE[range];
   const to = new Date();
   const from = new Date(to);
@@ -71,7 +80,22 @@ function rangeWindow(range: RangeKey): { from: Date; to: Date; prevFrom: Date } 
   from.setUTCHours(0, 0, 0, 0);
   const prevFrom = new Date(from);
   prevFrom.setUTCDate(from.getUTCDate() - days);
-  return { from, to, prevFrom };
+  return { from, to, prevFrom, days };
+}
+
+function customWindow(custom: CustomRange): {
+  from: Date;
+  to: Date;
+  prevFrom: Date;
+  days: number;
+} {
+  const from = new Date(`${custom.from}T00:00:00Z`);
+  const to = new Date(`${custom.to}T00:00:00Z`);
+  const MS_PER_DAY = 86_400_000;
+  const days = Math.floor((to.getTime() - from.getTime()) / MS_PER_DAY) + 1;
+  const prevFrom = new Date(from);
+  prevFrom.setUTCDate(from.getUTCDate() - days);
+  return { from, to, prevFrom, days };
 }
 
 type EventRow = {
@@ -305,9 +329,11 @@ function aggregateStaff(
 
 export async function getPerformanceReport(
   organizationId: string,
-  range: RangeKey,
+  input: RangeInput,
 ): Promise<PerformanceSummary> {
-  const { from, to, prevFrom } = rangeWindow(range);
+  const window =
+    input.kind === "custom" ? customWindow(input.range) : rangeWindow(input.range);
+  const { from, to, prevFrom, days } = window;
   const fromIso = toIsoDate(from);
   const toIso = toIsoDate(to);
   const prevFromIso = toIsoDate(prevFrom);
@@ -326,15 +352,16 @@ export async function getPerformanceReport(
 
   const daily = aggregateDaily(currentRows, fromIso, toIso);
   const previousDaily = aggregateDaily(previousRows, prevFromIso, prevToIso);
-  const staff = aggregateStaff(currentRows, clipEventIds, staffProfiles, DAYS_BY_RANGE[range]);
+  const staff = aggregateStaff(currentRows, clipEventIds, staffProfiles, days);
 
   const totals = computeTotals(daily);
   const previous = computeTotals(previousDaily);
 
   return {
-    range,
+    range: input.kind === "custom" ? "custom" : input.range,
     from: fromIso,
     to: toIso,
+    days,
     totals,
     previous_totals: {
       total_scans: previous.total_scans,

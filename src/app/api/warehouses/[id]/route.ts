@@ -91,6 +91,18 @@ export async function PATCH(req: Request, { params }: RouteContext) {
   if (typeof body.notify_lark_enabled === "boolean") {
     update.notify_lark_enabled = body.notify_lark_enabled;
   }
+  // Digest bật/tắt per period. Cho phép set độc lập webhook — Edge Function
+  // vẫn kiểm cả notify_lark_enabled AND digest_* AND webhook_url != null
+  // trước khi gửi.
+  if (typeof body.notify_lark_digest_daily === "boolean") {
+    update.notify_lark_digest_daily = body.notify_lark_digest_daily;
+  }
+  if (typeof body.notify_lark_digest_weekly === "boolean") {
+    update.notify_lark_digest_weekly = body.notify_lark_digest_weekly;
+  }
+  if (typeof body.notify_lark_digest_monthly === "boolean") {
+    update.notify_lark_digest_monthly = body.notify_lark_digest_monthly;
+  }
 
   // packing_timing_config: chỉ nhận 3 field UI, clamp theo ngưỡng an toàn
   // (cùng cận với clip-resolver để config không tạo clip vượt trần cứng).

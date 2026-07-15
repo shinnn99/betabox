@@ -31,5 +31,5 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "warehouse-agent", "scripts"]
+  "exclude": ["node_modules", "warehouse-agent", "scripts", "supabase/functions"]
 }
