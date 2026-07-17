@@ -395,11 +395,17 @@ export async function scanForCameras(
   options: ScanOptions = {},
 ): Promise<ScanResult> {
   const mode: ScanMode = options.mode ?? "quick";
+  // Auto-select subnets: bỏ virtual (Docker/VMware/VPN) mặc định. Guard
+  // fallback: nếu filter ăn sạch mọi interface → quay lại danh sách gốc,
+  // thà quét thừa còn hơn full mode chết câm 0 subnet. Xem lan-discovery.ts
+  // agent để hiểu chi tiết (file này mirror agent).
+  const autoSubnets = (): string[] => {
+    const all = listCandidateSubnets();
+    const real = all.filter((c) => !c.is_virtual);
+    return (real.length > 0 ? real : all).map((c) => c.cidr);
+  };
   const subnets =
-    options.subnets ??
-    (options.cidr
-      ? [options.cidr]
-      : listCandidateSubnets().map((c) => c.cidr));
+    options.subnets ?? (options.cidr ? [options.cidr] : autoSubnets());
 
   if (subnets.length === 0) {
     return { scan_mode: mode, scanned_subnets: [], devices: [] };

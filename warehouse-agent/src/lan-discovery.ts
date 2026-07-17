@@ -314,9 +314,19 @@ function classifyDiscoveredDevice(input: ClassifyInput): DiscoveredDevice {
 
 export async function scanForCameras(options: ScanOptions = {}): Promise<ScanResult> {
   const mode: ScanMode = options.mode ?? "quick";
+  // Auto-select subnets: bỏ virtual (Docker/VMware/VPN) mặc định để full
+  // mode không phình 60-90s vì quét thêm 172.17.x, và không hiện container
+  // expose port 80 như "thiết bị mạng needs_check" gây rối người onboard.
+  // Guard fallback: nếu isVirtualInterfaceName() nhận nhầm interface thật
+  // (tên lạ) → filter ăn sạch → mảng rỗng → quay lại quét tất cả. Thà quét
+  // thừa còn hơn full mode chết câm 0 subnet.
+  const autoSubnets = (): string[] => {
+    const all = listCandidateSubnets();
+    const real = all.filter((c) => !c.is_virtual);
+    return (real.length > 0 ? real : all).map((c) => c.cidr);
+  };
   const subnets =
-    options.subnets ??
-    (options.cidr ? [options.cidr] : listCandidateSubnets().map((c) => c.cidr));
+    options.subnets ?? (options.cidr ? [options.cidr] : autoSubnets());
 
   if (subnets.length === 0) {
     return { scan_mode: mode, scanned_subnets: [], devices: [] };
