@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -14,6 +14,12 @@ import {
 import { useToast } from "@/components/ui/Toast";
 import Select from "@/components/ui/Select";
 import { Modal, Field } from "@/components/warehouse-config/Modal";
+import {
+  CAMERA_BRAND_PRESETS,
+  applyPreset,
+  detectPreset,
+} from "@/lib/camera/rtsp-presets";
+import { generateCameraCode } from "@/lib/camera/code-gen";
 
 export interface Camera {
   id: string;
@@ -251,6 +257,7 @@ export function CameraDialogBody({
         <ManualForm
           mode={mode}
           initial={initial ?? (manualPrefill as Camera | undefined)}
+          existingCameras={cameras ?? []}
           onClose={onClose}
           onSaved={onSaved}
         />
@@ -266,14 +273,17 @@ export function CameraDialogBody({
 function ManualForm({
   mode,
   initial,
+  existingCameras,
   onClose,
   onSaved,
 }: {
   mode: "create" | "edit";
   initial?: Partial<Camera>;
+  existingCameras: Camera[];
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const initialPath = initial?.rtsp_path ?? "/ch1/main";
   const [form, setForm] = useState({
     name: initial?.name ?? "",
     camera_code: initial?.camera_code ?? "",
@@ -281,7 +291,7 @@ function ManualForm({
     rtsp_port: initial?.rtsp_port ?? 554,
     username: initial?.username ?? "admin",
     password: "",
-    rtsp_path: initial?.rtsp_path ?? "/ch1/main",
+    rtsp_path: initialPath,
     location: initial?.location ?? "",
     // Chỉ dùng ở mode=edit — cho user bật/tắt camera. status='error' được
     // set bởi system (test-connection fail) → không cho chọn từ dropdown.
@@ -289,8 +299,81 @@ function ManualForm({
       | "active"
       | "inactive",
   });
+  // Preset gợi ý RTSP path theo hãng. Đầu ra vẫn là chuỗi rtsp_path bình
+  // thường — form.rtsp_path là nguồn chân lý gửi lên server. Preset chỉ
+  // giúp người onboard nhập nhanh, đặc biệt cho topo NVR (Hikvision/Dahua
+  // NVR) khi phải kéo RTSP theo kênh từ IP đầu ghi.
+  const detected = detectPreset(initialPath);
+  const [presetId, setPresetId] = useState<string>(
+    detected?.presetId ?? "custom",
+  );
+  const [channel, setChannel] = useState<number>(detected?.channel ?? 1);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+
+  const currentPreset = CAMERA_BRAND_PRESETS.find((p) => p.id === presetId);
+
+  // Auto-fill Tên camera + Mã camera từ Vị trí khi tạo mới, để người
+  // onboard chỉ gõ Vị trí một lần ra cả ba field. Mã sinh qua slugify
+  // tiếng Việt + tiền tố cam_ + check unique client-side (server còn có
+  // unique index per-org làm lớp cuối).
+  //
+  // Edit mode: init touched=true để KHÔNG BAO GIỜ đá Tên/Mã cũ. Mã cũ đã
+  // đi vào station_devices soft-link (auto_<camera_code>) — đổi mã tự
+  // động ở edit sẽ mồ côi soft-link. Đây là guard chí mạng, đừng bỏ.
+  const nameTouchedRef = useRef<boolean>(mode === "edit");
+  const codeTouchedRef = useRef<boolean>(mode === "edit");
+  const onNameChange = (v: string) => {
+    nameTouchedRef.current = true;
+    setForm((f) => ({ ...f, name: v }));
+  };
+  const onCodeChange = (v: string) => {
+    codeTouchedRef.current = true;
+    setForm((f) => ({ ...f, camera_code: v }));
+  };
+  const onLocationChange = (v: string) => {
+    setForm((f) => {
+      const next = { ...f, location: v };
+      const trimmed = v.trim();
+      if (!nameTouchedRef.current) {
+        next.name = trimmed ? `Camera ${trimmed}` : "";
+      }
+      if (!codeTouchedRef.current) {
+        next.camera_code = trimmed
+          ? generateCameraCode(trimmed, existingCameras, initial?.id)
+          : "";
+      }
+      return next;
+    });
+  };
+
+  const onPresetChange = (id: string) => {
+    setPresetId(id);
+    const rendered = applyPreset(id, channel);
+    if (rendered !== null) setForm((f) => ({ ...f, rtsp_path: rendered }));
+  };
+
+  const onChannelChange = (raw: string) => {
+    const n = Number(raw);
+    setChannel(n);
+    if (currentPreset?.needsChannel && Number.isInteger(n) && n >= 1) {
+      const rendered = applyPreset(presetId, n);
+      if (rendered !== null) setForm((f) => ({ ...f, rtsp_path: rendered }));
+    }
+  };
+
+  // User sửa tay path → nếu không còn khớp preset đang chọn thì âm thầm
+  // chuyển dropdown sang "Khác" để trạng thái UI khớp thực tế.
+  const onPathChange = (newPath: string) => {
+    setForm((f) => ({ ...f, rtsp_path: newPath }));
+    const match = detectPreset(newPath);
+    if (match) {
+      if (match.presetId !== presetId) setPresetId(match.presetId);
+      if (match.channel !== channel) setChannel(match.channel);
+    } else if (presetId !== "custom") {
+      setPresetId("custom");
+    }
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -330,27 +413,33 @@ function ManualForm({
 
   return (
     <form onSubmit={submit}>
-      <Field label="Tên camera" required>
-        <input
-          required
-          value={form.name}
-          onChange={(e) => setForm({ ...form, name: e.target.value })}
-          placeholder="Camera Bàn đóng hàng 1"
-          className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm"
-        />
-      </Field>
-      <Field label="Mã camera" required hint="Chỉ chữ, số, _ và -. VD: cam_01">
-        <input
-          required
-          value={form.camera_code}
-          onChange={(e) => setForm({ ...form, camera_code: e.target.value })}
-          placeholder="cam_01"
-          className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono"
-        />
-      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Tên camera" required>
+          <input
+            required
+            value={form.name}
+            onChange={(e) => onNameChange(e.target.value)}
+            placeholder="Camera Bàn đóng hàng 1"
+            className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm"
+          />
+        </Field>
+        <Field label="Mã camera" required hint="Chỉ chữ, số, _ và -.">
+          <input
+            required
+            value={form.camera_code}
+            onChange={(e) => onCodeChange(e.target.value)}
+            placeholder="cam_01"
+            className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono"
+          />
+        </Field>
+      </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <Field label="IP camera" required>
+        <Field
+          label="IP camera"
+          required
+          hint="Với đầu ghi NVR: nhập IP của NVR, không phải IP camera con."
+        >
           <input
             required
             value={form.ip}
@@ -409,20 +498,105 @@ function ManualForm({
         </Field>
       </div>
 
-      <Field label="RTSP path" required hint="VD: /ch1/main">
-        <input
-          required
-          value={form.rtsp_path}
-          onChange={(e) => setForm({ ...form, rtsp_path: e.target.value })}
-          placeholder="/ch1/main"
-          className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono"
-        />
-      </Field>
+      {/* Layout preset:
+          - Có Số kênh (Hikvision/Dahua/Imou/EZVIZ): Hãng | Kênh trên hàng
+            trên, Path full-width hàng dưới. Path Dahua dài (~37 ký tự)
+            nên full-width để người onboard verify được cả chuỗi.
+          - Không cần Kênh (generic/custom): Hãng | Path chung hàng —
+            không phí một cell trống, path ngắn đủ khớp nửa hàng. */}
+      {currentPreset?.needsChannel ? (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Hãng camera / NVR" hint="Chọn để tự điền RTSP path.">
+              <Select
+                value={presetId}
+                onChange={onPresetChange}
+                options={CAMERA_BRAND_PRESETS.map((p) => ({
+                  value: p.id,
+                  label: p.label,
+                }))}
+              />
+            </Field>
+            <Field
+              label="Số kênh"
+              required
+              hint="Kênh trên NVR, VD kênh 1 = bàn 1."
+            >
+              <input
+                required
+                type="number"
+                min={1}
+                max={64}
+                value={channel}
+                onChange={(e) => onChannelChange(e.target.value)}
+                className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono"
+              />
+            </Field>
+          </div>
 
-      <Field label="Vị trí" hint="VD: Bàn đóng hàng 1">
+          {currentPreset?.hint && (
+            <p className="text-xs text-amber-700 -mt-1 mb-2">
+              {currentPreset.hint}
+            </p>
+          )}
+
+          <Field
+            label="RTSP path"
+            required
+            hint="Đã tự điền theo hãng. Vẫn sửa được nếu cần."
+          >
+            <input
+              required
+              value={form.rtsp_path}
+              onChange={(e) => onPathChange(e.target.value)}
+              placeholder="/ch1/main"
+              className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono"
+            />
+          </Field>
+        </>
+      ) : (
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Hãng camera / NVR" hint="Chọn để tự điền RTSP path.">
+            <Select
+              value={presetId}
+              onChange={onPresetChange}
+              options={CAMERA_BRAND_PRESETS.map((p) => ({
+                value: p.id,
+                label: p.label,
+              }))}
+            />
+          </Field>
+          <Field
+            label="RTSP path"
+            required
+            hint={
+              presetId === "custom"
+                ? "Nhập tay theo tài liệu camera."
+                : "Đã tự điền theo hãng. Vẫn sửa được nếu cần."
+            }
+          >
+            <input
+              required
+              value={form.rtsp_path}
+              onChange={(e) => onPathChange(e.target.value)}
+              placeholder="/ch1/main"
+              className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono"
+            />
+          </Field>
+        </div>
+      )}
+
+      <Field
+        label="Vị trí"
+        hint={
+          mode === "create"
+            ? "Tên camera và Mã camera sẽ tự điền theo Vị trí. Sửa được sau."
+            : undefined
+        }
+      >
         <input
           value={form.location}
-          onChange={(e) => setForm({ ...form, location: e.target.value })}
+          onChange={(e) => onLocationChange(e.target.value)}
           placeholder="Bàn đóng hàng 1"
           className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm"
         />
@@ -1324,7 +1498,7 @@ function DiscoveredDeviceForm({
           className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm"
         />
       </Field>
-      <Field label="Mã camera" required hint="Chỉ chữ, số, _ và -. VD: cam_01">
+      <Field label="Mã camera" required hint="Chỉ chữ, số, _ và -.">
         <input
           required
           value={form.camera_code}
@@ -1395,7 +1569,7 @@ function DiscoveredDeviceForm({
         </div>
       </Field>
 
-      <Field label="Vị trí" hint="VD: Bàn đóng hàng 1">
+      <Field label="Vị trí">
         <input
           value={form.location}
           onChange={(e) => setForm({ ...form, location: e.target.value })}
