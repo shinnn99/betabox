@@ -261,18 +261,22 @@ export async function POST(_req: Request, ctx: RouteContext) {
   }
 
   if (!cutResult.ok) {
-    // Enqueue fail với reason có ý nghĩa nghiệp vụ (no_segments,
-    // no_camera, segment_still_open). Map ra user-facing message.
+    // Enqueue fail với reason có ý nghĩa nghiệp vụ. Map ra user-facing
+    // message. expired_retention = nghiệp vụ (quá hạn lưu trữ theo cấu
+    // hình org), phân biệt với no_segments (chưa cấu hình retention
+    // hoặc file mất trong hạn = bug).
     const userMessage =
-      cutResult.reason === "no_segments"
-        ? "Không có video trong khoảng thời gian đơn hàng (segment ổ đã dọn hoặc chưa có ghi hình)."
-        : cutResult.reason === "no_camera"
-          ? "Đơn không gán camera bằng chứng."
-          : cutResult.reason === "segment_still_open"
-            ? "Segment cuối chưa đóng, thử lại sau vài giây."
-            : cutResult.reason === "not_found"
-              ? "Không tìm thấy đơn."
-              : `enqueue_cut_failed: ${cutResult.message ?? "unknown"}`;
+      cutResult.reason === "expired_retention"
+        ? cutResult.message ?? "Video đã quá hạn lưu trữ."
+        : cutResult.reason === "no_segments"
+          ? "Không có video trong khoảng thời gian đơn hàng (segment ổ đã dọn hoặc chưa có ghi hình)."
+          : cutResult.reason === "no_camera"
+            ? "Đơn không gán camera bằng chứng."
+            : cutResult.reason === "segment_still_open"
+              ? "Segment cuối chưa đóng, thử lại sau vài giây."
+              : cutResult.reason === "not_found"
+                ? "Không tìm thấy đơn."
+                : `enqueue_cut_failed: ${cutResult.message ?? "unknown"}`;
 
     // Insert row failed để reconcile tick sau thấy status=failed thay
     // vì "chưa có row" (loop). Camera_id null nếu no_camera.

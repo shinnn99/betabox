@@ -853,15 +853,30 @@ function ClipStateCell({ scan }: { scan: ScanRow }) {
     );
   }
   if (state === "failed") {
-    // Phân biệt 2 loại failed:
-    //   (a) no_segments = THÔNG BÁO ("không có video vào lúc đó"), không
+    // Phân biệt 3 loại failed:
+    //   (a) expired_retention = video đã quá hạn theo cấu hình org. Nghiệp
+    //       vụ, không phải bug. Badge amber "Quá hạn".
+    //   (b) no_segments = THÔNG BÁO ("không có video vào lúc đó"), không
     //       phải lỗi hệ thống. Camera có thể chưa cắm hoặc window nằm
     //       ngoài giờ ghi hình. Badge slate, không đỏ.
-    //   (b) Lỗi thật (ffmpeg fail, agent crash, ...) — badge rose, hiện
+    //   (c) Lỗi thật (ffmpeg fail, agent crash, ...) — badge rose, hiện
     //       error_message.
-    // Detect no_segments qua prefix message ổn định từ /watch route.ts.
+    // Detect qua prefix message ổn định từ /watch route.ts.
     const msg = clip?.error_message ?? "";
+    const isExpiredRetention = msg.startsWith("Video đã quá hạn lưu trữ");
     const isNoSegments = msg.startsWith("Không có video");
+    if (isExpiredRetention) {
+      return (
+        <>
+          <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-amber-50 text-amber-700">
+            Quá hạn lưu trữ
+          </span>
+          <div className="text-[10px] text-amber-700 mt-0.5 max-w-[180px]" title={msg}>
+            {msg}
+          </div>
+        </>
+      );
+    }
     if (isNoSegments) {
       return (
         <>

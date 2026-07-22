@@ -223,7 +223,13 @@ export interface EnqueueCutClipResult {
 
 export interface EnqueueCutClipFailure {
   ok: false;
-  reason: "no_camera" | "no_segments" | "segment_still_open" | "internal" | "not_found";
+  reason:
+    | "no_camera"
+    | "no_segments"
+    | "expired_retention"
+    | "segment_still_open"
+    | "internal"
+    | "not_found";
   message: string;
 }
 
