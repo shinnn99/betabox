@@ -26,6 +26,7 @@ export const AGENT_API_PATHS = {
   clipCutResult: "/api/agent/clip-cut-result",
   verifyClipStaleMarker: "/api/agent/verify-clip-stale-marker",
   bootDeclare: "/api/agent/boot-declare",
+  logEvents: "/api/agent/log-events",
 } as const;
 
 export type AgentApiPathKey = keyof typeof AGENT_API_PATHS;

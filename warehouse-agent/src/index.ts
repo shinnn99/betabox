@@ -20,6 +20,7 @@ import {
   readRetentionCache,
   computeRecoveryScanDays,
 } from "./retention-cache";
+import { RemoteLogger } from "./remote-logger";
 import { listLocalPorts, postDiscovery, type PortInfo } from "./discovery";
 import {
   fetchClipUploadUrl,
@@ -98,6 +99,18 @@ import {
 async function main(): Promise<void> {
   installFatalHandlers();
   const config = loadConfig();
+
+  // Remote logger — install SỚM sau loadConfig để bắt mọi console.warn/error
+  // của mọi module boot phía sau. Đặt trước dataDir/queue/lifecycle vì các
+  // module đó có thể log warn khi init.
+  const remoteLogger = new RemoteLogger({
+    backendUrl: config.backendUrl,
+    agentCode: config.agentCode,
+    agentSecret: config.agentSecret,
+    enabled: config.logEventsEnabled,
+    flushIntervalMs: config.logEventsFlushMs,
+  });
+  remoteLogger.install();
 
   // pkg-aware path: khi chạy trong exe (`process.pkg` truthy), __dirname
   // trỏ tới snapshot filesystem (read-only) — không ghi được. Data queue
@@ -1712,6 +1725,8 @@ async function main(): Promise<void> {
       // HIGH-19 (B4): flush pending queue writes để không mất scan/segment
       // report chưa flush do coalesce timer.
       queue.flushNow(),
+      // Flush pending log events cuối. Không blocker, race với SHUTDOWN_TIMEOUT_MS.
+      remoteLogger.dispose(),
     ]);
     const timeout = new Promise<"timeout">((r) =>
       setTimeout(() => r("timeout"), SHUTDOWN_TIMEOUT_MS),

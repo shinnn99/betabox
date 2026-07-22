@@ -84,6 +84,19 @@ const EnvSchema = z.object({
    * ghi mỗi ngần này để bắt segment mới mà watcher bỏ sót.
    */
   SEGMENT_WATCH_POLL_MS: z.coerce.number().int().positive().default(10000),
+  /**
+   * Remote log push. Bật mặc định — Hạnh ở xa, cần log-từ-xa để chẩn
+   * đoán. Có env off để test/dev tắt.
+   */
+  LOG_EVENTS_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+  /**
+   * Chu kỳ flush batch log lên cloud (ms). 30s mặc định — cân bằng
+   * tần suất request vs độ tươi log. ERROR flush ngay bỏ qua chu kỳ.
+   */
+  LOG_EVENTS_FLUSH_MS: z.coerce.number().int().positive().default(30000),
   // BURN_* env đã xoá 2026-07-05: đường clip chốt "video thuần" —
   // không burn (nướng vào file), không overlay (đè giao diện), không
   // vẽ mark gap. Thông tin đơn (mã vận đơn/kho/bàn/nhân viên/camera/
@@ -112,6 +125,8 @@ export interface AgentConfig {
   recordingCredentialsRetryMs: number;
   recoveryScanDays: number;
   segmentWatchPollMs: number;
+  logEventsEnabled: boolean;
+  logEventsFlushMs: number;
 }
 
 export function loadConfig(): AgentConfig {
@@ -156,5 +171,7 @@ export function loadConfig(): AgentConfig {
     recordingCredentialsRetryMs: env.RECORDING_CREDENTIALS_RETRY_MS,
     recoveryScanDays: env.RECOVERY_SCAN_DAYS,
     segmentWatchPollMs: env.SEGMENT_WATCH_POLL_MS,
+    logEventsEnabled: env.LOG_EVENTS_ENABLED,
+    logEventsFlushMs: env.LOG_EVENTS_FLUSH_MS,
   };
 }
