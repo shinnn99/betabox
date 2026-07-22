@@ -32,7 +32,15 @@ export type EndReason =
 
 export interface ResolveResult {
   ok: boolean;
-  reason?: "no_camera" | "no_segments" | "segment_still_open" | "internal";
+  reason?:
+    | "no_camera"
+    | "no_segments"
+    // Phân biệt no_segments: có row cũ hơn retention nhưng không phủ khoảng
+    // = file đã bị cleanup xóa theo chính sách. NULL retention không kích
+    // nhãn này (không đoán) — giữ nguyên "no_segments" trung tính.
+    | "expired_retention"
+    | "segment_still_open"
+    | "internal";
   message?: string;
   cameraId?: string;
   clipStart: Date;
@@ -564,6 +572,49 @@ export async function resolveClipBounds(opts: {
   }) as SegmentFile[];
 
   if (overlap.length === 0) {
+    // Phân biệt "quá hạn lưu trữ" (nghiệp vụ) vs "camera không ghi lúc đó"
+    // (bug hoặc offline). Cần retention_days của org — NULL thì không
+    // khẳng định (giữ nhãn trung tính "no_segments" để Hạnh điều tra).
+    const { data: org } = await admin
+      .from("organizations")
+      .select("retention_days")
+      .eq("id", opts.organizationId)
+      .maybeSingle();
+    const retentionDays = org?.retention_days ?? null;
+
+    if (retentionDays !== null) {
+      // Có row nào cũ hơn retention cho camera này không? Nếu có → file
+      // trong khoảng cần cắt nhiều khả năng đã bị cleanup xóa (quá hạn).
+      // Nếu không có row nào cả → camera không ghi được lúc đó (bug khác).
+      const retentionCutoffIso = new Date(
+        Date.now() - retentionDays * 24 * 60 * 60 * 1000,
+      ).toISOString();
+      const { data: oldRows } = await admin
+        .from("camera_recording_files")
+        .select("id")
+        .eq("organization_id", opts.organizationId)
+        .eq("camera_id", cameraId)
+        .eq("source", "agent")
+        .lt("started_at", retentionCutoffIso)
+        .limit(1);
+      if ((oldRows?.length ?? 0) > 0) {
+        return {
+          ok: false,
+          reason: "expired_retention",
+          message: `Video đã quá hạn lưu trữ (giữ ${retentionDays} ngày). Không cắt được clip cho đơn này.`,
+          clipStart,
+          clipEnd,
+          preSeconds: timing.pre,
+          beforeNextSeconds: timing.beforeNext,
+          defaultPostSeconds: timing.defaultPost,
+          endReason,
+          nextScan,
+          sessionEnd,
+          cameraId,
+        };
+      }
+    }
+
     return {
       ok: false,
       reason: "no_segments",

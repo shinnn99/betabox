@@ -6,7 +6,14 @@ import { audit } from "@/lib/audit";
 const EDITABLE_FIELDS = [
   "name",
   "logo_url",
+  "retention_days",
 ] as const;
+
+// Retention hợp lệ: 7-365 ngày. Dưới 7 = mất bằng chứng ngay; trên 365 = ổ đầy
+// vô ích (không sàn nào cho khiếu nại quá năm). DB CHECK constraint enforce
+// cùng range — validate ở đây trả lỗi rõ tiếng Việt trước khi DB reject.
+const RETENTION_MIN_DAYS = 7;
+const RETENTION_MAX_DAYS = 365;
 
 export async function GET() {
   const ctx = await requirePermission("organization.view");
@@ -15,7 +22,7 @@ export async function GET() {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("organizations")
-    .select("id, name, slug, logo_url, status, created_at, updated_at")
+    .select("id, name, slug, logo_url, status, retention_days, created_at, updated_at")
     .eq("id", ctx.organizationId)
     .single();
 
@@ -50,6 +57,27 @@ export async function PATCH(req: Request) {
     );
   }
 
+  if ("retention_days" in update) {
+    const v = update.retention_days;
+    if (v === null) {
+      // Cho phép null để clear cấu hình. Resolver sẽ trả nhãn trung tính,
+      // cleanup script sẽ fail-loud → Hạnh biết chưa cấu hình.
+    } else if (
+      typeof v !== "number" ||
+      !Number.isInteger(v) ||
+      v < RETENTION_MIN_DAYS ||
+      v > RETENTION_MAX_DAYS
+    ) {
+      return NextResponse.json(
+        {
+          error: "validation",
+          message: `retention_days phải là số nguyên trong khoảng ${RETENTION_MIN_DAYS}-${RETENTION_MAX_DAYS} ngày (hoặc null để bỏ cấu hình).`,
+        },
+        { status: 400 }
+      );
+    }
+  }
+
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ ok: true });
   }
@@ -59,7 +87,7 @@ export async function PATCH(req: Request) {
     .from("organizations")
     .update(update)
     .eq("id", ctx.organizationId)
-    .select("id, name, slug, logo_url, status, created_at, updated_at")
+    .select("id, name, slug, logo_url, status, retention_days, created_at, updated_at")
     .single();
 
   if (error) {

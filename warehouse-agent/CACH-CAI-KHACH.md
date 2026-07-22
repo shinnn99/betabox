@@ -30,10 +30,22 @@ Tạo agent trên dashboard admin:
 5. Trang **Thư mục lưu video** — chọn ổ lớn (mặc định `D:\beta_cam_recordings`).
 6. Bấm Install → chờ 1-2 phút.
 
-Installer tự làm 3 việc phía sau:
+Installer tự làm 4 việc phía sau:
 - Copy binary vào thư mục cài.
 - Cấu hình NTP (đồng hồ máy sync theo time.google.com — bắt buộc cho bằng chứng pháp lý).
 - Cài Windows Service `BetacomAgent` — tự chạy khi máy bật, tự restart khi crash.
+- Cài Task Scheduler `BetacomAgentCleanup` — Chủ nhật 03:00 xóa video segment cũ hơn retention (cấu hình ở dashboard).
+
+## 3.1. Cấu hình thời gian lưu video (bắt buộc — làm 1 lần cho mỗi org)
+
+Trước khi giao khách sử dụng, **phải cấu hình retention** trên dashboard:
+1. Mở https://betabox.vercel.app/dashboard/settings/retention (login owner).
+2. Nhập số ngày giữ video (VD 45 hoặc 60), bấm **Lưu**.
+3. Agent nhận số này qua heartbeat trong ≤30 giây, cache xuống máy kho.
+
+**Nếu chưa cấu hình**: cleanup script sẽ KHÔNG chạy (fail-loud) — ổ đầy dần. Cố ý như vậy: mất dung lượng còn hơn mất bằng chứng do xóa sai.
+
+Số ngày phải ≥ cửa sổ khiếu nại dài nhất của sàn khách bán. Chi tiết đọc ngay trong trang cấu hình.
 
 ## 4. Verify sau khi cài
 

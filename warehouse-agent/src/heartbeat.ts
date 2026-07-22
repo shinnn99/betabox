@@ -21,7 +21,12 @@ export async function sendHeartbeat(params: {
    *  AbortSignal fail). Cloud endpoint HIỆN CHƯA đọc field này —
    *  agent gửi kèm để log + dự phòng cloud dashboard alert sau. */
   watchdogLastTickMsAgo?: number;
-}): Promise<{ ok: boolean; status: number; driftSeconds: number | null }> {
+}): Promise<{
+  ok: boolean;
+  status: number;
+  driftSeconds: number | null;
+  retentionDays: number | null;
+}> {
   // Đo drift trước heartbeat. Nếu fail, tiếp tục với null.
   const driftSeconds = await measureTimeDrift(params.backendUrl);
 
@@ -56,7 +61,27 @@ export async function sendHeartbeat(params: {
     }),
     { label: "heartbeat" },
   );
-  return { ok: res.ok, status: res.status, driftSeconds };
+  // Parse retention_days từ response. Cloud trả NULL khi org chưa cấu
+  // hình → agent KHÔNG cache (script cleanup fail-loud). Chỉ cache khi
+  // cloud trả số hợp lệ.
+  let retentionDays: number | null = null;
+  if (res.ok) {
+    try {
+      const json = (await res.json()) as { retention_days?: unknown };
+      if (
+        typeof json.retention_days === "number" &&
+        Number.isInteger(json.retention_days) &&
+        json.retention_days >= 7 &&
+        json.retention_days <= 365
+      ) {
+        retentionDays = json.retention_days;
+      }
+    } catch {
+      // Body không parse được — bỏ qua, giữ null. Không phá heartbeat.
+    }
+  }
+
+  return { ok: res.ok, status: res.status, driftSeconds, retentionDays };
 }
 
 /**

@@ -29,7 +29,7 @@ export async function POST(req: Request) {
   const admin = createAdminClient();
   const { data: agent, error: agentErr } = await admin
     .from("warehouse_agents")
-    .select("id, status, secret, hmac_v2_enforced_at")
+    .select("id, organization_id, status, secret, hmac_v2_enforced_at")
     .eq("code", headers.code)
     .maybeSingle();
 
@@ -94,5 +94,20 @@ export async function POST(req: Request) {
     );
   }
 
-  return NextResponse.json({ ok: true, last_seen_at: now });
+  // Trả retention_days của org để agent cache local. Cleanup script
+  // PowerShell đọc cache này (không gọi mạng lúc chạy) — thỏa yêu cầu
+  // "script cleanup thuần local". NULL = Hạnh chưa cấu hình, agent
+  // KHÔNG được đoán default → script fail-loud, không xóa.
+  const { data: org } = await admin
+    .from("organizations")
+    .select("retention_days")
+    .eq("id", agent.organization_id)
+    .maybeSingle();
+  const retentionDays = org?.retention_days ?? null;
+
+  return NextResponse.json({
+    ok: true,
+    last_seen_at: now,
+    retention_days: retentionDays,
+  });
 }

@@ -20,7 +20,7 @@
 ; chỉnh w32time.
 
 #define AppName        "Betacom Warehouse Agent"
-#define AppVersion     "0.7.1"
+#define AppVersion     "0.8.0"
 #define AppPublisher   "Betacom"
 #define AppURL         "https://betabox.vercel.app"
 #define ServiceName    "BetacomAgent"
@@ -57,6 +57,7 @@ Source: "..\dist-package\BetacomAgent\ffmpeg.exe";              DestDir: "{app}"
 Source: "..\dist-package\BetacomAgent\ffprobe.exe";             DestDir: "{app}"; Flags: ignoreversion
 Source: "..\vendor\nssm\nssm.exe";                              DestDir: "{app}"; Flags: ignoreversion
 Source: "..\vendor\nssm\LICENSE.txt";                           DestDir: "{app}"; DestName: "NSSM-LICENSE.txt"; Flags: ignoreversion
+Source: "..\scripts\cleanup-segments.ps1";                      DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 Name: "{app}\logs";        Permissions: users-modify
@@ -280,6 +281,93 @@ begin
   Exec(Nssm, 'start {#ServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+// Task Scheduler task cleanup segment cũ.
+//
+// Chạy Chủ nhật 03:00 (thấp tải, không đè giờ ghi peak). Chạy dưới SYSTEM
+// (cùng quyền service NSSM) để đọc .env + retention-cache.json trong
+// {app}. Delay 5 phút sau khởi động máy (option "Delay task for") tránh
+// đụng agent boot recovery scan trên HDD. Run-if-missed (kho tắt cuối
+// tuần → chạy khi bật máy sáng thứ Hai).
+//
+// Idempotent: delete task cũ trước khi create (upgrade in-place hoặc
+// reinstall).
+procedure InstallCleanupTask;
+var
+  ScriptPath, XmlPath, Xml: string;
+  ResultCode: Integer;
+begin
+  ScriptPath := ExpandConstant('{app}\cleanup-segments.ps1');
+  XmlPath := ExpandConstant('{app}\cleanup-task.xml');
+
+  // Xóa task cũ (nếu có) — bỏ qua lỗi (task chưa tồn tại).
+  Exec('schtasks.exe', '/Delete /TN "BetacomAgentCleanup" /F',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  // Sinh XML định nghĩa task. Dùng XML (thay /Create flat) vì cần set
+  // DelayBoot + RunOnlyIfLoggedOn=false + RunLevel=Highest + StartWhen
+  // Available (run-if-missed) — flat /Create không đủ option.
+  Xml :=
+    '<?xml version="1.0" encoding="UTF-16"?>' + #13#10 +
+    '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' + #13#10 +
+    '  <RegistrationInfo>' + #13#10 +
+    '    <Description>Xoa video segment cu hon retention_days. Doc cache local, khong goi mang.</Description>' + #13#10 +
+    '  </RegistrationInfo>' + #13#10 +
+    '  <Triggers>' + #13#10 +
+    '    <CalendarTrigger>' + #13#10 +
+    '      <StartBoundary>2026-01-04T03:00:00</StartBoundary>' + #13#10 +
+    '      <Enabled>true</Enabled>' + #13#10 +
+    '      <ScheduleByWeek>' + #13#10 +
+    '        <DaysOfWeek><Sunday /></DaysOfWeek>' + #13#10 +
+    '        <WeeksInterval>1</WeeksInterval>' + #13#10 +
+    '      </ScheduleByWeek>' + #13#10 +
+    '    </CalendarTrigger>' + #13#10 +
+    '  </Triggers>' + #13#10 +
+    '  <Principals>' + #13#10 +
+    '    <Principal id="Author">' + #13#10 +
+    '      <UserId>S-1-5-18</UserId>' + #13#10 +
+    '      <RunLevel>HighestAvailable</RunLevel>' + #13#10 +
+    '    </Principal>' + #13#10 +
+    '  </Principals>' + #13#10 +
+    '  <Settings>' + #13#10 +
+    '    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>' + #13#10 +
+    '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>' + #13#10 +
+    '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>' + #13#10 +
+    '    <AllowHardTerminate>true</AllowHardTerminate>' + #13#10 +
+    '    <StartWhenAvailable>true</StartWhenAvailable>' + #13#10 +
+    '    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>' + #13#10 +
+    '    <IdleSettings>' + #13#10 +
+    '      <StopOnIdleEnd>false</StopOnIdleEnd>' + #13#10 +
+    '      <RestartOnIdle>false</RestartOnIdle>' + #13#10 +
+    '    </IdleSettings>' + #13#10 +
+    '    <AllowStartOnDemand>true</AllowStartOnDemand>' + #13#10 +
+    '    <Enabled>true</Enabled>' + #13#10 +
+    '    <Hidden>false</Hidden>' + #13#10 +
+    '    <RunOnlyIfIdle>false</RunOnlyIfIdle>' + #13#10 +
+    '    <WakeToRun>false</WakeToRun>' + #13#10 +
+    '    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>' + #13#10 +
+    '    <Priority>7</Priority>' + #13#10 +
+    '  </Settings>' + #13#10 +
+    '  <Actions Context="Author">' + #13#10 +
+    '    <Exec>' + #13#10 +
+    '      <Command>powershell.exe</Command>' + #13#10 +
+    '      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '"</Arguments>' + #13#10 +
+    '    </Exec>' + #13#10 +
+    '  </Actions>' + #13#10 +
+    '</Task>';
+
+  // Ghi XML với UTF-8 BOM (schtasks.exe chấp nhận UTF-8 BOM cho XML task
+  // file, không bắt buộc UTF-16 LE dù bản gốc của Task Scheduler dùng
+  // UTF-16). BOM #239#187#191 = EF BB BF.
+  SaveStringToFile(XmlPath, #239#187#191 + Xml, False);
+
+  // Tạo task từ XML.
+  Exec('schtasks.exe', '/Create /TN "BetacomAgentCleanup" /XML "' + XmlPath + '" /F',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  // Xóa XML tạm — task đã đăng ký, file không còn cần.
+  DeleteFile(XmlPath);
+end;
+
 procedure StopServiceIfRunning;
 var
   Nssm: string;
@@ -315,6 +403,7 @@ begin
     WriteEnvFile;
     ConfigureNTP;
     InstallService;
+    InstallCleanupTask;
   end;
 end;
 
@@ -327,6 +416,9 @@ begin
     Nssm := ExpandConstant('{app}\nssm.exe');
     Exec(Nssm, 'stop {#ServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     Exec(Nssm, 'remove {#ServiceName} confirm', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // Xóa Task Scheduler task cleanup (bỏ qua lỗi nếu không tồn tại).
+    Exec('schtasks.exe', '/Delete /TN "BetacomAgentCleanup" /F',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
 

@@ -15,6 +15,11 @@ import { sendScan, type ScanPayload } from "./sender";
 import { ScanQueue, type QueuedScan } from "./queue";
 import { ScannerSession, type ScannerBinding } from "./scanner";
 import { sendHeartbeat } from "./heartbeat";
+import {
+  writeRetentionCache,
+  readRetentionCache,
+  computeRecoveryScanDays,
+} from "./retention-cache";
 import { listLocalPorts, postDiscovery, type PortInfo } from "./discovery";
 import {
   fetchClipUploadUrl,
@@ -115,13 +120,29 @@ async function main(): Promise<void> {
   // zombie sau kill -9 agent.
   const pidRegistry = new PidRegistry(resolve(dataDir, "ffmpeg-pids.json"));
   const recordingRoot = resolve(process.cwd(), config.recordingDir);
+
+  // RECOVERY_SCAN_DAYS suy từ retention cache (nếu có). Retention là chính
+  // sách nghiệp vụ (số ngày giữ segment); scan window phải ≥ retention để
+  // agent boot thấy hết segment trên ổ, không có vùng file tồn tại mà DB
+  // không biết. Buffer 5 ngày tránh race giữa cleanup xóa và agent boot.
+  // Sàn tối thiểu 30 ngày (giữ behavior v0.6.3 khi cache chưa có).
+  //
+  // Đọc SÁT lúc boot — sau đó không đọc lại. Nếu Hạnh đổi retention
+  // trên dashboard giữa run của agent, RECOVERY_SCAN_DAYS chỉ đổi ở lần
+  // restart kế tiếp. Điều này OK vì scan window chỉ dùng khi boot.
+  const cachedRetention = await readRetentionCache();
+  const recoveryScanDays = computeRecoveryScanDays(cachedRetention);
+  console.log(
+    `[boot] retention=${cachedRetention === null ? "unset" : `${cachedRetention}d`} recovery_scan=${recoveryScanDays}d`,
+  );
+
   const segmentIndex = new SegmentIndex({
     backendUrl: config.backendUrl,
     agentCode: config.agentCode,
     agentSecret: config.agentSecret,
     recordingRoot,
     segmentWatchPollMs: config.segmentWatchPollMs,
-    recoveryScanDays: config.recoveryScanDays,
+    recoveryScanDays,
     queuePath: resolve(dataDir, "pending-segment-reports.jsonl"),
   });
   // 3b-2: 1-in-flight encode gate. Chỉ 1 flag, dùng cho poll body
@@ -580,8 +601,42 @@ async function main(): Promise<void> {
         segments: p.segments,
       });
       if (!exists.ok) {
+        // Phân biệt "quá hạn lưu trữ" (nghiệp vụ) vs "bug mất file"
+        // (agent xóa nhầm / ổ hỏng / file chưa upload xong). So segment
+        // started_at với retention cache:
+        //   * Cũ hơn retention → cleanup đã xóa theo chính sách → reason
+        //     mới `clip_expired_retention`, backend hiện "quá hạn lưu trữ".
+        //   * Trong retention hoặc retention NULL → giữ nguyên
+        //     `segments_missing_on_disk` (bug thật, Hạnh điều tra).
+        //
+        // Dùng started_at TỪ PAYLOAD backend gửi (single source), không
+        // parse tên file (nguồn thứ hai, vỡ khi đổi format).
+        const cached = await readRetentionCache();
+        const earliestStartMs = Math.min(
+          ...p.segments.map((s) => Date.parse(s.started_at)),
+        );
+        const isExpired =
+          cached !== null &&
+          Number.isFinite(earliestStartMs) &&
+          Date.now() - earliestStartMs > cached * 24 * 60 * 60 * 1000;
+
+        if (isExpired) {
+          console.warn(
+            `[clip-cutter] clip_expired_retention clip=${p.clip_id} retention=${cached}d earliest=${new Date(earliestStartMs).toISOString()}`,
+          );
+          await failCommand(
+            `clip_expired_retention: video đã quá hạn lưu trữ (giữ ${cached} ngày)`,
+            {
+              missing: exists.missing,
+              retention_days: cached,
+              earliest_segment_at: new Date(earliestStartMs).toISOString(),
+            },
+          );
+          return;
+        }
+
         console.warn(
-          `[clip-cutter] segments_missing_on_disk clip=${p.clip_id} missing=${exists.missing.join(", ")}`,
+          `[clip-cutter] segments_missing_on_disk clip=${p.clip_id} missing=${exists.missing.join(", ")}${cached === null ? " (retention chưa cấu hình — không phân biệt được quá hạn)" : ""}`,
         );
         await failCommand(
           `segments_missing_on_disk: ${exists.missing.join(", ")}`,
@@ -1280,6 +1335,21 @@ async function main(): Promise<void> {
         watchdogLastTickMsAgo: runtimeWatchdog?.getLivenessMsAgo(),
       });
       if (!r.ok) console.error(`[HEARTBEAT-FAIL ${r.status}]`);
+      // Cache retention_days từ cloud xuống file local. Chỉ cache khi
+      // cloud trả số hợp lệ (heartbeat.ts đã validate range 7-365 và
+      // integer). NULL = cloud chưa cấu hình → KHÔNG ghi cache (script
+      // cleanup sẽ fail-loud, không đoán default).
+      if (r.retentionDays !== null) {
+        try {
+          await writeRetentionCache(r.retentionDays);
+        } catch (err) {
+          // Ghi cache fail = script cleanup có thể đọc số cũ, không cắn
+          // ngay. Log để Hạnh biết, không throw.
+          console.warn(
+            `[retention-cache] write failed: ${(err as Error).message}`,
+          );
+        }
+      }
       // Log drift khi > ngưỡng. 30s = default backend badge threshold.
       // Chia key theo bucket để log lại nếu drift đổi cấp độ (30s →
       // 300s là bug nặng hơn, đáng log riêng).
