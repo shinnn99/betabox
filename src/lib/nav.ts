@@ -11,6 +11,7 @@ import {
   Wrench,
   Server,
   Bell,
+  HardDrive,
   type LucideIcon,
 } from "lucide-react";
 
@@ -121,6 +122,12 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Cấu hình thông báo",
         href: "/dashboard/settings/notifications",
         icon: Bell,
+      },
+      {
+        id: "settings-retention",
+        label: "Thời gian lưu video",
+        href: "/dashboard/settings/retention",
+        icon: HardDrive,
       },
       {
         id: "audit",
