@@ -30,7 +30,8 @@ $requiredFiles = @(
     "dist-package\BetacomAgent\ffmpeg.exe",
     "dist-package\BetacomAgent\ffprobe.exe",
     "vendor\nssm\nssm.exe",
-    "installer\betacom-agent.iss"
+    "installer\betacom-agent.iss",
+    "scripts\cleanup-segments.ps1"
 )
 foreach ($f in $requiredFiles) {
     if (!(Test-Path $f)) {
@@ -39,6 +40,20 @@ foreach ($f in $requiredFiles) {
     }
     $size = (Get-Item $f).Length
     Write-Host ("  OK   {0,-55} {1,10:N0} bytes" -f $f, $size) -ForegroundColor Green
+}
+
+# Guard BOM: file .ps1 có ký tự Unicode (tiếng Việt) PHẢI có UTF-8 BOM
+# (EF BB BF). PS 5.1 (Windows built-in) đọc file không BOM bằng ANSI →
+# tiếng Việt vỡ → parser lỗi trên máy khách. Bug 2026-07-22 (v0.8.1 giao
+# khách sẽ dính đúng ca này). Chặn build.
+$ps1Files = @("scripts\cleanup-segments.ps1")
+foreach ($ps1 in $ps1Files) {
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $ps1))
+    if ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+        Write-Host "  THIẾU BOM: $ps1 (byte đầu $($bytes[0]) $($bytes[1]) $($bytes[2])). Ghi lại với UTF-8 BOM trước build." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host ("  BOM  {0,-55} UTF-8 BOM OK" -f $ps1) -ForegroundColor Green
 }
 
 Write-Host "==> [4/4] Chạy Inno Setup compiler..." -ForegroundColor Cyan
