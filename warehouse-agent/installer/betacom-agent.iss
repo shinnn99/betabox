@@ -20,7 +20,7 @@
 ; chỉnh w32time.
 
 #define AppName        "Betacom Warehouse Agent"
-#define AppVersion     "0.8.0"
+#define AppVersion     "0.8.1"
 #define AppPublisher   "Betacom"
 #define AppURL         "https://betabox.vercel.app"
 #define ServiceName    "BetacomAgent"
@@ -293,20 +293,28 @@ end;
 // reinstall).
 procedure InstallCleanupTask;
 var
-  ScriptPath, XmlPath, Xml: string;
+  ScriptPath, WrapperPath, Ps1: string;
   ResultCode: Integer;
 begin
   ScriptPath := ExpandConstant('{app}\cleanup-segments.ps1');
-  XmlPath := ExpandConstant('{app}\cleanup-task.xml');
+  WrapperPath := ExpandConstant('{app}\install-cleanup-task.ps1');
 
   // Xóa task cũ (nếu có) — bỏ qua lỗi (task chưa tồn tại).
   Exec('schtasks.exe', '/Delete /TN "BetacomAgentCleanup" /F',
        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
-  // Sinh XML định nghĩa task. Dùng XML (thay /Create flat) vì cần set
-  // DelayBoot + RunOnlyIfLoggedOn=false + RunLevel=Highest + StartWhen
-  // Available (run-if-missed) — flat /Create không đủ option.
-  Xml :=
+  // Gọi PowerShell tạo XML task + đăng ký. Không tạo XML tay trong Inno
+  // Pascal vì:
+  //   1. schtasks đòi UTF-16 LE + BOM (verify 2026-07-22, ca máy Betacom).
+  //   2. Inno Pascal Script không có helper ghi UTF-16 sẵn (chỉ có
+  //      SaveStringToFile ANSI + SaveStringsToUTF8File). Viết bytes tay
+  //      qua stream phức tạp + dễ sai.
+  // PowerShell .NET có [System.Text.Encoding]::Unicode + WriteAllText
+  // rõ ràng, đúng chuẩn, đã kiểm hoạt động thật.
+  //
+  // XML content Y NGUYÊN VĂN như block workaround Hạnh chạy tay 2026-07-22.
+  Ps1 :=
+    '$xml = @''' + #13#10 +
     '<?xml version="1.0" encoding="UTF-16"?>' + #13#10 +
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' + #13#10 +
     '  <RegistrationInfo>' + #13#10 +
@@ -353,19 +361,33 @@ begin
     '      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '"</Arguments>' + #13#10 +
     '    </Exec>' + #13#10 +
     '  </Actions>' + #13#10 +
-    '</Task>';
+    '</Task>' + #13#10 +
+    '''@' + #13#10 +
+    '$xmlPath = "$env:TEMP\betacom-cleanup-task.xml"' + #13#10 +
+    '[System.IO.File]::WriteAllText($xmlPath, $xml, [System.Text.Encoding]::Unicode)' + #13#10 +
+    'schtasks /Create /TN "BetacomAgentCleanup" /XML $xmlPath /F' + #13#10 +
+    'Remove-Item $xmlPath -Force' + #13#10 +
+    'exit $LASTEXITCODE' + #13#10;
 
-  // Ghi XML với UTF-8 BOM (schtasks.exe chấp nhận UTF-8 BOM cho XML task
-  // file, không bắt buộc UTF-16 LE dù bản gốc của Task Scheduler dùng
-  // UTF-16). BOM #239#187#191 = EF BB BF.
-  SaveStringToFile(XmlPath, #239#187#191 + Xml, False);
+  // Ghi wrapper .ps1 ra {app} (installer Pascal ANSI OK cho ASCII).
+  SaveStringToFile(WrapperPath, Ps1, False);
 
-  // Tạo task từ XML.
-  Exec('schtasks.exe', '/Create /TN "BetacomAgentCleanup" /XML "' + XmlPath + '" /F',
+  // Chạy wrapper. Kiểm ResultCode để không quiet-fail.
+  Exec('powershell.exe',
+       '-NoProfile -ExecutionPolicy Bypass -File "' + WrapperPath + '"',
        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-
-  // Xóa XML tạm — task đã đăng ký, file không còn cần.
-  DeleteFile(XmlPath);
+  if ResultCode = 0 then begin
+    DeleteFile(WrapperPath);
+  end else begin
+    // GIỮ wrapper .ps1 để Hạnh chạy tay chẩn đoán.
+    SaveStringToFile(
+      ExpandConstant('{app}\logs\cleanup-task-install-failed.log'),
+      'schtasks /Create fail with exit code ' + IntToStr(ResultCode) + #13#10 +
+      'Wrapper script giu tai: ' + WrapperPath + #13#10 +
+      'Chay tay de xem loi thuc: powershell -NoProfile -ExecutionPolicy Bypass -File "' + WrapperPath + '"' + #13#10,
+      False
+    );
+  end;
 end;
 
 procedure StopServiceIfRunning;
