@@ -1,0 +1,11 @@
+# PowerShell scripts phải giữ UTF-8 BOM để PowerShell 5.1 (Windows built-in)
+# đọc đúng ký tự Unicode (tiếng Việt). Không có BOM = PowerShell 5.1 đọc như
+# ANSI → dấu vỡ → parser lỗi.
+#
+# working-tree-encoding=UTF-8 + eol=lf để Git không convert LF↔CRLF (không
+# ảnh hưởng execution) VÀ giữ nguyên bytes (bao gồm BOM).
+*.ps1 text working-tree-encoding=UTF-8 eol=lf
+
+# XML task Windows Task Scheduler đòi UTF-16 LE + BOM. Binary để Git không
+# đụng bytes.
+*.xml.win-task binary

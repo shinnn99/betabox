@@ -1,4 +1,4 @@
-# Cleanup segment cũ hơn RETENTION_DAYS trên máy kho.
+﻿# Cleanup segment cũ hơn RETENTION_DAYS trên máy kho.
 #
 # Chạy hàng tuần qua Task Scheduler (Chủ nhật 03:00, delay 5 phút sau
 # khởi động máy). Không gọi mạng — đọc retention từ file cache local do
