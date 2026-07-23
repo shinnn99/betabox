@@ -163,6 +163,8 @@ export default function ManualScanPage() {
       toast.error(
         `Scanner "${selected.device_code}" chưa được gán bàn. Gán bàn ở trang Thiết bị.`,
       );
+    } else if (status === "invalid_code") {
+      toast.error("Mã quét không hợp lệ (trống hoặc chỉ khoảng trắng). Quét lại.");
     }
   };
 

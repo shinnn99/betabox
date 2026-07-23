@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermissionStrict, isError } from "@/lib/supabase/guard";
 import { audit } from "@/lib/audit";
-import type { Role } from "@/lib/auth";
+import { canAssignRole, type Role } from "@/lib/auth";
 
 const VALID_ROLES: Role[] = [
   "owner",
@@ -88,6 +88,29 @@ export async function PATCH(req: Request, { params }: RouteContext) {
     update.role = body.role;
   }
 
+  // Chống leo thang: actor không được động target rank >= mình (trừ owner),
+  // và cũng không được set target sang role rank >= mình. Hai vế riêng:
+  //   - Vế 1 (target hiện tại): admin không được sửa owner/admin khác.
+  //   - Vế 2 (role mới nếu đổi): admin không được nâng ai lên admin/owner.
+  if (!canAssignRole(ctx.role, target.role as Role)) {
+    return NextResponse.json(
+      {
+        error: "forbidden_role_escalation",
+        message: `Bạn (${ctx.role}) không được phép sửa tài khoản vai trò ${target.role}.`,
+      },
+      { status: 403 }
+    );
+  }
+  if (typeof update.role === "string" && !canAssignRole(ctx.role, update.role as Role)) {
+    return NextResponse.json(
+      {
+        error: "forbidden_role_escalation",
+        message: `Bạn (${ctx.role}) không được phép gán vai trò ${update.role}.`,
+      },
+      { status: 403 }
+    );
+  }
+
   // (3) Chặn hạ role / disable owner cuối cùng
   const isDemotingOwner =
     target.role === "owner" &&
@@ -161,6 +184,18 @@ export async function DELETE(_req: Request, { params }: RouteContext) {
 
   const target = await fetchTargetProfile(id, ctx.organizationId);
   if (!target) return NextResponse.json({ error: "not_found" }, { status: 404 });
+
+  // Chống leo thang: actor không được xoá target rank >= mình (trừ owner).
+  // Admin không được xoá owner/admin khác.
+  if (!canAssignRole(ctx.role, target.role as Role)) {
+    return NextResponse.json(
+      {
+        error: "forbidden_role_escalation",
+        message: `Bạn (${ctx.role}) không được phép xoá tài khoản vai trò ${target.role}.`,
+      },
+      { status: 403 }
+    );
+  }
 
   // (3) Chặn xoá owner cuối cùng
   if (target.role === "owner") {

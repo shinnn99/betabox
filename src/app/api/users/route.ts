@@ -3,7 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, requirePermissionStrict, isError } from "@/lib/supabase/guard";
 import { getScopedClient } from "@/lib/supabase/scoped-client";
 import { audit } from "@/lib/audit";
-import type { Role } from "@/lib/auth";
+import { canAssignRole, type Role } from "@/lib/auth";
 
 const VALID_ROLES: Role[] = [
   "owner",
@@ -95,6 +95,17 @@ export async function POST(req: Request) {
     return NextResponse.json(
       { error: "validation", message: "Email, mật khẩu (>=8 ký tự), họ tên và vai trò hợp lệ là bắt buộc." },
       { status: 400 }
+    );
+  }
+
+  // Chống leo thang: actor không được tạo user role >= role mình (trừ owner).
+  if (!canAssignRole(ctx.role, role)) {
+    return NextResponse.json(
+      {
+        error: "forbidden_role_escalation",
+        message: `Bạn (${ctx.role}) không được phép tạo tài khoản vai trò ${role}.`,
+      },
+      { status: 403 }
     );
   }
 

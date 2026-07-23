@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermissionStrict, isError } from "@/lib/supabase/guard";
 import { audit } from "@/lib/audit";
-import type { Role } from "@/lib/auth";
+import { canAssignRole, type Role } from "@/lib/auth";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -42,6 +42,18 @@ export async function POST(req: Request, { params }: RouteContext) {
         message: "Email, mật khẩu (>=8 ký tự) và vai trò hợp lệ là bắt buộc.",
       },
       { status: 400 }
+    );
+  }
+
+  // Chống leo thang: actor không được tạo user role >= mình (trừ owner).
+  // Route này tạo auth user + profile với role chỉ định — cùng bug như POST /api/users.
+  if (!canAssignRole(ctxInvite.role, role)) {
+    return NextResponse.json(
+      {
+        error: "forbidden_role_escalation",
+        message: `Bạn (${ctxInvite.role}) không được phép tạo tài khoản vai trò ${role}.`,
+      },
+      { status: 403 }
     );
   }
 

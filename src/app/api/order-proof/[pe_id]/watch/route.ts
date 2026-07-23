@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
+import { requirePermissionStrict, isError } from "@/lib/supabase/guard";
 import { enqueueCutClip } from "@/lib/agent-commands/enqueue";
 import {
   ENQUEUE_CUT_COOLDOWN_SECONDS,
@@ -103,14 +103,14 @@ export async function POST(_req: Request, ctx: RouteContext) {
     );
   }
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
+  const authCtx = await requirePermissionStrict("order_proof.view");
+  if (isError(authCtx)) {
+    // requirePermissionStrict trả NextResponse với status thật (401/403). Wrap
+    // vào WatchResponse shape để client parse thống nhất — giữ status gốc.
+    const status = authCtx.status;
     return NextResponse.json<WatchResponse>(
-      { state: "failed", error: "unauthenticated" },
-      { status: 401 },
+      { state: "failed", error: status === 401 ? "unauthenticated" : "forbidden" },
+      { status },
     );
   }
 
@@ -128,12 +128,7 @@ export async function POST(_req: Request, ctx: RouteContext) {
     );
   }
 
-  const { data: profile } = await admin
-    .from("user_profiles")
-    .select("organization_id")
-    .eq("id", user.id)
-    .maybeSingle();
-  if (!profile || profile.organization_id !== pe.organization_id) {
+  if (pe.organization_id !== authCtx.organizationId) {
     return NextResponse.json<WatchResponse>(
       { state: "failed", error: "cross_org_access_denied" },
       { status: 403 },
