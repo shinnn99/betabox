@@ -221,7 +221,7 @@ export default function Select({
                 width: popoverRect.width,
                 zIndex: 200,
               }}
-              className="bg-white rounded-xl border border-slate-200 shadow-lg max-h-72 overflow-y-auto py-1"
+              className="bg-white rounded-xl border border-slate-200 shadow-lg max-h-96 overflow-y-auto py-1"
             >
               {options.length === 0 ? (
                 <p className="px-3 py-2 text-xs text-slate-400">

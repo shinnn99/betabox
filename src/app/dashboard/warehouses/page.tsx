@@ -1050,6 +1050,16 @@ function Modal({
   children: React.ReactNode;
   onClose: () => void;
 }) {
+  // Lock body scroll khi modal mở — chặn browser auto-scroll trang phía sau
+  // khi dropdown/input trong modal focus gần bottom viewport (2026-07-23 bug).
+  useEffect(() => {
+    const original = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = original;
+    };
+  }, []);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-xl max-h-[90vh] overflow-y-auto">
