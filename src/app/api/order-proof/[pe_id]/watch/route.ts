@@ -142,13 +142,17 @@ export async function POST(_req: Request, ctx: RouteContext) {
     .select("id, status, progress_state, bucket_uploaded_at, error_message, created_at")
     .eq("packing_event_id", packingEventId)
     .eq("organization_id", pe.organization_id)
-    .in("status", ["ready", "pending", "failed"])
+    .in("status", ["ready", "pending", "failed", "evicted"])
     .order("created_at", { ascending: false });
 
   const clips = rows ?? [];
   const readyRow = clips.find((c) => c.status === "ready") ?? null;
   const pendingRow = clips.find((c) => c.status === "pending") ?? null;
   const latestFailedRow = clips.find((c) => c.status === "failed") ?? null;
+  // evicted = clip đã dọn khỏi cloud (72h TTL bucket) nhưng clip từng cắt
+  // thành công. Xử lý ở nhánh 2 (không ready + không pending + không failed
+  // sau ready) — tự enqueue cut lại từ video gốc, không bắt user bấm retry.
+  const latestEvictedRow = clips.find((c) => c.status === "evicted") ?? null;
 
   // TRỤ 2: đọc liveness NGAY BÂY GIỜ.
   const liveness = await readAgentLiveness(admin, pe.organization_id);
@@ -223,6 +227,18 @@ export async function POST(_req: Request, ctx: RouteContext) {
     });
   }
 
+  // ================ NHÁNH 3: có evicted (2026-07-24) ================
+  // Clip đã dọn khỏi cloud (72h TTL bucket) nhưng từng cắt thành công.
+  // Auto enqueue cut lại từ video gốc (retention 35 ngày mặc định), không
+  // bắt user bấm retry. Rớt xuống nhánh cooldown/enqueue phía dưới với
+  // message rõ khi trả preparing_cut ở nhánh cooldown, hoặc mapping message
+  // của enqueueCutClip khi fail (VD segment gốc cũng quá hạn retention).
+  //
+  // Không set flag đặc biệt — cooldown 60s + logic enqueue phía dưới xử lý
+  // đầy đủ (kể cả ca no_segments = segment gốc đã dọn theo retention).
+  // Nhánh này chỉ thay đổi nhãn state cho user hiểu đúng.
+  const isEvictedRegen = !!latestEvictedRow;
+
   // Chưa có row nào — kiểm cooldown + enqueue lần cắt đầu.
   const cutRecent = await hasRecentEnqueuedCut(admin, packingEventId);
   if (cutRecent) {
@@ -260,8 +276,16 @@ export async function POST(_req: Request, ctx: RouteContext) {
     // message. expired_retention = nghiệp vụ (quá hạn lưu trữ theo cấu
     // hình org), phân biệt với no_segments (chưa cấu hình retention
     // hoặc file mất trong hạn = bug).
-    const userMessage =
-      cutResult.reason === "expired_retention"
+    //
+    // Ca đặc biệt (2026-07-24): evicted regen + segment gốc cũng quá
+    // hạn retention → không cứu được. Message phải nói rõ "video gốc
+    // quá hạn", không mô tả nhầm là "cắt clip thất bại".
+    const isEvictedNoSource =
+      isEvictedRegen &&
+      (cutResult.reason === "expired_retention" || cutResult.reason === "no_segments");
+    const userMessage = isEvictedNoSource
+      ? "Clip cũ đã dọn khỏi cloud (giữ 72 giờ) và video gốc trên máy kho cũng đã hết hạn lưu trữ. Không tạo lại được clip cho đơn này."
+      : cutResult.reason === "expired_retention"
         ? cutResult.message ?? "Video đã quá hạn lưu trữ."
         : cutResult.reason === "no_segments"
           ? "Không có video trong khoảng thời gian đơn hàng (segment ổ đã dọn hoặc chưa có ghi hình)."

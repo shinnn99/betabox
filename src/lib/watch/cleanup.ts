@@ -58,10 +58,15 @@ export async function cleanupExpiredClips(): Promise<CleanupResult | CleanupErro
     if (remErr) removeErrors.push(remErr.message);
   }
 
+  // Set status='evicted' để phân biệt rõ "clip đã dọn khỏi cloud" với
+  // "chưa upload xong" (2026-07-24). Trước đây chỉ set 2 cột NULL, giữ
+  // status='ready' → helper trả bucket_missing → user thấy "Cắt clip thất
+  // bại" sai bản chất (clip cắt xong rồi, chỉ file đã dọn). 'evicted' là
+  // trạng thái cuối, /watch có nhánh riêng enqueue cut lại từ video gốc.
   const ids = rows.map((r) => r.id);
   const { error: updErr } = await admin
     .from("order_proof_clips")
-    .update({ bucket_path: null, bucket_uploaded_at: null })
+    .update({ status: "evicted", bucket_path: null, bucket_uploaded_at: null })
     .in("id", ids);
 
   if (updErr) {
