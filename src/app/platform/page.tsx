@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import {
   Building2,
   Users,
@@ -12,8 +13,29 @@ import {
   X,
   Copy,
   Check,
+  Camera,
+  Cpu,
+  Package,
+  AlertTriangle,
+  Eye,
+  Activity,
+  Lock,
+  Clock,
+  Filter,
+  ShoppingCart,
+  Video,
 } from "lucide-react";
 import PlatformLayout from "@/components/platform/PlatformLayout";
+import Select from "@/components/ui/Select";
+
+type StatusFilter = "all" | "active" | "suspended" | "expiring";
+
+const STATUS_FILTER_OPTIONS = [
+  { value: "all", label: "Tất cả trạng thái" },
+  { value: "active", label: "Đang hoạt động" },
+  { value: "suspended", label: "Tạm khóa" },
+  { value: "expiring", label: "Sắp hết hạn" },
+];
 
 async function impersonateOrg(orgId: string) {
   const res = await fetch("/api/platform/impersonate", {
@@ -35,7 +57,18 @@ interface OrgRow {
   slug: string;
   status: string;
   created_at: string;
-  stats: { users: number; warehouses: number };
+  retention_days: number | null;
+  owner: { full_name: string | null; email: string | null } | null;
+  stats: {
+    users: number;
+    warehouses: number;
+    cameras: number;
+    stations: number;
+    agents_total: number;
+    agents_online: number;
+    orders_today: number;
+    agent_errors_24h: number;
+  };
 }
 
 interface CreatedOrgResult {
@@ -48,6 +81,7 @@ export default function PlatformOrgsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [q, setQ] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [showCreate, setShowCreate] = useState(false);
   const [createdResult, setCreatedResult] = useState<CreatedOrgResult | null>(null);
 
@@ -67,11 +101,27 @@ export default function PlatformOrgsPage() {
     reload();
   }, []);
 
-  const filtered = orgs.filter(
-    (o) =>
+  // "Đang hoạt động" = status === 'active'. Các nhãn khác đang là placeholder
+  // — chưa có gói dịch vụ / ngày hết hạn nên "Tạm khóa" và "Sắp hết hạn" tạm
+  // bằng 0 (không đếm sai). Sẽ nối vào khi phần suspend + entitlement land
+  // sau 26/7.
+  const totals = {
+    all: orgs.length,
+    active: orgs.filter((o) => o.status === "active").length,
+    suspended: orgs.filter((o) => o.status === "suspended").length,
+    expiring: 0,
+  };
+
+  const filtered = orgs.filter((o) => {
+    const matchQ =
       o.name.toLowerCase().includes(q.toLowerCase()) ||
-      o.slug.toLowerCase().includes(q.toLowerCase())
-  );
+      o.slug.toLowerCase().includes(q.toLowerCase());
+    if (!matchQ) return false;
+    if (statusFilter === "all") return true;
+    if (statusFilter === "active") return o.status === "active";
+    if (statusFilter === "suspended") return o.status === "suspended";
+    return false; // expiring: chưa có tín hiệu, luôn rỗng
+  });
 
   return (
     <PlatformLayout
@@ -79,86 +129,105 @@ export default function PlatformOrgsPage() {
       pageSubtitle="Danh sách mọi tổ chức trên hệ thống — bấm để vào xem"
       pageIcon={Building2}
     >
-      <div className="space-y-3">
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-slate-100 flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-2 h-9 px-3 rounded-xl border border-slate-200 bg-slate-50/60 text-slate-500 flex-1 max-w-sm">
-              <Search className="h-4 w-4" />
-              <input
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Tìm tên hoặc slug tổ chức..."
-                className="bg-transparent text-sm outline-none flex-1 placeholder:text-slate-400"
-              />
-            </div>
-            <div className="text-xs text-slate-500 ml-auto">
-              Tổng: <b>{orgs.length}</b>
-            </div>
-            <button
-              onClick={() => setShowCreate(true)}
-              className="h-9 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold inline-flex items-center gap-1.5"
-            >
-              <Plus className="h-3.5 w-3.5" /> Tạo tổ chức mới
-            </button>
-          </div>
-
-          {error && (
-            <div className="px-4 py-3 bg-red-50 text-red-600 text-sm border-b border-red-100">
-              {error}
-            </div>
-          )}
-
-          {loading ? (
-            <div className="p-8 flex items-center justify-center text-slate-500">
-              <Loader2 className="h-5 w-5 animate-spin text-emerald-500 mr-2" />
-              Đang tải...
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="p-8 text-center text-sm text-slate-500">
-              {q ? "Không tìm thấy tổ chức khớp." : "Chưa có tổ chức nào."}
-            </div>
-          ) : (
-            <div className="divide-y divide-slate-100">
-              {filtered.map((org) => (
-                <div
-                  key={org.id}
-                  className="p-4 flex items-center gap-4 hover:bg-slate-50/50"
-                >
-                  <div className="h-10 w-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 border border-emerald-100">
-                    <Building2 className="h-5 w-5" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="font-semibold text-slate-800 truncate">
-                      {org.name}
-                    </p>
-                    <p className="text-xs text-slate-500 font-mono">{org.slug}</p>
-                  </div>
-                  <div className="hidden md:flex items-center gap-4 text-xs text-slate-500">
-                    <div className="flex items-center gap-1">
-                      <Users className="h-3.5 w-3.5" />
-                      <span>{org.stats.users}</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Warehouse className="h-3.5 w-3.5" />
-                      <span>{org.stats.warehouses}</span>
-                    </div>
-                    <div className="text-slate-400">
-                      {new Date(org.created_at).toLocaleDateString("vi-VN")}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => {
-                      impersonateOrg(org.id).catch((e) => setError(e.message));
-                    }}
-                    className="h-9 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold inline-flex items-center gap-1.5"
-                  >
-                    Vào xem <ArrowRight className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+      <div className="space-y-4">
+        {/* 4 stat cards */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <StatCard
+            icon={Building2}
+            iconTone="emerald"
+            label="Tổng tổ chức"
+            value={totals.all}
+            hint="Tất cả tổ chức trên hệ thống"
+          />
+          <StatCard
+            icon={Activity}
+            iconTone="green"
+            label="Đang hoạt động"
+            value={totals.active}
+            hint="Tổ chức đang hoạt động"
+          />
+          <StatCard
+            icon={Lock}
+            iconTone="amber"
+            label="Tạm khóa"
+            value={totals.suspended}
+            hint="Tổ chức tạm khóa"
+          />
+          <StatCard
+            icon={Clock}
+            iconTone="violet"
+            label="Sắp hết hạn"
+            value={totals.expiring}
+            hint="Trong 30 ngày tới"
+          />
         </div>
+
+        {/* Filter row */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2 h-11 px-3 rounded-xl border border-slate-200 bg-white text-slate-500 flex-1 min-w-[280px]">
+            <Search className="h-4 w-4" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Tìm theo tên hoặc slug tổ chức..."
+              className="bg-transparent text-sm outline-none flex-1 placeholder:text-slate-400"
+            />
+          </div>
+          <div className="w-56">
+            <Select
+              size="lg"
+              leadingIcon={<Filter className="h-4 w-4" />}
+              value={statusFilter}
+              onChange={(v) => setStatusFilter(v as StatusFilter)}
+              options={STATUS_FILTER_OPTIONS}
+              ariaLabel="Lọc theo trạng thái"
+            />
+          </div>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="h-11 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2 shadow-sm ml-auto"
+          >
+            <Plus className="h-4 w-4" /> Tạo tổ chức mới
+          </button>
+        </div>
+
+        {error && (
+          <div className="p-3 rounded-xl bg-red-50 text-red-600 text-sm border border-red-100">
+            {error}
+          </div>
+        )}
+
+        {loading ? (
+          <div className="p-8 flex items-center justify-center text-slate-500 bg-white rounded-2xl border border-slate-100 shadow-sm">
+            <Loader2 className="h-5 w-5 animate-spin text-emerald-500 mr-2" />
+            Đang tải...
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="p-8 text-center text-sm text-slate-500 bg-white rounded-2xl border border-slate-100 shadow-sm">
+            {q || statusFilter !== "all"
+              ? "Không tìm thấy tổ chức khớp."
+              : "Chưa có tổ chức nào."}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {filtered.map((org) => (
+              <OrgListRow
+                key={org.id}
+                org={org}
+                onImpersonate={() =>
+                  impersonateOrg(org.id).catch((e) => setError(e.message))
+                }
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Pagination footer — chưa phân trang server-side, hiện thông tin. */}
+        {!loading && filtered.length > 0 && (
+          <div className="text-xs text-slate-500 px-1">
+            Hiển thị {filtered.length} / {orgs.length} tổ chức
+          </div>
+        )}
       </div>
 
       {showCreate && (
@@ -179,6 +248,231 @@ export default function PlatformOrgsPage() {
         />
       )}
     </PlatformLayout>
+  );
+}
+
+function StatCard({
+  icon: Icon,
+  iconTone,
+  label,
+  value,
+  hint,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  iconTone: "emerald" | "green" | "amber" | "violet";
+  label: string;
+  value: number;
+  hint: string;
+}) {
+  const toneMap = {
+    emerald: "bg-emerald-50 text-emerald-600 border-emerald-100",
+    green: "bg-green-50 text-green-600 border-green-100",
+    amber: "bg-amber-50 text-amber-600 border-amber-100",
+    violet: "bg-violet-50 text-violet-600 border-violet-100",
+  };
+  return (
+    <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 flex items-center gap-3">
+      <div
+        className={`h-12 w-12 rounded-xl border flex items-center justify-center shrink-0 ${toneMap[iconTone]}`}
+      >
+        <Icon className="h-5 w-5" />
+      </div>
+      <div className="min-w-0">
+        <p className="text-xs text-slate-500">{label}</p>
+        <p className="text-2xl font-bold text-slate-800 leading-tight">
+          {value}
+        </p>
+        <p className="text-[11px] text-slate-400 mt-0.5 truncate">{hint}</p>
+      </div>
+    </div>
+  );
+}
+
+
+function StatusBadge({ status }: { status: string }) {
+  const isActive = status === "active";
+  return (
+    <span
+      className={`inline-flex items-center h-5 px-1.5 rounded text-[10px] font-medium ${
+        isActive
+          ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+          : "bg-slate-100 text-slate-600 border border-slate-200"
+      }`}
+    >
+      {isActive ? "Đang hoạt động" : status}
+    </span>
+  );
+}
+
+function AgentHealth({
+  online,
+  total,
+}: {
+  online: number;
+  total: number;
+}) {
+  if (total === 0) {
+    return <span className="text-slate-400">—</span>;
+  }
+  const allOnline = online === total;
+  const noneOnline = online === 0;
+  const color = allOnline
+    ? "text-emerald-600"
+    : noneOnline
+      ? "text-red-500"
+      : "text-amber-600";
+  return (
+    <span className={`font-medium ${color}`}>
+      {online}/{total}
+    </span>
+  );
+}
+
+function OrgListRow({
+  org,
+  onImpersonate,
+}: {
+  org: OrgRow;
+  onImpersonate: () => void;
+}) {
+  const hasErrors = org.stats.agent_errors_24h > 0;
+  return (
+    <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+      <div className="flex items-stretch gap-4">
+        {/* Left: identity */}
+        <div className="flex items-start gap-3 w-72 shrink-0">
+          <div className="h-12 w-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 border border-emerald-100">
+            <Building2 className="h-6 w-6" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="font-semibold text-slate-800 truncate">{org.name}</p>
+              <StatusBadge status={org.status} />
+            </div>
+            <div className="flex items-center gap-1.5 mt-0.5 text-xs">
+              <span className="text-slate-400">Slug:</span>
+              <span className="font-mono text-slate-600 truncate">
+                {org.slug}
+              </span>
+            </div>
+            {org.owner && (
+              <div className="mt-1.5 text-xs">
+                <span className="text-slate-400">Chủ: </span>
+                <span className="text-slate-700 font-medium">
+                  {org.owner.full_name ?? "—"}
+                </span>
+                {org.owner.email && (
+                  <div className="text-slate-400 truncate">
+                    {org.owner.email}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Middle: 2 rows × 4 counters, divided by border */}
+        <div className="flex-1 min-w-0 grid grid-cols-4 gap-y-3">
+          <CounterCell icon={Users} label="Người dùng" value={org.stats.users} />
+          <CounterCell icon={Warehouse} label="Kho" value={org.stats.warehouses} />
+          <CounterCell icon={Camera} label="Camera" value={org.stats.cameras} />
+          <CounterCell icon={Package} label="Bàn" value={org.stats.stations} />
+
+          <div className="col-span-4 border-t border-slate-100 -my-1" />
+
+          <CounterCell
+            icon={Cpu}
+            label="Agent online"
+            valueNode={
+              <AgentHealth
+                online={org.stats.agents_online}
+                total={org.stats.agents_total}
+              />
+            }
+          />
+          <CounterCell
+            icon={ShoppingCart}
+            label="Đơn hôm nay"
+            value={org.stats.orders_today}
+          />
+          <CounterCell
+            icon={AlertTriangle}
+            iconTone={hasErrors ? "danger" : "muted"}
+            label="Lỗi 24h"
+            valueNode={
+              <span
+                className={
+                  hasErrors
+                    ? "text-red-600 font-semibold"
+                    : "text-slate-800 font-semibold"
+                }
+              >
+                {org.stats.agent_errors_24h}
+              </span>
+            }
+          />
+          <CounterCell
+            icon={Video}
+            label="Lưu video"
+            valueNode={
+              <span className="text-slate-800 font-semibold">
+                {org.retention_days != null
+                  ? `${org.retention_days} ngày`
+                  : "—"}
+              </span>
+            }
+          />
+        </div>
+
+        {/* Right: actions stacked */}
+        <div className="flex flex-col gap-2 shrink-0 w-32 justify-center">
+          <Link
+            href={`/platform/orgs/${org.id}`}
+            className="h-10 px-3 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm font-medium inline-flex items-center justify-center gap-1.5"
+          >
+            <Eye className="h-4 w-4" /> Chi tiết
+          </Link>
+          <button
+            onClick={onImpersonate}
+            className="h-10 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center justify-center gap-1.5"
+          >
+            Vào xem <ArrowRight className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CounterCell({
+  icon: Icon,
+  iconTone = "muted",
+  label,
+  value,
+  valueNode,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  iconTone?: "muted" | "danger";
+  label: string;
+  value?: number;
+  valueNode?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-2 px-1">
+      <Icon
+        className={`h-4 w-4 shrink-0 ${
+          iconTone === "danger" ? "text-red-500" : "text-slate-400"
+        }`}
+      />
+      <div className="min-w-0">
+        <div className="text-[11px] text-slate-500 leading-tight">{label}</div>
+        <div className="text-base leading-tight mt-0.5">
+          {valueNode ?? (
+            <span className="text-slate-800 font-semibold">{value}</span>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

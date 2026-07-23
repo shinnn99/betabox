@@ -56,7 +56,12 @@ const EMAIL_MAX_LENGTH = 254;
 const NAME_MIN_LENGTH = 2;
 const NAME_MAX_LENGTH = 100;
 
-// GET /api/platform/orgs — list mọi org (platform admin bypass RLS qua admin client)
+// GET /api/platform/orgs — list mọi org kèm counts + owner + health signals.
+//
+// Chỉ SELECT — không đụng route đang chạy. N+1 chấp nhận cho ~10-50 org.
+// Ngưỡng agent online = 5 phút khớp reaper pg_cron (lat1_4_reaper).
+const AGENT_ONLINE_THRESHOLD_MS = 5 * 60 * 1000;
+
 export async function GET() {
   const ctx = await requirePlatformRole("platform_support");
   if (ctx instanceof NextResponse) return ctx;
@@ -64,45 +69,176 @@ export async function GET() {
   const admin = createAdminClient();
   const { data: orgs, error } = await admin
     .from("organizations")
-    .select("id, name, slug, status, created_at")
+    .select("id, name, slug, status, created_at, retention_days")
     .order("created_at", { ascending: false });
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // Đếm user + warehouse cho mỗi org (thống kê nhẹ)
   const orgIds = (orgs ?? []).map((o) => o.id);
-  const stats = new Map<string, { users: number; warehouses: number }>();
-  if (orgIds.length > 0) {
-    const [usersResult, whResult] = await Promise.all([
-      admin
-        .from("user_profiles")
-        .select("organization_id", { count: "exact" })
-        .in("organization_id", orgIds),
-      admin
-        .from("warehouses")
-        .select("organization_id", { count: "exact" })
-        .in("organization_id", orgIds),
-    ]);
+  if (orgIds.length === 0) {
+    return NextResponse.json({ orgs: [] });
+  }
 
-    for (const orgId of orgIds) {
-      const users = (usersResult.data ?? []).filter(
-        (r) => r.organization_id === orgId
-      ).length;
-      const warehouses = (whResult.data ?? []).filter(
-        (r) => r.organization_id === orgId
-      ).length;
-      stats.set(orgId, { users, warehouses });
+  // business_date = UTC date, khớp với dashboard/overview + reports/service.
+  const businessDate = new Date().toISOString().slice(0, 10);
+  const now = Date.now();
+  const errorSince = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+
+  const [
+    profilesRes,
+    warehousesRes,
+    camerasRes,
+    stationsRes,
+    agentsRes,
+    ownersRes,
+    packingTodayRes,
+    agentErrorsRes,
+  ] = await Promise.all([
+    admin
+      .from("user_profiles")
+      .select("organization_id")
+      .in("organization_id", orgIds),
+    admin
+      .from("warehouses")
+      .select("organization_id")
+      .in("organization_id", orgIds),
+    admin
+      .from("cameras")
+      .select("organization_id")
+      .in("organization_id", orgIds),
+    admin
+      .from("packing_stations")
+      .select("organization_id, status")
+      .in("organization_id", orgIds)
+      .neq("status", "archived"),
+    admin
+      .from("warehouse_agents")
+      .select("organization_id, status, last_seen_at")
+      .in("organization_id", orgIds),
+    // Owner mỗi org: role='owner' + status='active'. Có thể null nếu owner
+    // bị xóa hoặc bị chuyển vai trò — hiển thị "—".
+    admin
+      .from("user_profiles")
+      .select("id, organization_id, full_name, role, status")
+      .in("organization_id", orgIds)
+      .eq("role", "owner")
+      .eq("status", "active"),
+    admin
+      .from("packing_events")
+      .select("organization_id, status")
+      .in("organization_id", orgIds)
+      .eq("business_date", businessDate),
+    admin
+      .from("agent_log_events")
+      .select("organization_id, level")
+      .in("organization_id", orgIds)
+      .eq("level", "error")
+      .gte("emitted_at", errorSince),
+  ]);
+
+  const bumpMap = <T,>(
+    map: Map<string, number>,
+    rows: T[] | null | undefined,
+    getKey: (row: T) => string | null | undefined,
+  ) => {
+    for (const r of rows ?? []) {
+      const k = getKey(r);
+      if (!k) continue;
+      map.set(k, (map.get(k) ?? 0) + 1);
+    }
+  };
+
+  const usersByOrg = new Map<string, number>();
+  bumpMap(usersByOrg, profilesRes.data, (r) => r.organization_id);
+
+  const warehousesByOrg = new Map<string, number>();
+  bumpMap(warehousesByOrg, warehousesRes.data, (r) => r.organization_id);
+
+  const camerasByOrg = new Map<string, number>();
+  bumpMap(camerasByOrg, camerasRes.data, (r) => r.organization_id);
+
+  const stationsByOrg = new Map<string, number>();
+  bumpMap(stationsByOrg, stationsRes.data, (r) => r.organization_id);
+
+  const agentsTotalByOrg = new Map<string, number>();
+  const agentsOnlineByOrg = new Map<string, number>();
+  for (const a of agentsRes.data ?? []) {
+    const oId = a.organization_id as string;
+    if (!oId) continue;
+    if (a.status !== "active") continue;
+    agentsTotalByOrg.set(oId, (agentsTotalByOrg.get(oId) ?? 0) + 1);
+    const seen = a.last_seen_at ? new Date(a.last_seen_at as string).getTime() : 0;
+    if (seen > 0 && now - seen <= AGENT_ONLINE_THRESHOLD_MS) {
+      agentsOnlineByOrg.set(oId, (agentsOnlineByOrg.get(oId) ?? 0) + 1);
     }
   }
 
-  const orgsWithStats = (orgs ?? []).map((o) => ({
-    ...o,
-    stats: stats.get(o.id) ?? { users: 0, warehouses: 0 },
-  }));
+  const ownerByOrg = new Map<string, { userId: string; fullName: string | null }>();
+  for (const p of ownersRes.data ?? []) {
+    const oId = p.organization_id as string;
+    if (!oId || ownerByOrg.has(oId)) continue; // giữ owner đầu tiên nếu >1 (edge case)
+    ownerByOrg.set(oId, {
+      userId: p.id as string,
+      fullName: (p.full_name as string | null) ?? null,
+    });
+  }
 
-  return NextResponse.json({ orgs: orgsWithStats });
+  // Owner email từ auth.users — N call getUserById. Chỉ query owner tồn tại.
+  const ownerIds = [...ownerByOrg.values()].map((o) => o.userId);
+  const ownerEmailById = new Map<string, string | null>();
+  if (ownerIds.length > 0) {
+    const emailResults = await Promise.all(
+      ownerIds.map((id) => admin.auth.admin.getUserById(id)),
+    );
+    for (let i = 0; i < ownerIds.length; i += 1) {
+      const res = emailResults[i];
+      ownerEmailById.set(ownerIds[i], res.data?.user?.email ?? null);
+    }
+  }
+
+  // Đơn hôm nay = packing_events status='valid'. Cùng định nghĩa với
+  // dashboard/overview.ts totals.valid.
+  const ordersTodayByOrg = new Map<string, number>();
+  for (const ev of packingTodayRes.data ?? []) {
+    const oId = ev.organization_id as string;
+    if (!oId || ev.status !== "valid") continue;
+    ordersTodayByOrg.set(oId, (ordersTodayByOrg.get(oId) ?? 0) + 1);
+  }
+
+  const agentErrors24hByOrg = new Map<string, number>();
+  bumpMap(agentErrors24hByOrg, agentErrorsRes.data, (r) => r.organization_id);
+
+  const orgsEnriched = (orgs ?? []).map((o) => {
+    const owner = ownerByOrg.get(o.id);
+    return {
+      id: o.id,
+      name: o.name,
+      slug: o.slug,
+      status: o.status,
+      created_at: o.created_at,
+      retention_days: o.retention_days,
+      owner: owner
+        ? {
+            full_name: owner.fullName,
+            email: ownerEmailById.get(owner.userId) ?? null,
+          }
+        : null,
+      stats: {
+        users: usersByOrg.get(o.id) ?? 0,
+        warehouses: warehousesByOrg.get(o.id) ?? 0,
+        cameras: camerasByOrg.get(o.id) ?? 0,
+        stations: stationsByOrg.get(o.id) ?? 0,
+        agents_total: agentsTotalByOrg.get(o.id) ?? 0,
+        agents_online: agentsOnlineByOrg.get(o.id) ?? 0,
+        orders_today: ordersTodayByOrg.get(o.id) ?? 0,
+        agent_errors_24h: agentErrors24hByOrg.get(o.id) ?? 0,
+      },
+    };
+  });
+
+  return NextResponse.json({ orgs: orgsEnriched });
 }
 
 // POST /api/platform/orgs — platform admin tạo org + owner user cho khách mới.

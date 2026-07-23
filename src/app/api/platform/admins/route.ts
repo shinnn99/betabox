@@ -24,26 +24,51 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // Enrich email từ auth.users
+  // Enrich email + last_sign_in_at + mfa từ auth.users
   const ids = (rows ?? []).map((r) => r.id);
   const createdByIds = (rows ?? [])
     .map((r) => r.created_by)
     .filter((id): id is string => id !== null);
   const allIds = Array.from(new Set([...ids, ...createdByIds]));
 
-  const emailMap = new Map<string, string>();
+  interface AuthMeta {
+    email: string | null;
+    last_sign_in_at: string | null;
+    mfa_enabled: boolean;
+  }
+  const authMap = new Map<string, AuthMeta>();
   await Promise.all(
     allIds.map(async (id) => {
       const { data: au } = await admin.auth.admin.getUserById(id);
-      if (au?.user?.email) emailMap.set(id, au.user.email);
+      if (au?.user) {
+        // MFA: nếu có ít nhất 1 factor 'verified'. Supabase types trả
+        // factors trong AdminUserAttributes — dùng any-friendly optional.
+        const factors = ((au.user as unknown) as {
+          factors?: Array<{ status?: string }>;
+        }).factors;
+        const mfaEnabled =
+          Array.isArray(factors) &&
+          factors.some((f) => f.status === "verified");
+        authMap.set(id, {
+          email: au.user.email ?? null,
+          last_sign_in_at: au.user.last_sign_in_at ?? null,
+          mfa_enabled: mfaEnabled,
+        });
+      }
     })
   );
 
-  const enriched = (rows ?? []).map((r) => ({
-    ...r,
-    email: emailMap.get(r.id) ?? "",
-    created_by_email: r.created_by ? emailMap.get(r.created_by) ?? "" : null,
-  }));
+  const enriched = (rows ?? []).map((r) => {
+    const meta = authMap.get(r.id);
+    const creatorMeta = r.created_by ? authMap.get(r.created_by) : null;
+    return {
+      ...r,
+      email: meta?.email ?? "",
+      last_sign_in_at: meta?.last_sign_in_at ?? null,
+      mfa_enabled: meta?.mfa_enabled ?? false,
+      created_by_email: creatorMeta?.email ?? null,
+    };
+  });
 
   return NextResponse.json({ admins: enriched });
 }
