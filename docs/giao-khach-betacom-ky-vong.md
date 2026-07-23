@@ -60,6 +60,7 @@ Không tự bấm [Thử lại] nhiều lần liên tiếp — không giúp gì 
 | Dashboard báo "Máy trạm offline" | Máy kho tắt hoặc mất mạng | Kiểm máy còn bật + mạng còn không. Bật lại nếu tắt. |
 | Camera "Offline" trên dashboard | Camera mất điện hoặc rớt mạng LAN | Kiểm dây điện + dây mạng camera đó. Cắm lại. |
 | Clip "Không có video trong khoảng này" | Camera lúc đó không ghi được (mất điện/mạng) | Không phải lỗi hệ. Ghi nhận với khách "camera thời điểm đó gián đoạn". |
+| Thao tác đầu tiên sau khi nghỉ lâu chậm vài giây | Máy chủ tạm nghỉ, cần khởi động lại | Bình thường, không phải hỏng. Chờ đủ, các lần sau nhanh. **Đừng bấm Hủy khi đang chờ** — có thể tạo bản ghi trùng. |
 
 **Ngoài 3 lỗi trên — báo [Hạnh] ngay, đừng tự sửa.** Nhất là: đừng tắt/khởi động lại service `BetacomAgent` trong `services.msc`, đừng xóa file trong `C:\Program Files\BetacomAgent\`, đừng đổi cấu hình camera qua web camera.
 

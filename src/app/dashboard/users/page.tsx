@@ -324,11 +324,17 @@ function CreateUserDialog({
           />
         </Field>
         {err && <p className="text-sm text-red-600">{err}</p>}
+        {saving && (
+          <p className="text-sm text-slate-500">
+            Đang tạo tài khoản, vui lòng đợi... (lần đầu sau khi nghỉ có thể chậm vài giây)
+          </p>
+        )}
         <div className="flex justify-end gap-2 pt-2">
           <button
             type="button"
             onClick={onClose}
-            className="h-9 px-4 rounded-xl border border-slate-200 text-sm"
+            disabled={saving}
+            className="h-9 px-4 rounded-xl border border-slate-200 text-sm disabled:opacity-60 disabled:cursor-not-allowed"
           >
             Huỷ
           </button>
@@ -458,11 +464,17 @@ function EditUserDialog({
           </div>
         </Field>
         {err && <p className="text-sm text-red-600">{err}</p>}
+        {saving && (
+          <p className="text-sm text-slate-500">
+            Đang lưu, vui lòng đợi...
+          </p>
+        )}
         <div className="flex justify-end gap-2 pt-2">
           <button
             type="button"
             onClick={onClose}
-            className="h-9 px-4 rounded-xl border border-slate-200 text-sm"
+            disabled={saving}
+            className="h-9 px-4 rounded-xl border border-slate-200 text-sm disabled:opacity-60 disabled:cursor-not-allowed"
           >
             Huỷ
           </button>
