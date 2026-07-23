@@ -789,7 +789,7 @@ function WarehouseDialog({
         video_pre_seconds: form.video_pre_seconds,
         video_default_post_seconds: form.video_default_post_seconds,
       };
-      // Lark webhook: cấu hình ở trang riêng /dashboard/settings/notifications
+      // Lark webhook: cấu hình ở trang riêng /dashboard/settings/warehouse-config
       // — không nhét vào form này (nhiều thông tin lẫn lộn).
     }
     const res = await fetch(url, {

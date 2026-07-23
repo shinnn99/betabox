@@ -10,8 +10,7 @@ import {
   ShieldCheck,
   Wrench,
   Server,
-  Bell,
-  HardDrive,
+  Settings,
   type LucideIcon,
 } from "lucide-react";
 
@@ -118,16 +117,10 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: UserCog,
       },
       {
-        id: "settings-notifications",
-        label: "Cấu hình thông báo",
-        href: "/dashboard/settings/notifications",
-        icon: Bell,
-      },
-      {
-        id: "settings-retention",
-        label: "Thời gian lưu video",
-        href: "/dashboard/settings/retention",
-        icon: HardDrive,
+        id: "settings-warehouse-config",
+        label: "Cấu hình kho",
+        href: "/dashboard/settings/warehouse-config",
+        icon: Settings,
       },
       {
         id: "audit",

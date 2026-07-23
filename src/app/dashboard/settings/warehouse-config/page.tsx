@@ -26,13 +26,18 @@ import {
   Check,
   MessageSquare,
   HelpCircle,
+  Clock,
+  Info,
 } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import Select from "@/components/ui/Select";
 import { useToast } from "@/components/ui/Toast";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
+import { apiFetch } from "@/lib/api-fetch";
 
 const LARK_WEBHOOK_PREFIX = "https://open.larksuite.com/open-apis/bot/v2/hook/";
+const RETENTION_MIN = 7;
+const RETENTION_MAX = 365;
 
 interface LastNotification {
   event_type: string;
@@ -65,44 +70,119 @@ const EVENT_LABEL: Record<string, string> = {
   packing_issue_invalid_code: "Mã quét lỗi",
 };
 
-export default function NotificationsSettingsPage() {
+export default function WarehouseConfigPage() {
+  const toast = useToast();
+
+  // ==================== Retention state ====================
+  const [retentionLoading, setRetentionLoading] = useState(true);
+  const [retentionSaving, setRetentionSaving] = useState(false);
+  const [retentionCurrent, setRetentionCurrent] = useState<number | null>(null);
+  const [retentionInput, setRetentionInput] = useState("");
+
+  const loadRetention = useCallback(async () => {
+    setRetentionLoading(true);
+    try {
+      const res = await fetch("/api/organization", { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) {
+        toast.error(json.error ?? "Không tải được cấu hình.");
+        return;
+      }
+      const rd = json.organization?.retention_days ?? null;
+      setRetentionCurrent(rd);
+      setRetentionInput(rd === null ? "" : String(rd));
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setRetentionLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    loadRetention();
+  }, [loadRetention]);
+
+  const handleSaveRetention = async () => {
+    const trimmed = retentionInput.trim();
+    let value: number | null;
+    if (trimmed === "") {
+      value = null;
+    } else {
+      const n = Number(trimmed);
+      if (!Number.isInteger(n) || n < RETENTION_MIN || n > RETENTION_MAX) {
+        toast.error(
+          `Số ngày giữ phải trong khoảng ${RETENTION_MIN}-${RETENTION_MAX} (hoặc để trống).`,
+        );
+        return;
+      }
+      value = n;
+    }
+
+    setRetentionSaving(true);
+    try {
+      const res = await apiFetch("/api/organization", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ retention_days: value }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        toast.error(json.message ?? json.error ?? "Lưu thất bại.");
+        return;
+      }
+      setRetentionCurrent(value);
+      toast.success(
+        value === null
+          ? "Đã xóa cấu hình retention."
+          : `Đã lưu retention = ${value} ngày. Agent sẽ nhận qua heartbeat kế tiếp (≤30s).`,
+      );
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setRetentionSaving(false);
+    }
+  };
+
+  const retentionDirty =
+    (retentionInput.trim() === "" ? null : Number(retentionInput.trim())) !==
+    retentionCurrent;
+
+  // ==================== Notifications state ====================
   const [warehouses, setWarehouses] = useState<WarehouseRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [notifLoading, setNotifLoading] = useState(true);
+  const [notifError, setNotifError] = useState("");
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<FilterStatus>("all");
   const [sortMode, setSortMode] = useState<SortMode>("code_asc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [editing, setEditing] = useState<WarehouseRow | null>(null);
-  // Giữ warehouse cuối để panel giữ nội dung khi đóng (animation).
   const [lastEdited, setLastEdited] = useState<WarehouseRow | null>(null);
   useEffect(() => {
     if (editing) setLastEdited(editing);
   }, [editing]);
   const [showHelp, setShowHelp] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  const loadWarehouses = useCallback(async () => {
+    setNotifLoading(true);
+    setNotifError("");
     const res = await fetch("/api/warehouses/notifications-overview", {
       cache: "no-store",
     });
     const data = await res.json();
     if (!res.ok) {
-      setError(data.message ?? data.error ?? "Không tải được danh sách kho.");
-      setLoading(false);
+      setNotifError(data.message ?? data.error ?? "Không tải được danh sách kho.");
+      setNotifLoading(false);
       return;
     }
     setWarehouses(data.warehouses ?? []);
-    setLoading(false);
+    setNotifLoading(false);
   }, []);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    loadWarehouses();
+  }, [loadWarehouses]);
 
-  // Derived state.
   const totals = useMemo(() => {
     const on = warehouses.filter((w) => !!w.notify_lark_webhook_url && w.notify_lark_enabled).length;
     const off = warehouses.filter((w) => !!w.notify_lark_webhook_url && !w.notify_lark_enabled).length;
@@ -134,214 +214,345 @@ export default function NotificationsSettingsPage() {
     currentPage * pageSize,
   );
 
-  // Reset page về 1 khi đổi filter/search.
   useEffect(() => setPage(1), [search, filterStatus, sortMode, pageSize]);
 
   return (
     <DashboardLayout
-      pageTitle="Cấu hình thông báo"
-      pageSubtitle="Cảnh báo đơn lỗi qua Lark cho quản lý kho"
-      pageIcon={Bell}
+      pageTitle="Cấu hình kho"
+      pageSubtitle="Quản lý thời gian lưu video và cảnh báo của kho"
+      pageIcon={Settings}
     >
-      {/* h-full flex + panel fixed height 100% = luôn khớp viewport <main>,
-          không tạo scroll dọc thừa trên page. Nội dung bảng tự scroll trong
-          div riêng khi vượt chiều cao. */}
-      <div className="flex gap-4 items-stretch h-full">
-        {/* Main content — co lại khi mở side panel, transition mượt qua width.
-            overflow-y-auto để bảng dài tự scroll bên trong, không đẩy trang. */}
+      <div className="flex gap-4 items-stretch h-full lg:mr-[-15px]">
         <div
-          className="min-w-0 transition-[width] duration-300 ease-out overflow-y-auto overflow-x-hidden pr-1"
+          className="min-w-0 transition-[width] duration-300 ease-out flex flex-col overflow-hidden"
           style={{ width: editing ? "calc(100% - 396px)" : "100%" }}
         >
-        <div className="space-y-4">
-        {/* Stat cards — 4 cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatCard
-            variant="all"
-            icon={<Layers className="h-5 w-5" />}
-            label="Tất cả"
-            value={totals.total}
-            hint="Kho"
-          />
-          <StatCard
-            variant="on"
-            icon={<CheckCircle2 className="h-5 w-5" />}
-            label="Đang bật"
-            value={totals.on}
-            hint="Kho"
-          />
-          <StatCard
-            variant="off"
-            icon={<Pause className="h-5 w-5" />}
-            label="Đã tắt"
-            value={totals.off}
-            hint="Kho"
-          />
-          <StatCard
-            variant="missing"
-            icon={<Settings className="h-5 w-5" />}
-            label="Chưa cấu hình"
-            value={totals.missing}
-            hint="Kho"
-          />
-        </div>
+          <div className="flex flex-col gap-4 flex-1 min-h-0">
+            {/* Stat cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <StatCard
+                variant="all"
+                icon={<Layers className="h-5 w-5" />}
+                label="Tất cả"
+                value={totals.total}
+                hint="Kho"
+              />
+              <StatCard
+                variant="on"
+                icon={<CheckCircle2 className="h-5 w-5" />}
+                label="Đang bật"
+                value={totals.on}
+                hint="Kho"
+              />
+              <StatCard
+                variant="off"
+                icon={<Pause className="h-5 w-5" />}
+                label="Đã tắt"
+                value={totals.off}
+                hint="Kho"
+              />
+              <StatCard
+                variant="missing"
+                icon={<Settings className="h-5 w-5" />}
+                label="Chưa cấu hình"
+                value={totals.missing}
+                hint="Kho"
+              />
+            </div>
 
-        {/* Toolbar */}
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm">
-          <div className="p-3 flex flex-col md:flex-row gap-2">
-            <div className="relative flex-1 min-w-0">
-              <Search className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Tìm tên hoặc mã kho"
-                className="w-full h-10 pl-9 pr-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-emerald-400"
-              />
-            </div>
-            <div className="w-full md:w-52">
-              <Select
-                value={filterStatus}
-                onChange={(v) => setFilterStatus(v as FilterStatus)}
-                options={[
-                  { value: "all", label: "Trạng thái: Tất cả" },
-                  { value: "on", label: "Trạng thái: Đang bật" },
-                  { value: "off", label: "Trạng thái: Đã tắt" },
-                  { value: "missing", label: "Trạng thái: Chưa cấu hình" },
-                  { value: "error", label: "Trạng thái: Lỗi webhook" },
-                ]}
-              />
-            </div>
-            <div className="w-full md:w-52">
-              <Select
-                value={sortMode}
-                onChange={(v) => setSortMode(v as SortMode)}
-                options={[
-                  { value: "code_asc", label: "Sắp xếp: Mã A → Z" },
-                  { value: "code_desc", label: "Sắp xếp: Mã Z → A" },
-                  { value: "name_asc", label: "Sắp xếp: Tên A → Z" },
-                  { value: "name_desc", label: "Sắp xếp: Tên Z → A" },
-                ]}
-              />
-            </div>
-            <button
-              onClick={() => setShowHelp(true)}
-              className="h-10 px-4 rounded-xl border border-slate-200 hover:bg-slate-50 text-sm inline-flex items-center gap-2 text-slate-700"
-            >
-              <HelpCircle className="h-4 w-4" />
-              Hướng dẫn
-            </button>
-            <button
-              onClick={load}
-              disabled={loading}
-              className="h-10 px-4 rounded-xl border border-slate-200 hover:bg-slate-50 text-sm inline-flex items-center gap-2 disabled:opacity-60"
-            >
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-              Làm mới
-            </button>
-          </div>
-        </div>
+            {/* Section 1 — Thời gian lưu video */}
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <div className="h-9 w-9 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center">
+                  <Clock className="h-5 w-5" />
+                </div>
+                <h2 className="text-base font-semibold text-slate-800">
+                  1. Thời gian lưu video
+                </h2>
+              </div>
 
-        {/* Bảng — scroll ngang khi panel mở nếu cần. Header cells whitespace-nowrap
-             để không wrap thành nhiều dòng khi co. */}
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm">
-          {error && (
-            <div className="px-4 py-3 bg-red-50 text-red-600 text-sm border-b border-red-100 rounded-t-2xl">
-              {error}
-            </div>
-          )}
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[880px]">
-              <thead className="bg-slate-50/60 rounded-t-2xl">
-                <tr className="text-left text-xs text-slate-500">
-                  <th className="px-4 py-3 font-medium whitespace-nowrap">Kho</th>
-                  <th className="px-4 py-3 font-medium whitespace-nowrap">Trạng thái</th>
-                  <th className="px-4 py-3 font-medium whitespace-nowrap">Webhook</th>
-                  <th className="px-4 py-3 font-medium whitespace-nowrap">Kiểm tra gần nhất</th>
-                  <th className="px-4 py-3 font-medium whitespace-nowrap">Thông báo gần nhất</th>
-                  <th className="px-4 py-3 font-medium text-right whitespace-nowrap">Thao tác</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading && warehouses.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-10 text-center text-slate-400">
-                      <Loader2 className="h-5 w-5 animate-spin inline mr-2" /> Đang tải...
-                    </td>
-                  </tr>
-                )}
-                {!loading && filtered.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-10 text-center text-slate-400 text-sm">
-                      {warehouses.length === 0 ? (
-                        <>Chưa có kho nào. Tạo kho trong{" "}
-                          <a href="/dashboard/warehouses" className="text-emerald-600 hover:underline">
-                            Tổ chức &amp; Kho
-                          </a>{" "}
-                          trước.</>
-                      ) : (
-                        "Không tìm thấy kho phù hợp với bộ lọc."
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <div>
+                  {retentionLoading ? (
+                    <div className="flex items-center gap-2 text-slate-500 text-sm">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Đang tải...
+                    </div>
+                  ) : (
+                    <>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">
+                        Số ngày giữ video
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={RETENTION_MIN}
+                          max={RETENTION_MAX}
+                          step={1}
+                          value={retentionInput}
+                          onChange={(e) => setRetentionInput(e.target.value)}
+                          placeholder="Để trống = chưa cấu hình"
+                          className="w-32 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-emerald-400"
+                        />
+                        <span className="text-sm text-slate-500">ngày</span>
+                        <button
+                          type="button"
+                          onClick={handleSaveRetention}
+                          disabled={retentionSaving || !retentionDirty}
+                          className="ml-auto inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {retentionSaving ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Save className="h-4 w-4" />
+                          )}
+                          Lưu
+                        </button>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">
+                        Chấp nhận {RETENTION_MIN}-{RETENTION_MAX} ngày. Để trống
+                        nếu chưa muốn cấu hình.
+                      </p>
+
+                      {retentionCurrent === null && (
+                        <div className="mt-3 flex gap-2 p-3 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-800">
+                          <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                          <div>
+                            <div className="font-medium">
+                              Chưa cấu hình retention
+                            </div>
+                            <div className="text-xs mt-1">
+                              Script cleanup trên máy kho sẽ KHÔNG chạy (không
+                              xóa gì) cho tới khi cấu hình. Ổ sẽ đầy dần.
+                            </div>
+                          </div>
+                        </div>
                       )}
-                    </td>
-                  </tr>
-                )}
-                {paged.map((w) => (
-                  <WarehouseRowView
-                    key={w.id}
-                    warehouse={w}
-                    isEditing={editing?.id === w.id}
-                    onEdit={() => setEditing(w)}
-                    onChanged={load}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
+                    </>
+                  )}
+                </div>
 
-          {/* Pagination */}
-          {filtered.length > 0 && (
-            <div className="p-3 border-t border-slate-100 flex flex-col md:flex-row items-center gap-3">
-              <p className="text-xs text-slate-500 md:mr-auto">
-                Hiển thị {(currentPage - 1) * pageSize + 1} – {Math.min(currentPage * pageSize, filtered.length)} trong {filtered.length} kho
-              </p>
-              <Pagination
-                page={currentPage}
-                totalPages={totalPages}
-                onChange={setPage}
-              />
-              <div className="flex items-center gap-2 text-xs text-slate-500">
-                <span>Hiển thị</span>
-                <div className="w-20">
+                <div className="rounded-xl bg-sky-50/60 border border-sky-100 p-4 text-sm text-slate-700">
+                  <div className="flex items-center gap-2 mb-2 text-sky-700">
+                    <Info className="h-4 w-4" />
+                    <span className="font-medium">
+                      Lưu ý khi chọn số ngày giữ video
+                    </span>
+                  </div>
+                  <ul className="list-disc list-inside space-y-1 text-xs text-slate-600">
+                    <li>
+                      Phải ≥ cửa sổ khiếu nại dài nhất của sàn bán hàng
+                      (Shopee, TikTok, Lazada...).
+                    </li>
+                    <li>
+                      Sàn cho khiếu nại 30 ngày, nên chọn 25 = tranh chấp ngày
+                      26 sẽ mất bằng chứng.
+                    </li>
+                    <li>
+                      Cộng thêm biên cho chu kỳ khiếu nại leo thang (khách →
+                      sàn → Betacom kháng nghị). Đề: cửa sổ sàn + 10-15 ngày.
+                    </li>
+                    <li>
+                      Cleanup script chạy hàng tuần (Chủ nhật 03:00).
+                    </li>
+                    <li>
+                      Đổi từ 45 xuống 30 sẽ khiến file cũ hơn 30 ngày bị xóa ở
+                      lần chạy kế tiếp.
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            {/* Section 2 — Cấu hình thông báo */}
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm flex-1 min-h-0 flex flex-col overflow-hidden">
+              <div className="p-5 pb-3 flex items-center gap-2 shrink-0">
+                <div className="h-9 w-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                  <Bell className="h-5 w-5" />
+                </div>
+                <h2 className="text-base font-semibold text-slate-800">
+                  2. Cấu hình thông báo
+                </h2>
+              </div>
+
+              {/* Toolbar */}
+              <div className="px-5 pb-3 flex flex-col md:flex-row gap-2 shrink-0">
+                <div className="relative flex-1 min-w-0">
+                  <Search className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Tìm tên hoặc mã kho"
+                    className="w-full h-10 pl-9 pr-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-emerald-400"
+                  />
+                </div>
+                <div className="w-full md:w-52">
                   <Select
-                    value={String(pageSize)}
-                    onChange={(v) => setPageSize(Number(v))}
+                    value={filterStatus}
+                    onChange={(v) => setFilterStatus(v as FilterStatus)}
                     options={[
-                      { value: "10", label: "10" },
-                      { value: "20", label: "20" },
-                      { value: "50", label: "50" },
+                      { value: "all", label: "Trạng thái: Tất cả" },
+                      { value: "on", label: "Trạng thái: Đang bật" },
+                      { value: "off", label: "Trạng thái: Đã tắt" },
+                      { value: "missing", label: "Trạng thái: Chưa cấu hình" },
+                      { value: "error", label: "Trạng thái: Lỗi webhook" },
                     ]}
                   />
                 </div>
-                <span>/ trang</span>
+                <div className="w-full md:w-52">
+                  <Select
+                    value={sortMode}
+                    onChange={(v) => setSortMode(v as SortMode)}
+                    options={[
+                      { value: "code_asc", label: "Sắp xếp: Mã A → Z" },
+                      { value: "code_desc", label: "Sắp xếp: Mã Z → A" },
+                      { value: "name_asc", label: "Sắp xếp: Tên A → Z" },
+                      { value: "name_desc", label: "Sắp xếp: Tên Z → A" },
+                    ]}
+                  />
+                </div>
+                <button
+                  onClick={() => setShowHelp(true)}
+                  className="h-10 px-4 rounded-xl border border-slate-200 hover:bg-slate-50 text-sm inline-flex items-center gap-2 text-slate-700"
+                >
+                  <HelpCircle className="h-4 w-4" />
+                  Hướng dẫn
+                </button>
+                <button
+                  onClick={loadWarehouses}
+                  disabled={notifLoading}
+                  className="h-10 px-4 rounded-xl border border-slate-200 hover:bg-slate-50 text-sm inline-flex items-center gap-2 disabled:opacity-60"
+                >
+                  {notifLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCcw className="h-4 w-4" />
+                  )}
+                  Làm mới
+                </button>
               </div>
+
+              {/* Table */}
+              {notifError && (
+                <div className="mx-5 px-4 py-3 bg-red-50 text-red-600 text-sm border border-red-100 rounded-xl mb-3 shrink-0">
+                  {notifError}
+                </div>
+              )}
+              <div className="overflow-auto flex-1 min-h-0">
+                <table className="w-full text-sm min-w-[880px]">
+                  <thead className="bg-slate-50/60">
+                    <tr className="text-left text-xs text-slate-500">
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">
+                        Kho
+                      </th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">
+                        Trạng thái
+                      </th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">
+                        Webhook
+                      </th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">
+                        Kiểm tra gần nhất
+                      </th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">
+                        Thông báo gần nhất
+                      </th>
+                      <th className="px-4 py-3 font-medium text-right whitespace-nowrap">
+                        Thao tác
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {notifLoading && warehouses.length === 0 && (
+                      <tr>
+                        <td
+                          colSpan={6}
+                          className="px-4 py-10 text-center text-slate-400"
+                        >
+                          <Loader2 className="h-5 w-5 animate-spin inline mr-2" />{" "}
+                          Đang tải...
+                        </td>
+                      </tr>
+                    )}
+                    {!notifLoading && filtered.length === 0 && (
+                      <tr>
+                        <td
+                          colSpan={6}
+                          className="px-4 py-10 text-center text-slate-400 text-sm"
+                        >
+                          {warehouses.length === 0 ? (
+                            <>
+                              Chưa có kho nào. Tạo kho trong{" "}
+                              <a
+                                href="/dashboard/warehouses"
+                                className="text-emerald-600 hover:underline"
+                              >
+                                Tổ chức &amp; Kho
+                              </a>{" "}
+                              trước.
+                            </>
+                          ) : (
+                            "Không tìm thấy kho phù hợp với bộ lọc."
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    {paged.map((w) => (
+                      <WarehouseRowView
+                        key={w.id}
+                        warehouse={w}
+                        isEditing={editing?.id === w.id}
+                        onEdit={() => setEditing(w)}
+                        onChanged={loadWarehouses}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              {filtered.length > 0 && (
+                <div className="p-3 border-t border-slate-100 flex flex-col md:flex-row items-center gap-3 shrink-0">
+                  <p className="text-xs text-slate-500 md:mr-auto">
+                    Hiển thị {(currentPage - 1) * pageSize + 1} –{" "}
+                    {Math.min(currentPage * pageSize, filtered.length)} trong{" "}
+                    {filtered.length} kho
+                  </p>
+                  <Pagination
+                    page={currentPage}
+                    totalPages={totalPages}
+                    onChange={setPage}
+                  />
+                  <div className="flex items-center gap-2 text-xs text-slate-500">
+                    <span>Hiển thị</span>
+                    <div className="w-20">
+                      <Select
+                        value={String(pageSize)}
+                        onChange={(v) => setPageSize(Number(v))}
+                        options={[
+                          { value: "10", label: "10" },
+                          { value: "20", label: "20" },
+                          { value: "50", label: "50" },
+                        ]}
+                      />
+                    </div>
+                    <span>/ trang</span>
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-        </div>
+          </div>
         </div>
 
-        {/* Side panel — LUÔN render để animate transform vào/ra. Khi editing=null
-             thì trượt hết ra phải + width 0 (không chiếm chỗ). Giữ warehouse
-             cuối cùng để nội dung không nhảy khi đóng. */}
         <SidePanelWrapper
           open={!!editing}
           warehouse={editing ?? lastEdited}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
-            load();
+            loadWarehouses();
           }}
-          onReload={load}
+          onReload={loadWarehouses}
         />
       </div>
 
@@ -352,7 +563,10 @@ export default function NotificationsSettingsPage() {
 
 function HelpDialog({ onClose }: { onClose: () => void }) {
   return (
-    <div className="fixed inset-0 z-40 bg-slate-900/40 flex items-center justify-center p-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-40 bg-slate-900/40 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
       <div
         className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
@@ -360,48 +574,76 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
         <div className="p-4 border-b border-slate-100 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <HelpCircle className="h-4 w-4 text-slate-500" />
-            <h3 className="font-semibold text-slate-800">Hướng dẫn cấu hình Lark</h3>
+            <h3 className="font-semibold text-slate-800">
+              Hướng dẫn cấu hình Lark
+            </h3>
           </div>
-          <button onClick={onClose} className="h-8 w-8 rounded-lg text-slate-500 hover:bg-slate-100 inline-flex items-center justify-center">
+          <button
+            onClick={onClose}
+            className="h-8 w-8 rounded-lg text-slate-500 hover:bg-slate-100 inline-flex items-center justify-center"
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="p-4 overflow-y-auto space-y-3 text-sm text-slate-600">
           <div>
-            <h4 className="font-semibold text-slate-800 mb-1">Bước 1 — Tạo Custom Bot trong nhóm Lark</h4>
+            <h4 className="font-semibold text-slate-800 mb-1">
+              Bước 1 — Tạo Custom Bot trong nhóm Lark
+            </h4>
             <ol className="list-decimal ml-5 space-y-1">
               <li>Mở nhóm Lark quản lý kho.</li>
-              <li>Bấm ⚙️ Settings → <strong>Group Bots</strong> hoặc <strong>Add-ons → Bots</strong>.</li>
-              <li>Bấm <strong>Add Bot</strong> → chọn <strong>Custom Bot</strong>.</li>
-              <li>Đặt tên (VD: <em>Betacom Cảnh báo đơn lỗi</em>).</li>
+              <li>
+                Bấm ⚙️ Settings → <strong>Group Bots</strong> hoặc{" "}
+                <strong>Add-ons → Bots</strong>.
+              </li>
+              <li>
+                Bấm <strong>Add Bot</strong> → chọn <strong>Custom Bot</strong>.
+              </li>
+              <li>
+                Đặt tên (VD: <em>Betacom Cảnh báo đơn lỗi</em>).
+              </li>
               <li>Không bật "Signed request" / "IP whitelist".</li>
             </ol>
           </div>
           <div>
-            <h4 className="font-semibold text-slate-800 mb-1">Bước 2 — Dán webhook vào kho</h4>
+            <h4 className="font-semibold text-slate-800 mb-1">
+              Bước 2 — Dán webhook vào kho
+            </h4>
             <ol className="list-decimal ml-5 space-y-1">
-              <li>Copy webhook URL — dạng <code className="text-xs bg-slate-100 px-1 rounded">{LARK_WEBHOOK_PREFIX}&lt;token&gt;</code></li>
+              <li>
+                Copy webhook URL — dạng{" "}
+                <code className="text-xs bg-slate-100 px-1 rounded">
+                  {LARK_WEBHOOK_PREFIX}&lt;token&gt;
+                </code>
+              </li>
               <li>Bấm icon ✏️ Sửa của kho tương ứng.</li>
               <li>Dán URL vào ô "Webhook Lark".</li>
-              <li>Bật toggle "Trạng thái" → bấm <strong>Lưu thay đổi</strong>.</li>
+              <li>
+                Bật toggle "Trạng thái" → bấm <strong>Lưu thay đổi</strong>.
+              </li>
             </ol>
           </div>
           <div>
-            <h4 className="font-semibold text-slate-800 mb-1">Bước 3 — Test kết nối</h4>
-            <p>Sau khi lưu, bấm <strong>Kiểm tra</strong> để gửi tin test → mở nhóm Lark xem tin đã tới chưa.</p>
+            <h4 className="font-semibold text-slate-800 mb-1">
+              Bước 3 — Test kết nối
+            </h4>
+            <p>
+              Sau khi lưu, bấm <strong>Kiểm tra</strong> để gửi tin test → mở
+              nhóm Lark xem tin đã tới chưa.
+            </p>
           </div>
           <div className="text-xs text-slate-500 pt-2 border-t border-slate-100">
-            Chỉ chấp nhận host <code className="bg-slate-100 px-1 rounded">open.larksuite.com</code>. Feishu (open.feishu.cn) không được hỗ trợ.
+            Chỉ chấp nhận host{" "}
+            <code className="bg-slate-100 px-1 rounded">
+              open.larksuite.com
+            </code>
+            . Feishu (open.feishu.cn) không được hỗ trợ.
           </div>
         </div>
       </div>
     </div>
   );
 }
-
-// ============================================================================
-// Helpers
-// ============================================================================
 
 function deriveState(w: WarehouseRow): "on" | "off" | "missing" | "error" {
   if (!w.notify_lark_webhook_url) return "missing";
@@ -430,10 +672,6 @@ function maskWebhook(url: string | null): string {
     : url;
   return "•".repeat(Math.min(20, Math.max(8, token.length - 4))) + token.slice(-4);
 }
-
-// ============================================================================
-// Sub-components
-// ============================================================================
 
 function StatCard({
   variant,
@@ -519,7 +757,7 @@ function WarehouseRowView({
   const runTest = async () => {
     setTesting(true);
     try {
-      const res = await fetch(`/api/warehouses/${warehouse.id}/test-lark`, {
+      const res = await apiFetch(`/api/warehouses/${warehouse.id}/test-lark`, {
         method: "POST",
       });
       const data = await res.json();
@@ -545,7 +783,7 @@ function WarehouseRowView({
     });
     if (!ok) return;
     try {
-      const res = await fetch(`/api/warehouses/${warehouse.id}`, {
+      const res = await apiFetch(`/api/warehouses/${warehouse.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ notify_lark_webhook_url: null, notify_lark_enabled: false }),
@@ -571,7 +809,6 @@ function WarehouseRowView({
 
   return (
     <tr className={`border-t border-slate-100 hover:bg-slate-50/40 transition-colors ${bgHighlight}`}>
-      {/* Kho */}
       <td className="px-4 py-3">
         <div className="flex items-center gap-2.5">
           <div className="h-9 w-9 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
@@ -584,12 +821,10 @@ function WarehouseRowView({
         </div>
       </td>
 
-      {/* Trạng thái */}
       <td className="px-4 py-3">
         <StateBadge state={state} />
       </td>
 
-      {/* Webhook */}
       <td className="px-4 py-3">
         {warehouse.notify_lark_webhook_url ? (
           <div className="flex items-center gap-2">
@@ -612,7 +847,6 @@ function WarehouseRowView({
         )}
       </td>
 
-      {/* Kiểm tra gần nhất */}
       <td className="px-4 py-3">
         {warehouse.notify_lark_last_test_at ? (
           <div className="flex items-center gap-1.5 text-xs">
@@ -630,7 +864,6 @@ function WarehouseRowView({
         )}
       </td>
 
-      {/* Thông báo gần nhất */}
       <td className="px-4 py-3">
         {warehouse.last_notification ? (
           <div className="text-xs">
@@ -655,8 +888,6 @@ function WarehouseRowView({
         )}
       </td>
 
-      {/* Thao tác — 3 icon button inline, tooltip. Xoá disable khi chưa có
-           webhook (thay vì ẩn — layout ổn định, dễ scan). */}
       <td className="px-4 py-3 text-right whitespace-nowrap">
         <div className="inline-flex items-center gap-1">
           <button
@@ -748,9 +979,6 @@ function Pagination({
   );
 }
 
-// Wrapper luôn mount để animate. Sticky-position với chiều cao full viewport
-// tính từ top của main content. Khi open=false, dùng width=0 + translateX +
-// opacity để trượt ra phải.
 function SidePanelWrapper({
   open,
   warehouse,
@@ -823,7 +1051,6 @@ function EditWebhookPanel({
     digestWeekly !== warehouse.notify_lark_digest_weekly ||
     digestMonthly !== warehouse.notify_lark_digest_monthly;
 
-  // Reset state khi đổi kho.
   useEffect(() => {
     setWebhookUrl(warehouse.notify_lark_webhook_url ?? "");
     setEnabled(warehouse.notify_lark_enabled);
@@ -867,7 +1094,7 @@ function EditWebhookPanel({
     setErr("");
     setSaving(true);
     try {
-      const res = await fetch(`/api/warehouses/${warehouse.id}`, {
+      const res = await apiFetch(`/api/warehouses/${warehouse.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -891,7 +1118,6 @@ function EditWebhookPanel({
   };
 
   const runTest = async () => {
-    // Nếu có thay đổi chưa lưu, không cho test (test dùng webhook đã lưu).
     if (dirty) {
       toast.error("Lưu thay đổi trước khi test webhook.");
       return;
@@ -902,7 +1128,7 @@ function EditWebhookPanel({
     }
     setTesting(true);
     try {
-      const res = await fetch(`/api/warehouses/${warehouse.id}/test-lark`, { method: "POST" });
+      const res = await apiFetch(`/api/warehouses/${warehouse.id}/test-lark`, { method: "POST" });
       const data = await res.json();
       if (!res.ok || !data.ok) {
         toast.error(data.message ?? "Test webhook thất bại");
@@ -930,7 +1156,6 @@ function EditWebhookPanel({
 
   return (
     <aside className="w-[380px] h-full bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col overflow-hidden">
-      {/* Header */}
       <div className="p-4 border-b border-slate-100 flex items-center justify-between">
         <h3 className="font-semibold text-slate-800">Cấu hình kho</h3>
         <button
@@ -942,9 +1167,7 @@ function EditWebhookPanel({
         </button>
       </div>
 
-      {/* Nội dung scroll */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {/* Info kho */}
         <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
           <div className="h-11 w-11 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
             <WarehouseIcon className="h-5 w-5" />
@@ -955,7 +1178,6 @@ function EditWebhookPanel({
           </div>
         </div>
 
-        {/* Toggle trạng thái */}
         <div>
           <div className="flex items-center justify-between mb-1">
             <label className="text-sm font-medium text-slate-700">Trạng thái</label>
@@ -975,7 +1197,6 @@ function EditWebhookPanel({
           </p>
         </div>
 
-        {/* Webhook URL */}
         <div>
           <label className="text-sm font-medium text-slate-700 block mb-1">Webhook Lark</label>
           <p className="text-xs text-slate-500 mb-2">
@@ -999,7 +1220,6 @@ function EditWebhookPanel({
           </div>
         </div>
 
-        {/* Nút hàng: Hiện / Sao chép / Kiểm tra */}
         <div className="grid grid-cols-3 gap-2">
           <button
             type="button"
@@ -1037,7 +1257,6 @@ function EditWebhookPanel({
           </div>
         )}
 
-        {/* Card trạng thái test gần nhất */}
         {testStatus && (
           <div className={`rounded-xl border p-3 ${testStatus.wrapClass}`}>
             <div className="flex items-center gap-2">
@@ -1052,7 +1271,6 @@ function EditWebhookPanel({
           </div>
         )}
 
-        {/* Section digest — báo cáo tổng hợp theo nhân sự */}
         <div className="pt-3 border-t border-slate-100">
           <label className="text-sm font-medium text-slate-700 block mb-1">
             Báo cáo tổng hợp
@@ -1085,7 +1303,6 @@ function EditWebhookPanel({
           </div>
         </div>
 
-        {/* Card thông báo gần nhất */}
         {warehouse.last_notification && (
           <div className="rounded-xl border border-slate-100 bg-slate-50/50 p-3">
             <div className="flex items-start gap-2">
@@ -1103,7 +1320,6 @@ function EditWebhookPanel({
         )}
       </div>
 
-      {/* Footer sticky */}
       <div className="p-4 border-t border-slate-100 flex gap-2">
         <button
           type="button"
@@ -1126,7 +1342,6 @@ function EditWebhookPanel({
   );
 }
 
-// Derive card trạng thái test cuối — dựa vào has_recent_failure + last_test_at.
 function deriveTestStatus(w: WarehouseRow): {
   wrapClass: string;
   icon: React.ReactNode;
@@ -1154,7 +1369,6 @@ function deriveTestStatus(w: WarehouseRow): {
   };
 }
 
-// Toggle switch iOS-style (dùng cho trạng thái bật/tắt trong panel).
 function ToggleSwitch({
   checked,
   onChange,
@@ -1193,7 +1407,6 @@ function ToggleSwitch({
   );
 }
 
-// Checkbox digest — dùng ToggleSwitch layout dạng row với label + hint.
 function DigestCheckbox({
   checked,
   onChange,

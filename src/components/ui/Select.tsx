@@ -27,8 +27,10 @@ interface SelectProps {
   placeholder?: string;
   disabled?: boolean;
   className?: string;
-  /** "md" = h-10 (default, matches inputs), "sm" = h-9. */
-  size?: "sm" | "md";
+  /** "md" = h-10 (default, matches inputs), "sm" = h-9, "lg" = h-11. */
+  size?: "sm" | "md" | "lg";
+  /** Optional leading icon rendered inside the trigger, before the label. */
+  leadingIcon?: ReactNode;
   /** Optional label rendered above the trigger (used outside <Field>). */
   ariaLabel?: string;
 }
@@ -36,6 +38,7 @@ interface SelectProps {
 const SIZE_CLASS: Record<NonNullable<SelectProps["size"]>, string> = {
   sm: "h-9",
   md: "h-10",
+  lg: "h-11",
 };
 
 /**
@@ -51,6 +54,7 @@ export default function Select({
   disabled = false,
   className = "",
   size = "md",
+  leadingIcon,
   ariaLabel,
 }: SelectProps) {
   const listboxId = useId();
@@ -181,10 +185,15 @@ export default function Select({
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
         aria-label={ariaLabel}
-        className={`w-full ${SIZE_CLASS[size]} pl-3 pr-9 rounded-xl border border-slate-200 bg-white text-left text-sm text-slate-800 inline-flex items-center justify-between gap-2 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 transition-colors relative ${
+        className={`w-full ${SIZE_CLASS[size]} ${leadingIcon ? "pl-9" : "pl-3"} pr-9 rounded-xl border border-slate-200 bg-white text-left text-sm text-slate-800 inline-flex items-center justify-between gap-2 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 transition-colors relative ${
           disabled ? "opacity-60 cursor-not-allowed bg-slate-50" : "cursor-pointer"
         } ${className}`}
       >
+        {leadingIcon && (
+          <span className="absolute left-3 flex items-center text-slate-400 pointer-events-none">
+            {leadingIcon}
+          </span>
+        )}
         <span
           className={`truncate ${
             selectedOption ? "text-slate-800" : "text-slate-400"

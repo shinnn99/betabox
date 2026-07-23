@@ -138,7 +138,7 @@ Kỳ vọng: 3 row.
 
 ## Bước 4 — Bật digest cho 1 kho + test
 
-1. Mở `/dashboard/settings/notifications` → chọn kho → bấm ✏️.
+1. Mở `/dashboard/settings/warehouse-config` → chọn kho → bấm ✏️.
 2. Trong panel: tick **Báo cáo cuối ngày** → Lưu thay đổi.
 3. Đợi tới 22:00 VN hôm đó, hoặc test ngay:
 

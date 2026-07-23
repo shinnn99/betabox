@@ -39,7 +39,7 @@ Installer tự làm 4 việc phía sau:
 ## 3.1. Cấu hình thời gian lưu video (bắt buộc — làm 1 lần cho mỗi org)
 
 Trước khi giao khách sử dụng, **phải cấu hình retention** trên dashboard:
-1. Mở https://betabox.vercel.app/dashboard/settings/retention (login owner).
+1. Mở https://betabox.vercel.app/dashboard/settings/warehouse-config (login owner).
 2. Nhập số ngày giữ video (VD 45 hoặc 60), bấm **Lưu**.
 3. Agent nhận số này qua heartbeat trong ≤30 giây, cache xuống máy kho.
 

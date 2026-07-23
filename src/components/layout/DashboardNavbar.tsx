@@ -7,8 +7,6 @@ import {
   Menu,
   LogOut,
   User as UserIcon,
-  KeyRound,
-  Bell,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useSession } from "@/lib/useSession";
@@ -90,11 +88,6 @@ export default function DashboardNavbar({
       {extras}
 
       <div className="flex items-center gap-2 lg:gap-3 shrink-0">
-        <button className="relative h-9 w-9 rounded-xl border border-slate-200 hover:bg-slate-50 flex items-center justify-center">
-          <Bell className="h-[18px] w-[18px] text-slate-600" />
-          <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-red-500 ring-2 ring-white" />
-        </button>
-
         <div className="relative" ref={menuRef}>
           <button
             onClick={() => setMenuOpen((v) => !v)}
@@ -129,13 +122,6 @@ export default function DashboardNavbar({
                 className="flex items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
               >
                 <UserIcon className="h-4 w-4" /> Tài khoản
-              </Link>
-              <Link
-                href={accountHref}
-                onClick={() => setMenuOpen(false)}
-                className="flex items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
-              >
-                <KeyRound className="h-4 w-4" /> Đổi mật khẩu
               </Link>
               <div className="h-px bg-slate-100 mx-1" />
               <button
