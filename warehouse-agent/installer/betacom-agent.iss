@@ -20,9 +20,9 @@
 ; chỉnh w32time.
 
 #define AppName        "Betacom Warehouse Agent"
-#define AppVersion     "0.8.3"
+#define AppVersion     "0.8.4"
 #define AppPublisher   "Betacom"
-#define AppURL         "https://betabox.vercel.app"
+#define AppURL         "https://betabox.betacom.agency"
 #define ServiceName    "BetacomAgent"
 #define AgentExe       "betacom-agent.exe"
 
@@ -140,10 +140,10 @@ begin
     'Cấu hình Agent',
     'Nhập thông tin đăng ký agent',
     'Lấy từ Dashboard admin → Warehouse agents. Không được để trống.');
-  ConfigPage.Add('BACKEND_URL (VD: https://betabox.vercel.app):', False);
+  ConfigPage.Add('BACKEND_URL (VD: https://betabox.betacom.agency):', False);
   ConfigPage.Add('AGENT_CODE (VD: AGENT_KHO_HN_01):', False);
   ConfigPage.Add('AGENT_SECRET (secret dài, chuỗi hex):', True);
-  ConfigPage.Values[0] := 'https://betabox.vercel.app';
+  ConfigPage.Values[0] := 'https://betabox.betacom.agency';
 
   RecordingPage := CreateInputDirPage(ConfigPage.ID,
     'Thư mục lưu video',

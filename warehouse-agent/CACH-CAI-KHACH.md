@@ -5,7 +5,7 @@ Ngắn — dùng cho Hạnh/Hoàng khi giao kho khách.
 ## 1. Chuẩn bị trước khi đến kho
 
 Tạo agent trên dashboard admin:
-1. Vào https://betabox.vercel.app/dashboard (login owner).
+1. Vào https://betabox.betacom.agency/dashboard (login owner).
 2. Warehouses → chọn kho khách → Agents → **Tạo agent mới**.
 3. Chép 2 giá trị:
    - `AGENT_CODE` — dạng `AGENT_KHO_XX_01`.
@@ -24,7 +24,7 @@ Tạo agent trên dashboard admin:
 2. Click phải → **Run as administrator**.
 3. Bấm Next → chọn thư mục cài (mặc định `C:\Program Files\BetacomAgent`, giữ nguyên).
 4. Trang **Cấu hình Agent** — nhập 3 field:
-   - `BACKEND_URL`: `https://betabox.vercel.app` (giữ mặc định)
+   - `BACKEND_URL`: `https://betabox.betacom.agency` (giữ mặc định)
    - `AGENT_CODE`: dán từ bước 1.
    - `AGENT_SECRET`: dán từ bước 1.
 5. Trang **Thư mục lưu video** — chọn ổ lớn (mặc định `D:\beta_cam_recordings`).
@@ -39,7 +39,7 @@ Installer tự làm 4 việc phía sau:
 ## 3.1. Cấu hình thời gian lưu video (bắt buộc — làm 1 lần cho mỗi org)
 
 Trước khi giao khách sử dụng, **phải cấu hình retention** trên dashboard:
-1. Mở https://betabox.vercel.app/dashboard/settings/warehouse-config (login owner).
+1. Mở https://betabox.betacom.agency/dashboard/settings/warehouse-config (login owner).
 2. Nhập số ngày giữ video (VD 45 hoặc 60), bấm **Lưu**.
 3. Agent nhận số này qua heartbeat trong ≤30 giây, cache xuống máy kho.
 
@@ -50,7 +50,7 @@ Số ngày phải ≥ cửa sổ khiếu nại dài nhất của sàn khách bá
 ## 4. Verify sau khi cài
 
 Sau 30-60 giây kể từ khi installer xong:
-1. Mở https://betabox.vercel.app/dashboard/videos (login owner của org khách).
+1. Mở https://betabox.betacom.agency/dashboard/videos (login owner của org khách).
 2. **KHÔNG** thấy banner "Kho đang offline" → agent kết nối OK.
 3. **KHÔNG** thấy banner đỏ "Agent lệch giờ hệ thống" → NTP OK.
 4. Vào **Dashboard → Devices → Cameras** → thêm camera RTSP → verify preview hiện được.
