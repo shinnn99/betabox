@@ -70,19 +70,34 @@ export async function GET() {
     }
   }
 
-  // 3. Kho có failure gần đây (15 phút) → badge "Lỗi webhook".
+  // 3. Kho có failure gần đây → badge "Lỗi webhook".
+  //
+  // Rule (fix 2026-07-24): chỉ đỏ khi TIN CUỐI CÙNG (per warehouse, mọi
+  // event_type) trong 15 phút là 'failed'. Nếu sau failed có sent (VD Hạnh
+  // fix cấu hình rồi test lại thành công) → coi như đã sửa, không báo đỏ.
+  //
+  // Trước đây: chỉ cần có 1 row 'failed' trong 15p → đỏ. Kích lỗi UX khi
+  // Hạnh vừa fix xong test 2 lần thành công mà badge vẫn đỏ 15p.
   const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
-  const { data: recentFailures } = await admin
+  const { data: recentAny } = await admin
     .from("notification_logs")
-    .select("warehouse_id")
+    .select("warehouse_id, status, sent_at")
     .eq("organization_id", ctx.organizationId)
     .in("warehouse_id", whIds)
-    .eq("status", "failed")
-    .gte("sent_at", fifteenMinAgo);
+    .in("status", ["sent", "failed"])
+    .gte("sent_at", fifteenMinAgo)
+    .order("sent_at", { ascending: false });
 
+  const latestStatusByWh = new Map<string, string>();
+  for (const r of recentAny ?? []) {
+    const rr = r as { warehouse_id: string; status: string };
+    if (!latestStatusByWh.has(rr.warehouse_id)) {
+      latestStatusByWh.set(rr.warehouse_id, rr.status);
+    }
+  }
   const failedWhIds = new Set<string>();
-  for (const r of recentFailures ?? []) {
-    failedWhIds.add((r as { warehouse_id: string }).warehouse_id);
+  for (const [whId, status] of latestStatusByWh) {
+    if (status === "failed") failedWhIds.add(whId);
   }
 
   // Ghép kết quả.
