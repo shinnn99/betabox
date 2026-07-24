@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, requirePermissionStrict, isError } from "@/lib/supabase/guard";
 import { audit } from "@/lib/audit";
 
@@ -19,8 +19,15 @@ export async function GET() {
   const ctx = await requirePermission("organization.view");
   if (isError(ctx)) return ctx;
 
-  const supabase = await createClient();
-  const { data, error } = await supabase
+  // Admin client + explicit .eq('id') vì:
+  // (1) organizations không có nhánh platform-admin bypass trong RLS SELECT
+  //     policy (chỉ id = app.current_org_id()); platform admin impersonate
+  //     → app.current_org_id()=NULL → 0 row → .single() throw "Cannot coerce".
+  // (2) organizations không cover bởi getScopedClient helper (chỉ SELECT bảng
+  //     org-scoped bằng organization_id, không lookup by id).
+  // Guard requirePermission đã verify quyền tenant, ctx.organizationId từ token.
+  const admin = createAdminClient();
+  const { data, error } = await admin
     .from("organizations")
     .select("id, name, slug, logo_url, status, retention_days, created_at, updated_at")
     .eq("id", ctx.organizationId)
@@ -82,8 +89,10 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  const supabase = await createClient();
-  const { data, error } = await supabase
+  // Admin client — cùng lý do GET (organizations RLS UPDATE có nhánh platform
+  // nhưng nhất quán với GET dùng admin, tránh 2 client 2 nơi cùng file).
+  const admin = createAdminClient();
+  const { data, error } = await admin
     .from("organizations")
     .update(update)
     .eq("id", ctx.organizationId)

@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { CheckCircle2, AlertCircle, Info, X } from "lucide-react";
 
 type ToastVariant = "success" | "error" | "info";
@@ -60,12 +60,19 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     [remove]
   );
 
-  const api: ToastApi = {
-    show,
-    success: (m) => show(m, "success"),
-    error: (m) => show(m, "error"),
-    info: (m) => show(m, "info"),
-  };
+  // useMemo giữ ref api stable qua re-render — nếu không, mọi consumer dùng
+  // useToast() làm deps của useCallback/useEffect sẽ trigger loop khi Provider
+  // re-render (2026-07-24 bug: warehouse-config spam 8 toast "Cannot coerce"
+  // vì loadRetention useCallback([toast]) recreated mỗi render).
+  const api = useMemo<ToastApi>(
+    () => ({
+      show,
+      success: (m) => show(m, "success"),
+      error: (m) => show(m, "error"),
+      info: (m) => show(m, "info"),
+    }),
+    [show]
+  );
 
   return (
     <ToastCtx.Provider value={api}>
