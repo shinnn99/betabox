@@ -22,10 +22,20 @@ const SESSION_COLUMNS =
   "id, organization_id, camera_id, status, transport, segment_seconds, output_dir, started_at, stopped_at, last_heartbeat_at, error_message, created_by, created_at, updated_at";
 
 /**
- * Session đang recording thật (không phải 'stopped'/'error'/'connection_lost').
- * Dùng cho stop route để tìm session cần gửi command dừng.
+ * Session CHƯA ĐÓNG — mọi trạng thái trừ đã có `stopped_at`.
+ *
+ * Dùng riêng cho thao tác dừng. `getActiveSession` lọc cứng
+ * status='recording', nghĩa là session rơi vào 'error' hay
+ * 'connection_lost' thì không còn đường dừng qua sản phẩm: UI ẩn nút
+ * (vì cloud tin là không ghi) và API trả 409 — trong khi agent ở kho
+ * vẫn giữ desired và spawn ffmpeg mỗi 5 phút. Đó là deadlock hik_01
+ * kho Đại Kim 24/07→05/08, phải sửa DB tay mới thoát được.
+ *
+ * `stopped_at IS NULL` mới là định nghĩa đúng của "còn mở": nó là thứ
+ * agent và cloud cùng đồng ý, không phụ thuộc lần báo trạng thái cuối
+ * rơi vào nhánh nào.
  */
-export async function getActiveSession(
+export async function getOpenSessionForStop(
   organizationId: string,
   cameraId: string,
 ): Promise<RecordingSession | null> {
@@ -35,11 +45,17 @@ export async function getActiveSession(
     .select(SESSION_COLUMNS)
     .eq("organization_id", organizationId)
     .eq("camera_id", cameraId)
-    .eq("status", "recording")
+    .is("stopped_at", null)
+    .in("status", ["recording", "error", "connection_lost"])
+    // Ưu tiên session đang recording; giữa các session cùng loại lấy mới
+    // nhất. Kho có session mồ côi cũ (hik_01 có 2) thì phải nhắm đúng cái
+    // agent đang bám, không phải cái già nhất.
+    .order("status", { ascending: true }) // 'connection_lost' < 'error' < 'recording'
     .order("started_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  return (data as RecordingSession | null) ?? null;
+    .limit(10);
+  const rows = (data as RecordingSession[] | null) ?? [];
+  if (rows.length === 0) return null;
+  return rows.find((r) => r.status === "recording") ?? rows[0];
 }
 
 /**

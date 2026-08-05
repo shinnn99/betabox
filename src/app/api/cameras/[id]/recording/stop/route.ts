@@ -6,7 +6,7 @@ import {
 import { audit } from "@/lib/audit";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
-  getActiveSession,
+  getOpenSessionForStop,
   markSessionStopped,
 } from "@/lib/camera/recording-service";
 import { enqueueStopRecording } from "@/lib/agent-commands/enqueue";
@@ -35,15 +35,47 @@ export async function POST(_req: Request, { params }: RouteContext) {
   if (isError(ctx)) return ctx;
   const { id } = await params;
 
-  const session = await getActiveSession(ctx.organizationId, id);
+  const admin = createAdminClient();
+
+  // Session CÒN MỞ (stopped_at IS NULL), không chỉ status='recording'.
+  // Session 'error'/'connection_lost' vẫn phải dừng được: agent ở kho có
+  // thể đang giữ desired và spawn lại mỗi 5 phút bất kể cloud ghi gì.
+  const session = await getOpenSessionForStop(ctx.organizationId, id);
   if (!session) {
+    // Không còn gì để dừng → THÀNH CÔNG, không phải lỗi. Trả 409 ở đây
+    // biến "đã dừng rồi" thành ngõ cụt trên UI mà người dùng không hiểu
+    // phải làm gì tiếp.
     return NextResponse.json(
-      { error: "no_active_session", message: "Camera không có session đang ghi." },
-      { status: 409 },
+      { ok: true, already_stopped: true, session_id: null, command_id: null },
+      { status: 200 },
     );
   }
 
-  const admin = createAdminClient();
+  // Idempotent: đã có lệnh dừng chờ agent cho đúng camera này thì trả lại
+  // lệnh đó. Bấm nhiều lần (hoặc double-click) không được đẻ hàng đợi
+  // stop_recording trùng nhau.
+  const { data: pending } = await admin
+    .from("agent_commands")
+    .select("id")
+    .eq("organization_id", ctx.organizationId)
+    .eq("type", "stop_recording")
+    .in("status", ["pending", "taken"])
+    .eq("payload->>camera_id", id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (pending) {
+    return NextResponse.json(
+      {
+        ok: true,
+        deduplicated: true,
+        session_id: session.id,
+        command_id: pending.id,
+      },
+      { status: 202 },
+    );
+  }
+
   const { data: agent } = await admin
     .from("warehouse_agents")
     .select("id")

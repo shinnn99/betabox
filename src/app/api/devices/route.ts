@@ -134,6 +134,14 @@ export async function GET() {
     {
       is_recording: boolean;
       ui_state: "recording" | "agent_disconnected" | "stopped" | "error";
+      /**
+       * Còn session CHƯA ĐÓNG (stopped_at IS NULL) → phải cho dừng, kể cả
+       * khi ui_state là 'error'. UI không được quyết định nút Dừng chỉ bằng
+       * `is_recording`: session 'error' vẫn có thể là agent đang giữ desired
+       * và spawn ffmpeg mỗi 5 phút (deadlock hik_01 kho Đại Kim 24/07→05/08).
+       * Khớp đúng điều kiện của `getOpenSessionForStop` ở stop route.
+       */
+      can_stop: boolean;
     }
   >();
   if (cameras.length > 0) {
@@ -147,7 +155,7 @@ export async function GET() {
     const cameraIdList = cameras.map((c) => c.id);
     const { data: recSessions } = await admin
       .from("camera_recording_sessions")
-      .select("camera_id, status, started_at, last_heartbeat_at")
+      .select("camera_id, status, started_at, last_heartbeat_at, stopped_at")
       .eq("organization_id", ctx.organizationId)
       .in("camera_id", cameraIdList)
       .eq("status", "recording");
@@ -159,13 +167,29 @@ export async function GET() {
       camerasWithoutRec.length > 0
         ? await admin
             .from("camera_recording_sessions")
-            .select("camera_id, status, started_at, last_heartbeat_at")
+            .select("camera_id, status, started_at, last_heartbeat_at, stopped_at")
             .eq("organization_id", ctx.organizationId)
             .in("camera_id", camerasWithoutRec)
             .order("started_at", { ascending: false })
-        : { data: [] as Array<{ camera_id: string; status: string; started_at: string; last_heartbeat_at: string | null }> };
+        : { data: [] as Array<{ camera_id: string; status: string; started_at: string; last_heartbeat_at: string | null; stopped_at: string | null }> };
 
     const sessions = [...(recSessions ?? []), ...(otherSessions ?? [])];
+
+    // can_stop tính trên TOÀN BỘ session của camera, không chỉ row đại diện
+    // được chọn để hiển thị. Camera có thể có session mồ côi cũ còn mở
+    // trong khi row mới nhất đã 'stopped' — stop route (getOpenSessionForStop)
+    // vẫn tìm thấy và dừng được, nên UI phải hiện nút, nếu không lại lệch
+    // giữa hai bên đúng kiểu cũ.
+    const cameraIdsWithOpenSession = new Set<string>();
+    for (const s of sessions as Array<{
+      camera_id: string;
+      status: string;
+      stopped_at: string | null;
+    }>) {
+      if (s.stopped_at === null && s.status !== "stopped") {
+        cameraIdsWithOpenSession.add(s.camera_id);
+      }
+    }
 
     // Agent online gần nhất trong org — cùng cách xác định với route
     // /status. Một truy vấn đủ vì UI cần 1 kết luận per org (đang
@@ -208,6 +232,7 @@ export async function GET() {
       recordingByCameraId.set(s.camera_id, {
         is_recording: uiState === "recording",
         ui_state: uiState,
+        can_stop: cameraIdsWithOpenSession.has(s.camera_id),
       });
     }
   }

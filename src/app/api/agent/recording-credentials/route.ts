@@ -113,15 +113,26 @@ export async function POST(req: Request) {
   // Camera không thuộc org agent thì lặng lẽ bị loại, không leak "exists".
   // Khi all_active=true, bỏ qua .in() và trả về mọi camera status=active
   // của org (dùng cho probe loop mở rộng — probe cả camera chưa recording).
+  //
+  // `status='active'` áp cho CẢ HAI nhánh (2026-08-05). Trước đây nhánh
+  // camera_ids trả credential bất kể status → bấm "Tạm ngưng" trên
+  // dashboard không hề tới được agent: agent vẫn xin được credential, boot()
+  // vẫn thấy camera trong response nên giữ desired, và long-retry vẫn spawn
+  // ffmpeg mỗi 5 phút. Ca cắn thật: hik_01 kho Đại Kim bị tạm ngưng
+  // 31/07 nhưng vẫn bị thử ghi tới 05/08 (~78 lần/ngày), và người dùng
+  // KHÔNG có đường nào dừng qua UI vì cloud tin là camera không ghi.
+  //
+  // Response thiếu camera = thu hồi ý định ghi, agent phải xóa desired.
+  // Đây là hợp đồng giữa hai bên — xem `syncDesiredWithActiveCameras`
+  // và nhánh `!cred` trong long-retry ở recording-lifecycle.ts.
   let camsQuery = admin
     .from("cameras")
     .select(
       "id, camera_code, ip, rtsp_port, username, password_ciphertext, password_iv, password_tag, rtsp_path",
     )
-    .eq("organization_id", agent.organization_id);
-  if (parsed.all_active) {
-    camsQuery = camsQuery.eq("status", "active");
-  } else {
+    .eq("organization_id", agent.organization_id)
+    .eq("status", "active");
+  if (!parsed.all_active) {
     camsQuery = camsQuery.in("id", parsed.camera_ids);
   }
   const { data: cams, error: camErr } = await camsQuery;
