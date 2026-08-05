@@ -40,6 +40,28 @@ import { swallow } from "./fatal";
 // "sống", agent ghi desired, log start ok — cho đến khi rw_timeout kích
 // hoạt sau đó và ffmpeg exit → trigger respawn loop. Watchdog 20s cho
 // rw_timeout 15s dư 5s an toàn.
+/**
+ * Camera nào trong desired phải bị thu hồi, cho một lần đồng bộ với cloud.
+ *
+ * Tách riêng vì đây là luật dễ làm sai nhất của cả cơ chế và hậu quả của
+ * hai chiều sai đều nặng:
+ *   - `null` (fetch fail) mà thu hồi → kho mất mạng vài phút là xóa sạch
+ *     desired; tắt máy cuối ca xong sáng mai không camera nào ghi lại.
+ *   - `[]` (cloud thật sự trả rỗng) mà KHÔNG thu hồi → quay lại đúng bug
+ *     hik_01: tạm ngưng rồi mà agent vẫn spawn ffmpeg mỗi 5 phút.
+ *
+ * Nên: null = không biết gì, không đụng. Mảng = sự thật từ cloud, kể cả
+ * khi rỗng.
+ */
+export function computeRevokedCameraIds(
+  desiredCameraIds: string[],
+  activeCameraIds: string[] | null,
+): string[] {
+  if (activeCameraIds === null) return [];
+  const active = new Set(activeCameraIds);
+  return desiredCameraIds.filter((cid) => !active.has(cid));
+}
+
 const EARLY_EXIT_WATCHDOG_MS = 20000;
 const SHORT_RETRY_BACKOFFS_MS = [2000, 5000, 10000];
 const LONG_RETRY_INTERVAL_MS = 5 * 60 * 1000;
@@ -769,21 +791,21 @@ export class RecordingLifecycle {
    * kỳ đồng bộ kế tiếp, KỂ CẢ khi camera đang ghi bình thường, không phải
    * đợi tới long-retry hay reboot.
    *
-   * `activeCameraIds` PHẢI đến từ một response thành công. Bên gọi có
-   * trách nhiệm không gọi hàm này khi fetch ném lỗi.
+   * `null` = fetch THẤT BẠI (mạng/HMAC/5xx) → không biết gì → không thu
+   * hồi gì. Luật này ở trong `computeRevokedCameraIds` để test được.
    */
-  async syncDesiredWithActiveCameras(activeCameraIds: string[]): Promise<void> {
-    if (this.desired.size === 0) return;
-    const active = new Set(activeCameraIds);
-    const revoked: string[] = [];
-    for (const cid of Array.from(this.desired.keys())) {
-      if (!active.has(cid)) revoked.push(cid);
-    }
+  async syncDesiredWithActiveCameras(
+    activeCameraIds: string[] | null,
+  ): Promise<void> {
+    const revoked = computeRevokedCameraIds(
+      Array.from(this.desired.keys()),
+      activeCameraIds,
+    );
     if (revoked.length === 0) return;
     // Danh sách rỗng mà desired không rỗng là ca đáng ngờ (org vừa tạm
     // ngưng hết camera, hoặc endpoint lỗi trả rỗng). Vẫn thu hồi theo đúng
     // hợp đồng, nhưng log to để còn lần ra nếu là lỗi endpoint.
-    if (active.size === 0) {
+    if (activeCameraIds && activeCameraIds.length === 0) {
       console.warn(
         `[recording-lifecycle] cloud trả 0 camera active trong khi desired có ${this.desired.size} — thu hồi toàn bộ`,
       );

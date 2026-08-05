@@ -1646,15 +1646,14 @@ async function main(): Promise<void> {
     }
 
     // Thu hồi desired cho camera cloud không còn công nhận (tạm ngưng /
-    // xóa / đổi org). Bọc try riêng: lỗi ở đây không được giết probe loop.
-    if (activeCameraIds !== null) {
-      try {
-        await lifecycle.syncDesiredWithActiveCameras(activeCameraIds);
-      } catch (err) {
-        console.warn(
-          `[camera-probe] sync desired failed: ${(err as Error).message}`,
-        );
-      }
+    // xóa / đổi org). null (fetch fail) được xử lý bên trong = không thu
+    // hồi gì. Bọc try riêng: lỗi ở đây không được giết probe loop.
+    try {
+      await lifecycle.syncDesiredWithActiveCameras(activeCameraIds);
+    } catch (err) {
+      console.warn(
+        `[camera-probe] sync desired failed: ${(err as Error).message}`,
+      );
     }
 
     const localTargets = lifecycle.probeTargets();
