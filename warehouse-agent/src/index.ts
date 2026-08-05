@@ -1624,29 +1624,48 @@ async function main(): Promise<void> {
   // Nếu fetch B fail (mạng flake) → skip, dùng A một mình như cũ. Không
   // block probe loop.
   const cameraProbeTimer = setInterval(async () => {
-    const localTargets = lifecycle.probeTargets();
-    const localIds = new Set(localTargets.map((t) => t.cameraId));
-
-    let allActiveTargets: Array<{ cameraId: string; cameraCode: string; rtspUrl: string }> = [];
+    // Fetch TRƯỚC khi lấy probeTargets: response all_active vừa là nguồn B
+    // cho probe, vừa là nhịp đồng bộ desired. Camera bị tạm ngưng phải
+    // được thu hồi rồi mới tính targets, để không probe tiếp thứ vừa bỏ.
+    let activeCameraIds: string[] | null = null;
+    let activeCreds: Array<{ camera_id: string; camera_code: string; rtsp_url: string }> = [];
     try {
       const creds = await fetchAllActiveCameraCredentials({
         backendUrl: config.backendUrl,
         agentCode: config.agentCode,
         agentSecret: config.agentSecret,
       });
-      allActiveTargets = creds
-        .filter((c) => !localIds.has(c.camera_id))
-        .map((c) => ({
-          cameraId: c.camera_id,
-          cameraCode: c.camera_code,
-          rtspUrl: c.rtsp_url,
-        }));
+      activeCreds = creds;
+      // Chỉ set khi fetch THÀNH CÔNG. null = không biết gì, không thu hồi.
+      activeCameraIds = creds.map((c) => c.camera_id);
     } catch (err) {
       // Log nhưng không throw — probe local vẫn chạy.
       console.warn(
         `[camera-probe] fetch all_active failed: ${(err as Error).message}`,
       );
     }
+
+    // Thu hồi desired cho camera cloud không còn công nhận (tạm ngưng /
+    // xóa / đổi org). Bọc try riêng: lỗi ở đây không được giết probe loop.
+    if (activeCameraIds !== null) {
+      try {
+        await lifecycle.syncDesiredWithActiveCameras(activeCameraIds);
+      } catch (err) {
+        console.warn(
+          `[camera-probe] sync desired failed: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    const localTargets = lifecycle.probeTargets();
+    const localIds = new Set(localTargets.map((t) => t.cameraId));
+    const allActiveTargets = activeCreds
+      .filter((c) => !localIds.has(c.camera_id))
+      .map((c) => ({
+        cameraId: c.camera_id,
+        cameraCode: c.camera_code,
+        rtspUrl: c.rtsp_url,
+      }));
 
     const targets = [...localTargets, ...allActiveTargets];
     if (targets.length === 0) return;

@@ -659,11 +659,13 @@ export class RecordingLifecycle {
           rtspUrl: effectiveSpec.rtspUrl,
         });
       } else if (!cred) {
-        // Camera bị xóa / đổi org — không lỗi hẳn, giữ retry với spec cũ
-        // (permanent detect qua stderr sẽ dừng nếu thật sự chết).
-        console.warn(
-          `[recording-lifecycle] long-retry credentials returned no match for camera=${spec.cameraCode}`,
-        );
+        // Response OK mà thiếu camera = cloud thu hồi ý định ghi (tạm
+        // ngưng / xóa / đổi org). Trước 2026-08-05 chỗ này chỉ log warn
+        // rồi retry tiếp với spec cũ — chính là vòng lặp không tắt được
+        // của hik_01. Thu hồi hẳn và RETURN: không schedule long-retry
+        // nữa.
+        await this.revokeDesired(spec.cameraId, "long_retry_no_match");
+        return;
       }
     } catch (err) {
       console.warn(
@@ -711,6 +713,84 @@ export class RecordingLifecycle {
     // Đóng segment cuối + tháo watcher.
     await this.deps.segmentIndex.onRecordingStopped(params.cameraId);
     return { ok: true, stopped: outcome.stopped, forced: outcome.forced };
+  }
+
+  /**
+   * Thu hồi ý định ghi vì CLOUD không còn công nhận camera này — bị tạm
+   * ngưng (status != 'active'), bị xóa, hoặc đổi org.
+   *
+   * Khác `stopOne` ở chỗ động cơ, không ở chỗ hậu quả: hậu quả phải giống
+   * hệt (giết ffmpeg, xóa desired + probeSpecs + state + timer, đóng
+   * segment, báo cloud) — nếu không thì sẽ lại đẻ ra một trạng thái lệch
+   * mới, đúng thứ vừa gây deadlock hik_01.
+   *
+   * CHỈ được gọi khi request tới cloud THÀNH CÔNG mà camera vắng mặt
+   * trong response. Fetch fail (mạng, HMAC, 5xx) tuyệt đối không được coi
+   * là thu hồi — kho mất mạng vài phút mà xóa hết desired thì tắt máy cuối
+   * ca xong sáng mai không camera nào ghi lại.
+   */
+  private async revokeDesired(cameraId: string, reason: string): Promise<void> {
+    const entry = this.desired.get(cameraId);
+    const state = this.states.get(cameraId);
+    const cameraCode = state?.spec.cameraCode ?? this.probeSpecs.get(cameraId)?.cameraCode ?? cameraId;
+    console.warn(
+      `[recording-lifecycle] REVOKE desired camera=${cameraCode} reason=${reason} — cloud không còn trả camera này`,
+    );
+    if (state) {
+      state.stopped = true;
+      if (state.pendingTimer) {
+        clearTimeout(state.pendingTimer);
+        state.pendingTimer = null;
+      }
+    }
+    const outcome = await stopRecording(cameraId);
+    this.desired.delete(cameraId);
+    this.probeSpecs.delete(cameraId);
+    await this.deps.desiredStore.save(this.desired);
+    this.states.delete(cameraId);
+    // Báo cloud để session đóng hẳn (stopped_at). Không có session_id thì
+    // bỏ qua — desired local đã sạch, đó mới là thứ quyết định boot sau.
+    if (entry?.session_id) {
+      await this.reportStatus(
+        { cameraId, sessionId: entry.session_id } as RecordingSpec,
+        "stopped",
+        null,
+      );
+    }
+    await this.deps.segmentIndex.onRecordingStopped(cameraId);
+    console.warn(
+      `[recording-lifecycle] REVOKE done camera=${cameraCode} ffmpeg_stopped=${outcome.stopped} forced=${outcome.forced}`,
+    );
+  }
+
+  /**
+   * Đối chiếu desired local với danh sách camera 'active' cloud vừa trả.
+   * Gọi từ probe loop (30s/nhịp) — tức "tạm ngưng" có hiệu lực trong chu
+   * kỳ đồng bộ kế tiếp, KỂ CẢ khi camera đang ghi bình thường, không phải
+   * đợi tới long-retry hay reboot.
+   *
+   * `activeCameraIds` PHẢI đến từ một response thành công. Bên gọi có
+   * trách nhiệm không gọi hàm này khi fetch ném lỗi.
+   */
+  async syncDesiredWithActiveCameras(activeCameraIds: string[]): Promise<void> {
+    if (this.desired.size === 0) return;
+    const active = new Set(activeCameraIds);
+    const revoked: string[] = [];
+    for (const cid of Array.from(this.desired.keys())) {
+      if (!active.has(cid)) revoked.push(cid);
+    }
+    if (revoked.length === 0) return;
+    // Danh sách rỗng mà desired không rỗng là ca đáng ngờ (org vừa tạm
+    // ngưng hết camera, hoặc endpoint lỗi trả rỗng). Vẫn thu hồi theo đúng
+    // hợp đồng, nhưng log to để còn lần ra nếu là lỗi endpoint.
+    if (active.size === 0) {
+      console.warn(
+        `[recording-lifecycle] cloud trả 0 camera active trong khi desired có ${this.desired.size} — thu hồi toàn bộ`,
+      );
+    }
+    for (const cid of revoked) {
+      await this.revokeDesired(cid, "not_active_in_cloud");
+    }
   }
 
   private async reportStatus(
