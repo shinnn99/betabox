@@ -403,7 +403,8 @@ export class RecordingLifecycle {
       recordingRoot: this.deps.recordingRoot,
       spec,
       earlyExitWatchdogMs: EARLY_EXIT_WATCHDOG_MS,
-      onUnexpectedExit: (info) => this.onUnexpectedExit(info.spec, info.lastStderr),
+      onUnexpectedExit: (info) =>
+        this.onUnexpectedExit(info.spec, info.lastStderr, info.killedByWatchdog),
       pidRegistry: this.deps.pidRegistry,
     });
 
@@ -426,16 +427,33 @@ export class RecordingLifecycle {
       console.warn(
         `[recording-lifecycle] start failed camera=${spec.cameraCode} reason=${outcome.reason} kind=${kind}`,
       );
-      // Không ghi desired khi start fail. Với boot (isFreshStart=false),
-      // desired đã có sẵn — nếu vĩnh viễn thì phải xóa để lần boot sau
-      // không loop chết-lên-chết-lên.
+      // Không ghi desired khi start fail (fresh start chưa từng chạy được).
+      //
+      // KHÔNG XÓA desired vì lỗi runtime — kể cả lỗi 'permanent'.
+      //
+      // Đổi hành vi 2026-07-30, sau khi dahua_01 kho Đại Kim chết 2 lần/2
+      // ngày. `desired` là ý-định-ghi của người dùng, không phải trạng
+      // thái sức khoẻ camera. Nó tồn tại chính để agent tự dậy sau khi
+      // tắt máy cuối ca — tắt máy là hành vi BÌNH THƯỜNG của kho. Xóa nó
+      // vì một lần đọc stderr là phá đúng cơ chế phục hồi đã xây, và phá
+      // câm: không ai bấm tay thì camera không bao giờ ghi lại.
+      //
+      // Lý do cũ ("xóa để boot sau không loop chết-lên-chết-lên") không
+      // đáng đánh đổi: loop ở đây là long-retry 5 phút/lần, rẻ, và đã có
+      // 'error_prolonged' báo cloud khi vượt ngưỡng. Mất bằng chứng đắt
+      // hơn nhiều một spawn ffmpeg mỗi 5 phút.
+      //
+      // Chỉ hai đường được phép xóa desired: user bấm Dừng ghi (stopOne),
+      // và backend không còn trả camera đó (bị xóa / đổi org) — xử ở boot().
       if (kind === "permanent") {
-        this.desired.delete(spec.cameraId);
-        this.probeSpecs.delete(spec.cameraId);
-        await this.deps.desiredStore.save(this.desired);
         await this.reportStatus(spec, "error", `${outcome.reason} :: ${outcome.stderrTail.slice(-500)}`);
-        // Permanent: xóa state hẳn — không có retry nào chạy tiếp.
-        this.states.delete(spec.cameraId);
+        // Vẫn retry chậm. Giữ state + probeSpecs để long-retry và fast
+        // recovery (probe OK 2 nhịp) có chỗ bám.
+        if (!isFreshStart) {
+          this.scheduleLongRetry(spec);
+        } else {
+          this.states.delete(spec.cameraId);
+        }
       } else {
         // Transient: state PHẢI giữ để scheduleLongRetry sau này lấy
         // pendingTimer + longRetryFailCount. Xóa state ở đây (bug cũ
@@ -495,28 +513,47 @@ export class RecordingLifecycle {
     return true;
   }
 
-  private onUnexpectedExit(spec: RecordingSpec, stderrTail: string): void {
+  private onUnexpectedExit(
+    spec: RecordingSpec,
+    stderrTail: string,
+    killedByWatchdog = false,
+  ): void {
     const state = this.states.get(spec.cameraId);
     if (!state) return;
     if (state.stopped) return; // stop chủ động, không retry
-    const kind = classifyErrorFromStderr(stderrTail);
+    // Watchdog kill = hành động phục hồi của chính agent, KHÔNG phải bằng
+    // chứng camera hỏng. Ép transient để retry layer respawn — đúng như ý
+    // định đã ghi ở comment `killRecordingProcessForRestart`. Trước đây
+    // nhánh này đi qua classifyErrorFromStderr và có thể ra 'permanent' →
+    // xóa desired → camera chết im tới khi có người bấm tay (cọc
+    // dahua_01 kho Đại Kim 2026-07-29).
+    const kind: ReturnType<typeof classifyErrorFromStderr> = killedByWatchdog
+      ? "transient"
+      : classifyErrorFromStderr(stderrTail);
     console.warn(
-      `[recording-lifecycle] unexpected exit camera=${spec.cameraCode} kind=${kind} short_retry=${state.shortRetryCount}`,
+      `[recording-lifecycle] unexpected exit camera=${spec.cameraCode} kind=${kind} watchdog_kill=${killedByWatchdog} short_retry=${state.shortRetryCount}`,
     );
     if (kind === "permanent") {
-      this.desired.delete(spec.cameraId);
-      this.probeSpecs.delete(spec.cameraId);
-      swallow(this.deps.desiredStore.save(this.desired), "desiredStore.save[permanent]");
+      // GIỮ desired (xem lý do dài ở startInternal). Camera hỏng thật thì
+      // long-retry 5 phút/lần sẽ thất bại đều và 'error_prolonged' báo
+      // cloud — đắt hơn nhiều nếu im lặng bỏ cuộc rồi mất bằng chứng.
+      //
+      // Ca cắn thật 2026-07-29 17:43 kho Đại Kim: ffmpeg chết lúc tắt máy
+      // cuối ca, stderr chỉ có Non-monotonic DTS (số 2691840420 chứa
+      // "404") → classify permanent → xóa desired → sáng hôm sau bật máy
+      // agent không còn biết phải ghi dahua_01 nữa. Tắt máy cuối ca là
+      // bình thường; hệ thống phải tự dậy, đó là lý do desired tồn tại.
       swallow(
         this.reportStatus(spec, "error", `permanent :: ${stderrTail.slice(-500)}`),
         "reportStatus[permanent]",
       );
-      // Segment cuối vừa đóng — báo ended_at, tháo watcher hẳn.
+      // Segment cuối vừa đóng — báo ended_at. Giữ watcher qua respawn.
       swallow(
-        this.deps.segmentIndex.onRecordingStopped(spec.cameraId),
-        "segmentIndex.onRecordingStopped",
+        this.deps.segmentIndex.onFfmpegExitedForRespawn(spec.cameraId),
+        "segmentIndex.onFfmpegExitedForRespawn[permanent]",
       );
-      this.states.delete(spec.cameraId);
+      state.inLongRetry = true;
+      this.scheduleLongRetry(spec);
       return;
     }
     // Transient: sẽ respawn. Đóng segment ffmpeg cũ nhưng GIỮ watcher

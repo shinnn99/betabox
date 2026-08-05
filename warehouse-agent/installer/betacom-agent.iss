@@ -20,7 +20,7 @@
 ; chỉnh w32time.
 
 #define AppName        "Betacom Warehouse Agent"
-#define AppVersion     "0.8.4"
+#define AppVersion     "0.8.6"
 #define AppPublisher   "Betacom"
 #define AppURL         "https://betabox.betacom.agency"
 #define ServiceName    "BetacomAgent"
@@ -255,6 +255,27 @@ begin
   Exec('w32tm.exe', '/resync', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+// Tắt Sleep/Hibernate trên máy kho.
+//
+// Cọc 2026-07-29 (kho Đại Kim, v0.8.4): máy tự vào Sleep khi không ai đụng
+// → CẢ tiến trình agent đóng băng → ffmpeg đứng → mất trắng video khoảng
+// đó. Đo được từ cờ watchdog liveness: ngủ 19 phút, 29 phút, 50 phút,
+// 1.45h, 2.1h, 2.4h (giữa giờ làm), 14h (qua đêm), 38.9h (qua Chủ nhật).
+// Khớp chính xác từng khoảng trống file segment. Agent KHÔNG restart —
+// nên không có dấu vết nào trong log boot, rất khó thấy nếu không có cờ.
+//
+// Chỉ đụng khi cắm điện (-ac). Màn hình vẫn được phép tắt — tắt màn hình
+// không đóng băng tiến trình.
+procedure DisableSleep;
+var
+  ResultCode: Integer;
+begin
+  Exec('powercfg.exe', '/change standby-timeout-ac 0', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('powercfg.exe', '/change hibernate-timeout-ac 0', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('powercfg.exe', '/change disk-timeout-ac 0', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('powercfg.exe', '/hibernate off', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure InstallService;
 var
   Nssm, App, LogOut, LogErr: string;
@@ -351,7 +372,11 @@ begin
     '    <Enabled>true</Enabled>' + #13#10 +
     '    <Hidden>false</Hidden>' + #13#10 +
     '    <RunOnlyIfIdle>false</RunOnlyIfIdle>' + #13#10 +
-    '    <WakeToRun>false</WakeToRun>' + #13#10 +
+    // WakeToRun=true: lớp phòng thủ thứ hai cho cọc Sleep 2026-07-29.
+    // DisableSleep đã tắt sleep, nhưng nếu group policy/AV bật lại thì
+    // task 03:00 Chủ nhật vẫn phải đánh thức máy mà chạy — nếu không,
+    // cleanup không bao giờ chạy và ổ đầy âm thầm.
+    '    <WakeToRun>true</WakeToRun>' + #13#10 +
     '    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>' + #13#10 +
     '    <Priority>7</Priority>' + #13#10 +
     '  </Settings>' + #13#10 +
@@ -424,6 +449,7 @@ begin
   if CurStep = ssPostInstall then begin
     WriteEnvFile;
     ConfigureNTP;
+    DisableSleep;
     InstallService;
     InstallCleanupTask;
   end;

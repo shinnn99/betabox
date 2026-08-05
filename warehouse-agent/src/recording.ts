@@ -46,6 +46,17 @@ export interface RunningRecording {
   pid: number;
   startedAt: Date;
   lastStderr: string;
+  /**
+   * Watchdog runtime đã chủ động kill process này để respawn.
+   *
+   * Cọc 2026-07-29 (kho Đại Kim): thiếu cờ này thì `onUnexpectedExit` chỉ
+   * còn stderr để đoán, và một cú kill LÀNH (ta tự bấm) bị đọc thành
+   * "camera hỏng vĩnh viễn" → xóa desired → camera chết im cả ngày, boot
+   * sau cũng không dậy. dahua_01 chết đúng kiểu này trong khi hik_01 dính
+   * 6 lần kill y hệt mà sống cả 6 vì stderr khác. Kill là hành động của
+   * CHÍNH TA để khởi động lại — không bao giờ được coi là vĩnh viễn.
+   */
+  killedByWatchdog: boolean;
 }
 
 const runningMap = new Map<string, RunningRecording>();
@@ -81,6 +92,10 @@ export async function killRecordingProcessForRestart(
   const entry = runningMap.get(cameraId);
   if (!entry) return { stopped: false, forced: false };
   const { child } = entry;
+
+  // Đánh dấu TRƯỚC khi đụng vào process — exit handler đọc cờ này để ép
+  // nhánh transient, không đoán qua stderr.
+  entry.killedByWatchdog = true;
 
   try {
     child.stdin?.write("q\n");
@@ -193,6 +208,8 @@ export interface StartArgs {
     code: number | null;
     signal: NodeJS.Signals | null;
     lastStderr: string;
+    /** true = watchdog runtime tự kill để respawn, KHÔNG phải camera hỏng. */
+    killedByWatchdog: boolean;
   }) => void;
   /**
    * CRIT-1 (B2): PID registry để persist ffmpeg PID trên đĩa mỗi lần
@@ -329,7 +346,12 @@ export async function startRecording(args: StartArgs): Promise<StartOutcome | St
     child.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       const safe = text.split(args.spec.rtspUrl).join(maskRtspUrl(args.spec.rtspUrl));
-      lastStderr = (lastStderr + safe).slice(-STDERR_TAIL);
+      // Giữ NGUYÊN dòng gốc ra stdout để đọc log tại chỗ, nhưng lọc rác
+      // trước khi vào `lastStderr` — đây là chuỗi mà classifyErrorFromStderr
+      // sẽ đọc. Dahua bơm hàng nghìn dòng "Non-monotonic DTS; previous:
+      // 667551437, current: 667458810": toàn số 9 chữ số, đẩy hết dòng lỗi
+      // thật ra khỏi tail 8KB và có thể vô tình chứa "401"/"404".
+      lastStderr = (lastStderr + stripNoisyFfmpegLines(safe)).slice(-STDERR_TAIL);
       process.stdout.write(`[recording:${args.spec.cameraCode}] ${safe}`);
     });
 
@@ -342,9 +364,10 @@ export async function startRecording(args: StartArgs): Promise<StartOutcome | St
         return;
       }
       // Exit SAU watchdog — recording đã ổn định rồi mới chết. Snapshot
-      // stderr trước khi drop entry.
+      // stderr + cờ watchdog-kill trước khi drop entry.
       const entry = runningMap.get(cid);
       if (entry) entry.lastStderr = lastStderr;
+      const killedByWatchdog = entry?.killedByWatchdog ?? false;
       runningMap.delete(cid);
       // CRIT-1 (B2): xóa PID entry — process đã chết bình thường, không
       // cần boot recovery kill.
@@ -355,13 +378,14 @@ export async function startRecording(args: StartArgs): Promise<StartOutcome | St
         );
       }
       console.log(
-        `[recording] exit camera=${args.spec.cameraCode} pid=${child.pid} code=${code} signal=${signal ?? "-"}`,
+        `[recording] exit camera=${args.spec.cameraCode} pid=${child.pid} code=${code} signal=${signal ?? "-"} watchdog_kill=${killedByWatchdog}`,
       );
       args.onUnexpectedExit({
         spec: args.spec,
         code,
         signal: signal as NodeJS.Signals | null,
         lastStderr,
+        killedByWatchdog,
       });
     });
     child.on("error", (err: NodeJS.ErrnoException) => {
@@ -387,6 +411,7 @@ export async function startRecording(args: StartArgs): Promise<StartOutcome | St
       pid: child.pid,
       startedAt: new Date(),
       lastStderr: "",
+      killedByWatchdog: false,
     };
     runningMap.set(cid, entry);
 
@@ -662,16 +687,28 @@ export const PROBE_RECORDING_HANDOFF_MS = PROBE_TO_RECORDING_BREATHING_MS;
 // Vĩnh viễn: không retry, xóa desired. Tạm thời: retry ngắn + long-retry.
 export type ErrorKind = "transient" | "permanent";
 
+/**
+ * Các mẫu VĨNH VIỄN. Cố ý neo vào NGỮ CẢNH, không match số trần.
+ *
+ * Cọc 2026-07-29: bản cũ dùng `lower.includes("401") || includes("404") ||
+ * includes("not found")` trên 8KB stderr thô. Với camera Dahua bơm
+ * "Non-monotonic DTS; previous: 667551437, current: 667458810" liên tục,
+ * một dãy số ngẫu nhiên chứa "401"/"404" là đủ để agent kết luận camera
+ * hỏng vĩnh viễn → xóa desired → chết im cả ngày. Mã trạng thái RTSP chỉ
+ * có nghĩa khi đứng cạnh chữ, nên bắt buộc phải có ngữ cảnh đi kèm.
+ */
+const PERMANENT_PATTERNS: RegExp[] = [
+  /\b401\b\s*unauthorized/i,
+  /\b404\b\s*not\s+found/i,
+  /method\s+\w+\s+failed:\s*40[14]\b/i,
+  /server\s+returned\s+40[14]\b/i,
+  /\bunauthorized\b/i,
+  /invalid\s+data\s+found/i,
+  /could\s+not\s+find\s+codec\s+parameters/i,
+];
+
 export function classifyErrorFromStderr(stderr: string): ErrorKind {
-  const lower = stderr.toLowerCase();
-  if (
-    lower.includes("401") ||
-    lower.includes("unauthorized") ||
-    lower.includes("404") ||
-    lower.includes("not found") ||
-    lower.includes("invalid data") ||
-    lower.includes("could not find codec")
-  ) {
+  if (PERMANENT_PATTERNS.some((re) => re.test(stderr))) {
     return "permanent";
   }
   // Default: transient (mạng, host chết tạm, ffmpeg tự exit lạ...).
@@ -679,4 +716,18 @@ export function classifyErrorFromStderr(stderr: string): ErrorKind {
   // đâu đó phải tự ghi lại khi mạng về, không thể coi mặc định là
   // vĩnh viễn.
   return "transient";
+}
+
+/**
+ * Bỏ các dòng ffmpeg lặp vô hại trước khi đưa vào tail dùng để phân loại
+ * lỗi. Hai tác dụng: (1) tail 8KB giữ được dòng lỗi THẬT thay vì bị số DTS
+ * đẩy ra ngoài, (2) không còn số 9 chữ số để match nhầm mã trạng thái.
+ * Log ra stdout vẫn giữ nguyên đầy đủ.
+ */
+const NOISY_FFMPEG_LINE = /Non-monotonic DTS|Timestamps are unset in a packet|Last message repeated/i;
+
+export function stripNoisyFfmpegLines(text: string): string {
+  if (!NOISY_FFMPEG_LINE.test(text)) return text;
+  const kept = text.split("\n").filter((line) => !NOISY_FFMPEG_LINE.test(line));
+  return kept.length > 0 ? kept.join("\n") : "";
 }
