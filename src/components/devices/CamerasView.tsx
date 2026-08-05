@@ -605,7 +605,7 @@ function ManualForm({
       {mode === "edit" && (
         <Field
           label="Trạng thái"
-          hint="Tạm ngưng = agent không probe, không cho Bắt đầu ghi."
+          hint="Tạm ngưng = agent dừng ghi camera này trong vòng ~30 giây, không probe, không cho Bắt đầu ghi."
         >
           <Select
             value={form.status}

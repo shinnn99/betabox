@@ -65,6 +65,8 @@ interface CameraDevice extends Camera {
   recording: {
     is_recording: boolean;
     ui_state: "recording" | "agent_disconnected" | "stopped" | "error";
+    /** Còn session chưa đóng → cho phép Dừng ghi, kể cả ui_state='error'. */
+    can_stop: boolean;
   } | null;
   camera_online_state: "online" | "offline" | "warehouse_disconnected" | "not_probed";
 }
@@ -646,9 +648,11 @@ function DevicesPage() {
                           recBusy={!!recBusy[d.id]}
                           onToggleRecording={() => {
                             if (d.kind !== "camera") return;
+                            // can_stop, KHÔNG phải is_recording: session
+                            // 'error' còn mở vẫn phải đi nhánh stop.
                             toggleRecording(
                               d,
-                              d.recording?.is_recording ? "stop" : "start",
+                              d.recording?.can_stop ? "stop" : "start",
                             );
                           }}
                           onTestConnection={() => setTestingCameraId(d.id)}
@@ -1636,6 +1640,11 @@ function DeviceActionMenu({
 
   const isCamera = device.kind === "camera";
   const isRecording = isCamera && device.recording?.is_recording;
+  // Nút dừng bám vào "còn session chưa đóng", không bám vào "cloud thấy
+  // đang ghi". Camera tạm ngưng / offline / session 'error' mà agent vẫn
+  // giữ desired đều phải dừng được — nếu không thì người dùng mất quyền
+  // điều khiển qua sản phẩm và chỉ còn đường sửa DB tay.
+  const canStop = isCamera && !!device.recording?.can_stop;
   // Chặn "Bắt đầu ghi" khi agent kho hoặc camera không sẵn sàng: enqueue
   // vẫn được nhưng người dùng tưởng đã ghi mà thực tế chưa. Sản phẩm bằng
   // chứng — thà chặn cứng buộc user Test kết nối trước còn hơn Start vào
@@ -1647,10 +1656,13 @@ function DeviceActionMenu({
   // Camera phải Online mới cho Start. offline / not_probed / warehouse_disconnected
   // đều chặn. Đang recording thì cho Stop bất kể trạng thái.
   const cameraOnline = isCamera && device.camera_online_state === "online";
+  // Dừng: luôn cho phép khi còn session mở (kể cả camera Offline / tạm
+  // ngưng / agent mất kết nối — agent lên lại sẽ nhận command).
+  // Bắt đầu: giữ nguyên điều kiện chặt như cũ.
   const canRecord =
     isCamera &&
-    device.status === "active" &&
-    (isRecording || (agentOnline && cameraOnline));
+    (canStop ||
+      (device.status === "active" && (isRecording || (agentOnline && cameraOnline))));
 
   const run = (fn: () => void) => {
     onClose();
@@ -1680,7 +1692,7 @@ function DeviceActionMenu({
                 onClick={() => run(onToggleRecording)}
                 disabled={recBusy || !canRecord}
                 className={`w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed ${
-                  isRecording ? "text-rose-600" : "text-emerald-600"
+                  canStop ? "text-rose-600" : "text-emerald-600"
                 }`}
                 title={
                   !canRecord
@@ -1696,11 +1708,11 @@ function DeviceActionMenu({
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
                   <Circle
-                    className={`h-3.5 w-3.5 ${isRecording ? "fill-current" : ""}`}
+                    className={`h-3.5 w-3.5 ${canStop ? "fill-current" : ""}`}
                   />
                 )}
                 <span className="font-semibold">
-                  {isRecording ? "Dừng ghi" : "Bắt đầu ghi"}
+                  {canStop ? "Dừng ghi" : "Bắt đầu ghi"}
                 </span>
               </button>
               <button
