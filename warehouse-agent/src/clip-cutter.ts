@@ -361,6 +361,62 @@ export async function checkSegmentsExist(params: {
 }
 
 /**
+ * Sidecar nguồn clip — `<pe_id>.sources.json` cạnh `<pe_id>.mp4`.
+ *
+ * CHƯA CÓ AI ĐỌC. Ghi từ 2026-08-06 để disk guard v2 sau này phân biệt được
+ * hai chế độ clip mà KHÔNG phải đoán theo tuổi file:
+ *   - còn segment nguồn trên đĩa → clip là cache, xoá lại cắt được;
+ *   - hết segment nguồn → clip là BẢN DUY NHẤT (bucket đã evict sau 72h),
+ *     không được xoá.
+ *
+ * Vì sao ghi ngay bây giờ dù chưa dùng: sidecar chỉ áp dụng cho clip cắt SAU
+ * khi nó được ship. Để tới lúc làm v2 mới thêm thì v2 ra đời với vùng mù đúng
+ * bằng khoảng thời gian chờ — mọi clip cũ vẫn phải xử lý như bản cuối. Ghi
+ * sớm thì tới lúc đó đã có sẵn nhiều tháng dữ liệu.
+ *
+ * Ghi LỖI KHÔNG ĐƯỢC làm hỏng lượt cắt: caller bọc catch. Thiếu sidecar =
+ * v2 coi như không biết nguồn = xử lý bảo thủ (không xoá), đúng hướng an toàn.
+ */
+export const CLIP_SOURCES_SUFFIX = ".sources.json";
+
+export interface ClipSourcesSidecar {
+  clip_id: string;
+  packing_event_id: string;
+  camera_id: string;
+  /** Dải thời gian clip phủ (theo yêu cầu cắt). */
+  target_start: string;
+  target_end: string;
+  /** Đường dẫn segment nguồn, tương đối với recordingRoot. */
+  source_files: string[];
+  written_at: string;
+}
+
+export async function writeClipSourcesSidecar(params: {
+  clipsDir: string;
+  packingEventId: string;
+  clipId: string;
+  cameraId: string;
+  targetStart: string;
+  targetEnd: string;
+  sourceFiles: string[];
+}): Promise<void> {
+  const fs = await import("node:fs/promises");
+  const content: ClipSourcesSidecar = {
+    clip_id: params.clipId,
+    packing_event_id: params.packingEventId,
+    camera_id: params.cameraId,
+    target_start: params.targetStart,
+    target_end: params.targetEnd,
+    source_files: params.sourceFiles,
+    written_at: new Date().toISOString(),
+  };
+  const dest = `${params.clipsDir}/${params.packingEventId}${CLIP_SOURCES_SUFFIX}`;
+  const tmp = `${dest}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(content, null, 2), "utf8");
+  await fs.rename(tmp, dest);
+}
+
+/**
  * Boot cleanup (S10 safe-retry 2026-07-06).
  *
  * Xử 3 loại file tồn đọng trong _clips:

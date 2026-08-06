@@ -42,6 +42,7 @@ import {
   isBrowserSafeCodec,
   probeDurationSeconds,
   probeFileVideoCodec,
+  writeClipSourcesSidecar,
   type CutSegmentInput,
 } from "./clip-cutter";
 import { CLIPS_SUBDIR, probeCodec, testCameraConnection } from "./recording";
@@ -951,6 +952,22 @@ async function main(): Promise<void> {
       if (hadBak) {
         await fsp.unlink(bakAbs).catch(() => {});
       }
+
+      // Sidecar nguồn: chưa ai đọc, ghi cho disk guard v2 (xem clip-cutter.ts).
+      // Không được làm hỏng lượt cắt — nuốt lỗi, chỉ warn.
+      await writeClipSourcesSidecar({
+        clipsDir: resolve(recordingRoot, CLIPS_SUBDIR),
+        packingEventId: p.packing_event_id,
+        clipId: p.clip_id,
+        cameraId: p.camera_id,
+        targetStart: p.target_start,
+        targetEnd: p.target_end,
+        sourceFiles: p.segments.map((s) => s.file_path),
+      }).catch((err) => {
+        console.warn(
+          `[clip-cutter] ghi sidecar nguồn thất bại pe=${p.packing_event_id}: ${(err as Error).message}`,
+        );
+      });
 
       console.log(
         `[clip-cutter] promoted clip=${p.clip_id} pe=${p.packing_event_id} ` +
