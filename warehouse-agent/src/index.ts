@@ -64,6 +64,7 @@ import {
 import { callBootDeclare } from "./boot-declare";
 import { FfmpegRuntimeWatchdog } from "./ffmpeg-runtime-watchdog";
 import { DiskGuard } from "./disk-guard";
+import { CleanupLogRelay } from "./cleanup-log-relay";
 import { listActiveRecordings } from "./recording";
 import {
   verifyStaleMarker,
@@ -1347,6 +1348,7 @@ async function main(): Promise<void> {
   // ping() đầu tiên có thể gọi khi watchdog chưa sẵn — dùng `?.` an toàn.
   let runtimeWatchdog: FfmpegRuntimeWatchdog | undefined;
   let diskGuard: DiskGuard | undefined;
+  let cleanupLogRelay: CleanupLogRelay | undefined;
 
   // Heartbeat so the backend dashboard knows the agent is alive.
   // sendHeartbeat đã retry 3 lần với backoff — chỉ đến đây khi tất cả
@@ -1674,6 +1676,16 @@ async function main(): Promise<void> {
   }
   diskGuard.start();
 
+  // Phát lại log cleanup-segments.ps1 lên cloud + báo động khi nó im lặng.
+  // Script ghi log ra file cục bộ và không ai chuyển đi đâu; agent đọc hộ
+  // rồi phát qua console.warn/error (remote-logger đẩy lên agent_log_events).
+  // Đường log dùng cùng quy ước process.cwd() với retention-cache.json.
+  cleanupLogRelay = new CleanupLogRelay({
+    logPath: resolve(process.cwd(), "logs", "cleanup-segments.log"),
+    statePath: resolve(dataDir, "cleanup-log-offset.json"),
+  });
+  cleanupLogRelay.start();
+
   // Camera probe (mở rộng):
   //   Nguồn A — lifecycle.probeTargets(): camera đang recording hoặc đang
   //     long-retry vì tắt vật lý (giữ nguyên hành vi cũ).
@@ -1796,6 +1808,7 @@ async function main(): Promise<void> {
     clearInterval(cameraProbeTimer);
     runtimeWatchdog?.stop();
     diskGuard?.stop();
+    cleanupLogRelay?.stop();
     for (const s of sessions.values()) s.stop();
 
     const SHUTDOWN_TIMEOUT_MS = 4500;
