@@ -620,6 +620,7 @@ export class DiskGuard {
 
     let deletedTotal = 0;
     let lockedTotal = 0;
+    let firstLockError: string | null = null;
     let freedTotal = 0;
     let oldestDeletedMs: number | null = null;
     let newestDeletedMs: number | null = null;
@@ -649,8 +650,14 @@ export class DiskGuard {
           // EBUSY/EPERM trên Windows = file còn handle (ffmpeg đang ghi,
           // antivirus đang quét). KHÔNG phải lỗi guard, nhưng nếu CẢ LÔ đều
           // khoá thì đó là tín hiệu khác — bắt ở kiểm tra freed bên dưới.
+          //
+          // Giữ lý do ĐẦU TIÊN để log một lần ở tổng kết: "khoá N file" mà
+          // không nói vì sao thì ở kho khách không chẩn được. Chỉ một dòng,
+          // không phải mỗi file (một lô khoá cả 20 thì 20 dòng là ngập).
           lockedTotal++;
-          void err;
+          // Message của Node đã mở đầu bằng chính mã lỗi ("EBUSY: resource
+          // busy or locked, unlink '...'") nên không ghép thêm code vào nữa.
+          if (firstLockError === null) firstLockError = (err as Error).message;
         }
       }
 
@@ -691,7 +698,8 @@ export class DiskGuard {
       `[disk-guard] DỌN XONG: xoá ${deletedTotal} file ` +
         `(${fmtGb(freedTotal)}GB, ${daysSpan} ngày dữ liệu` +
         `${oldestDeletedMs !== null ? `, từ ${new Date(oldestDeletedMs).toISOString().slice(0, 10)}` : ""}` +
-        `), khoá ${lockedTotal} file, free=${fmtGb(prevFree)}GB`,
+        `), khoá ${lockedTotal} file, free=${fmtGb(prevFree)}GB` +
+        (firstLockError !== null ? ` — lý do đầu tiên: ${firstLockError}` : ""),
     );
 
     if (
