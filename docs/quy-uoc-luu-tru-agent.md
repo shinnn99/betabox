@@ -138,7 +138,27 @@ báo động về file bị khoá phải theo **tỷ lệ** chứ không theo s�
 file khoá ở rìa mới nhất là đúng thiết kế; phần lớn lô bị khoá mới là dấu hiệu
 có thứ khác đang giữ file (Defender, tiến trình sao lưu).
 
-### 4.3. Giả định về thời gian trong môi trường thật luôn thô hơn trong đầu
+### 4.3. Cây giả kiểm LUẬT, cây thật kiểm GIẢ ĐỊNH
+
+Ba lỗi im lặng trong cùng một đợt (2026-08-06) đều **chỉ lộ ra khi chạy trên
+dữ liệu thật có rác thật**, không cái nào bị cây giả bắt:
+
+| Lỗi | Cây giả nói gì | Cây thật nói gì |
+|---|---|---|
+| `cleanup-segments.ps1` quét thư mục lạ | (phải cố ý dựng `logs/` mới thấy) | `logs/` mất 2 file `.mp4` |
+| `measureRate` trả `null` khi không cam nào ghi | không có khái niệm "đang ghi" | cả 2 tầng ngưỡng tự tắt |
+| Thư mục ngày mới nhất RỖNG | cây dựng ra luôn có file | `cam_02`, `CAM_HONG_TEST` đều rỗng |
+
+Lý do: cây giả được dựng từ **hiểu biết hiện tại** về cấu trúc, nên nó chỉ
+kiểm được LUẬT mình đã nghĩ ra. Còn cây thật mang theo lịch sử — thư mục còn
+lại sau khi dọn, camera đã gỡ, file lỡ tay, cấu hình cũ — nên nó kiểm được
+GIẢ ĐỊNH mình không biết là mình đang đặt.
+
+Quy tắc: mọi thứ quét cây segment phải chạy **ít nhất một lần trên cây thật**
+trước khi giao khách, và chạy ở chế độ quan sát (`-WhatIf` / `--disk-guard-dry-run`)
+để không phải trả giá cho lần đầu.
+
+### 4.4. Giả định về thời gian trong môi trường thật luôn thô hơn trong đầu
 
 - Granularity timer Windows ~15,6ms: test nào dựa vào `setTimeout` dưới ~20ms
   đều không đáng tin (đã làm nhấp nháy test coalesce của `SerializedWriter`).
