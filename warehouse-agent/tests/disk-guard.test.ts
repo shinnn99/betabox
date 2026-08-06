@@ -301,6 +301,77 @@ test("tick: ổ còn nhiều chỗ + không đo được tốc độ → không 
   }
 });
 
+// ============================================================================
+// dryRun — quan sát mà không đụng byte nào
+// ============================================================================
+
+test("dryRun: KHÔNG xoá gì, kể cả khi đang ở mức hành động", async () => {
+  const root = await makeRoot();
+  try {
+    const now = Date.now();
+    const old = await makeSegment(root, "CAM1", now - 30 * DAY_MS, "a.mp4");
+    const guard = forcedActionGuard(root);
+
+    const r = await guard.dryRun();
+
+    assert.equal(existsSync(old), true, "dryRun không được xoá file nào");
+    assert.equal(r.candidateCount, 1);
+    assert.equal(r.level, "action", "vẫn phải báo đúng mức hiện tại");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("dryRun: báo dải ngày + tách theo camera + dung lượng", async () => {
+  const root = await makeRoot();
+  try {
+    const now = Date.now();
+    await makeSegment(root, "CAM1", now - 30 * DAY_MS, "a.mp4", 2048);
+    await makeSegment(root, "CAM1", now - 20 * DAY_MS, "b.mp4", 2048);
+    await makeSegment(root, "CAM2", now - 25 * DAY_MS, "c.mp4", 1024);
+    await makeSegment(root, "CAM2", now - 1 * DAY_MS, "trong-san.mp4", 1024);
+
+    const r = await forcedActionGuard(root).dryRun();
+
+    assert.equal(r.candidateCount, 3, "file trong sàn không được tính");
+    assert.equal(r.candidateBytes, 2048 + 2048 + 1024);
+    const cam1 = r.byCamera.find((c) => c.cameraCode === "CAM1");
+    const cam2 = r.byCamera.find((c) => c.cameraCode === "CAM2");
+    assert.equal(cam1?.files, 2);
+    assert.equal(cam2?.files, 1);
+    // Dải ngày: cũ nhất 30 ngày trước, mới nhất trong danh sách là 20 ngày.
+    assert.ok(r.oldestDayIso! < r.newestDayIso!, "dải ngày phải tăng dần");
+    assert.ok(r.walkMs >= 0 && r.statMs >= 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("dryRun: wouldHitFloor = CÓ khi dọn hết vẫn không đủ (ổ quá nhỏ)", async () => {
+  const root = await makeRoot();
+  try {
+    await makeSegment(root, "CAM1", Date.now() - 30 * DAY_MS, "a.mp4", 1);
+    // Sàn tuyệt đối khổng lồ → mục tiêu không bao giờ đạt được bằng cách xoá.
+    const r = await forcedActionGuard(root).dryRun();
+    assert.equal(r.wouldHitFloor, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("dryRun: cây không có ứng viên → 0 file, không dải ngày, không ném lỗi", async () => {
+  const root = await makeRoot();
+  try {
+    await makeSegment(root, "CAM1", Date.now() - 1 * DAY_MS, "fresh.mp4");
+    const r = await forcedActionGuard(root).dryRun();
+    assert.equal(r.candidateCount, 0);
+    assert.equal(r.oldestDayIso, null);
+    assert.equal(r.newestDayIso, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("tick: cây rỗng ngoài sàn → chạm sàn, không ném lỗi", async () => {
   const root = await makeRoot();
   try {

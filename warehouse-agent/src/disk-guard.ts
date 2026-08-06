@@ -72,6 +72,29 @@ export interface GuardStatus {
   measuredAtMs: number;
 }
 
+/** Kết quả chạy thử — đủ để trả lời "ngưỡng đặt đúng chưa" lúc onboarding. */
+export interface DryRunReport {
+  level: GuardLevel;
+  freeBytes: number;
+  totalBytes: number;
+  bytesPerRecordingHour: number | null;
+  /** Dung lượng trống quy ra GIỜ GHI — GB trống không nói được ngưỡng đúng/sai. */
+  recordingHoursRemaining: number | null;
+  clipsBytes: number | null;
+  candidateCount: number;
+  candidateBytes: number;
+  /** Dải ngày sẽ bị đụng — để người xem đối chiếu với thứ không muốn mất. */
+  oldestDayIso: string | null;
+  newestDayIso: string | null;
+  byCamera: Array<{ cameraCode: string; files: number; bytes: number }>;
+  /** true = dọn hết ứng viên vẫn chưa đủ ⇒ ổ quá nhỏ so với retention. */
+  wouldHitFloor: boolean;
+  hoursAfterReclaim: number | null;
+  walkMs: number;
+  statMs: number;
+  floorDays: number;
+}
+
 export interface SegmentCandidate {
   absPath: string;
   /** ms — suy từ thư mục YYYY/MM/DD, không phải mtime (rẻ hơn, đủ để xếp thứ tự). */
@@ -117,6 +140,11 @@ export interface DiskGuardOptions {
   maxDeletePerTick?: number;
   /** Timeout cho mỗi thao tác fs (ổ SMB/USB lag). Mặc định 5000ms. */
   fsTimeoutMs?: number;
+  /**
+   * segmentSeconds giả định khi phải suy camera từ ổ (chạy thử qua CLI, hoặc
+   * kho tạm dừng ghi). Mặc định 60 — khớp RECORDING_SEGMENT_SECONDS mặc định.
+   */
+  assumedSegmentSeconds?: number;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -295,6 +323,10 @@ function fmtGb(bytes: number): string {
   return (bytes / GIB).toFixed(1);
 }
 
+function isoDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
 // ============================================================================
 // DiskGuard
 // ============================================================================
@@ -318,6 +350,7 @@ export class DiskGuard {
   private readonly batchSize: number;
   private readonly maxDeletePerTick: number;
   private readonly fsTimeoutMs: number;
+  private readonly assumedSegmentSeconds: number;
 
   constructor(
     private readonly deps: DiskGuardDeps,
@@ -332,6 +365,7 @@ export class DiskGuard {
     this.batchSize = opts.batchSize ?? 20;
     this.maxDeletePerTick = opts.maxDeletePerTick ?? 2000;
     this.fsTimeoutMs = opts.fsTimeoutMs ?? 5000;
+    this.assumedSegmentSeconds = opts.assumedSegmentSeconds ?? 60;
   }
 
   start(): void {
@@ -364,6 +398,117 @@ export class DiskGuard {
   /** Trạng thái đo được gần nhất — cho heartbeat sau này (đợt 31/8). */
   getStatus(): GuardStatus | null {
     return this.lastStatus;
+  }
+
+  /**
+   * Chạy thử: đi HẾT đường chọn ứng viên rồi dừng trước `unlink`.
+   *
+   * Vì sao là một PHƯƠNG THỨC RIÊNG chứ không phải cờ khởi động: cờ có thể
+   * bị bật ở kho khách rồi quên, và guard sẽ nằm im vĩnh viễn trong khi nhìn
+   * vẫn như đang chạy — đúng dạng lỗi im lặng mà cả lớp này sinh ra để tránh.
+   * Ở đây không có đường nào từ dryRun() rơi vào nhánh xoá: nó không gọi
+   * `reclaim`, và `tick()` không biết dryRun tồn tại.
+   *
+   * Dùng cho:
+   *   - Onboarding kho mới: mỗi kho có ổ khác, số camera khác, tốc độ ăn đĩa
+   *     khác. "Ngưỡng đặt đúng chưa" hiện chỉ có hai cách biết — chờ đủ lâu,
+   *     hoặc để nó xoá thật. Đây là cách thứ ba, chạy được ngay ngày lắp máy.
+   *   - Đo thời gian duyệt cây thật mà không mất một byte nào.
+   */
+  async dryRun(): Promise<DryRunReport> {
+    const status = await this.measure();
+
+    const walkStart = Date.now();
+    const raw = await this.listSegmentCandidates();
+    const walkMs = Date.now() - walkStart;
+
+    const ordered = orderSegmentCandidates(raw, {
+      nowMs: Date.now(),
+      floorDays: this.floorDays,
+    });
+
+    const statStart = Date.now();
+    const byCamera = new Map<string, { files: number; bytes: number }>();
+    let candidateBytes = 0;
+    for (const c of ordered) {
+      let size = 0;
+      try {
+        const st = await withTimeout(fs.stat(c.absPath), this.fsTimeoutMs, "stat");
+        size = st.size;
+      } catch {
+        /* file vừa biến mất — bỏ qua, vẫn đếm vào số file */
+      }
+      candidateBytes += size;
+      const cur = byCamera.get(c.cameraCode) ?? { files: 0, bytes: 0 };
+      cur.files++;
+      cur.bytes += size;
+      byCamera.set(c.cameraCode, cur);
+    }
+    const statMs = Date.now() - statStart;
+
+    const targetBytes =
+      status.bytesPerRecordingHour === null
+        ? this.absoluteFloorBytes * 2
+        : this.stopHours * status.bytesPerRecordingHour;
+    const freeAfter = status.freeBytes + candidateBytes;
+
+    const report: DryRunReport = {
+      level: status.level,
+      freeBytes: status.freeBytes,
+      totalBytes: status.totalBytes,
+      bytesPerRecordingHour: status.bytesPerRecordingHour,
+      recordingHoursRemaining: status.recordingHoursRemaining,
+      clipsBytes: status.clipsBytes,
+      candidateCount: ordered.length,
+      candidateBytes,
+      oldestDayIso: ordered.length > 0 ? isoDay(ordered[0].dayMs) : null,
+      newestDayIso: ordered.length > 0 ? isoDay(ordered[ordered.length - 1].dayMs) : null,
+      byCamera: [...byCamera.entries()].map(([cameraCode, v]) => ({ cameraCode, ...v })),
+      // Chạm sàn ngay lần đầu = ổ quá nhỏ so với retention. Đây là vấn đề
+      // PHẦN CỨNG, không sửa được bằng cách chỉnh ngưỡng.
+      wouldHitFloor: freeAfter < targetBytes,
+      hoursAfterReclaim: computeRecordingHoursRemaining(
+        freeAfter,
+        status.bytesPerRecordingHour,
+      ),
+      walkMs,
+      statMs,
+      floorDays: this.floorDays,
+    };
+
+    this.logDryRun(report);
+    return report;
+  }
+
+  private logDryRun(r: DryRunReport): void {
+    const hours = (h: number | null) => (h === null ? "?(chưa đo được)" : `${h.toFixed(1)}h-ghi`);
+    console.log("=== disk-guard CHẠY THỬ (không xoá gì) ===");
+    console.log(
+      `  ổ: trống ${fmtGb(r.freeBytes)}GB / ${fmtGb(r.totalBytes)}GB → còn ${hours(r.recordingHoursRemaining)}` +
+        ` (mức hiện tại: ${r.level})`,
+    );
+    console.log(
+      `  tốc độ ăn đĩa: ${r.bytesPerRecordingHour === null ? "chưa đo được (không cam nào đang ghi)" : (r.bytesPerRecordingHour / 1024 ** 2).toFixed(0) + " MB mỗi giờ ghi"}`,
+    );
+    console.log(
+      `  ứng viên xoá: ${r.candidateCount} file, ${fmtGb(r.candidateBytes)}GB` +
+        (r.oldestDayIso ? `, dải ngày ${r.oldestDayIso} → ${r.newestDayIso}` : ""),
+    );
+    for (const c of r.byCamera) {
+      console.log(`    ${c.cameraCode}: ${c.files} file, ${fmtGb(c.bytes)}GB`);
+    }
+    console.log(`  sau khi dọn hết: còn ${hours(r.hoursAfterReclaim)}`);
+    console.log(
+      `  chạm sàn ${r.floorDays} ngày: ${r.wouldHitFloor ? "CÓ — ổ quá nhỏ so với retention, phải xử lý bằng phần cứng chứ không bằng ngưỡng" : "không"}`,
+    );
+    console.log(`  duyệt cây ${r.walkMs}ms, stat ứng viên ${r.statMs}ms`);
+    // Một dòng lên cloud: chạy thử là thao tác tay, không có nguy cơ ngập.
+    console.warn(
+      `[disk-guard] chạy thử: trống ${fmtGb(r.freeBytes)}GB (${hours(r.recordingHoursRemaining)}), ` +
+        `ứng viên ${r.candidateCount} file/${fmtGb(r.candidateBytes)}GB` +
+        (r.oldestDayIso ? ` dải ${r.oldestDayIso}→${r.newestDayIso}` : "") +
+        `, chạm sàn=${r.wouldHitFloor ? "CÓ" : "không"}, duyệt cây ${r.walkMs}ms`,
+    );
   }
 
   async tick(): Promise<void> {
@@ -423,15 +568,29 @@ export class DiskGuard {
    * trung bình xuống.
    */
   private async measureRate(): Promise<number | null> {
-    const cams = this.deps.getActiveCameras();
-    if (cams.length === 0) return null;
+    let cams: Array<{ cameraCode: string; segmentSeconds: number; sampleDir?: string }> =
+      this.deps.getActiveCameras();
+    if (cams.length === 0) {
+      // Không cam nào đang ghi TRONG TIẾN TRÌNH NÀY. Hai ca:
+      //   - chạy thử qua CLI (`--disk-guard-dry-run`): service đang ghi ở
+      //     tiến trình khác, tiến trình này không thấy gì;
+      //   - kho tạm dừng ghi.
+      // Cả hai đều KHÔNG có nghĩa là "đĩa không bao giờ đầy nữa". Suy tốc độ
+      // từ chính segment trên ổ: lấy thư mục ngày MỚI NHẤT của mỗi camera.
+      // Ước lượng (segmentSeconds giả định), nên chỉ dùng khi không có nguồn
+      // chính xác hơn — nhưng có ước lượng vẫn hơn không có số nào, vì không
+      // có số thì `recordingHoursRemaining` = null và mọi ngưỡng theo giờ
+      // đều tắt.
+      cams = await this.inferCamerasFromDisk();
+      if (cams.length === 0) return null;
+    }
 
     const collected: Array<{ sizeBytes: number }> = [];
     let segmentSecondsSum = 0;
     let segmentSecondsCount = 0;
 
     for (const cam of cams) {
-      const dir = this.todayDirFor(cam.cameraCode);
+      const dir = cam.sampleDir ?? this.todayDirFor(cam.cameraCode);
       const openCutoffMs = Date.now() - cam.segmentSeconds * 2000;
       let names: string[];
       try {
@@ -499,6 +658,45 @@ export class DiskGuard {
       }
     }
     return total;
+  }
+
+  /**
+   * Suy danh sách camera + thư mục mẫu từ CHÍNH CẤU TRÚC THƯ MỤC trên ổ.
+   *
+   * Dùng cùng quy ước khuôn ngày `YYYY/MM/DD` với `listSegmentCandidates` và
+   * với `cleanup-segments.ps1` — một quy ước, ba chỗ đọc. Nhờ vậy thư mục lạ
+   * (`logs/`…) không bị nhận nhầm là camera ở đây nữa.
+   *
+   * `segmentSeconds` giả định (mặc định 60) vì tiến trình này không có
+   * credentials. Sai số tuyến tính: segment thật 120s thì tốc độ ước lượng
+   * gấp đôi thực tế → guard bi quan, không lạc quan. Lệch về phía an toàn.
+   */
+  private async inferCamerasFromDisk(): Promise<
+    Array<{ cameraCode: string; segmentSeconds: number; sampleDir: string }>
+  > {
+    const out: Array<{ cameraCode: string; segmentSeconds: number; sampleDir: string }> = [];
+    for (const cam of await this.safeReaddirNames(this.deps.recordingRoot)) {
+      if (cam === CLIPS_SUBDIR) continue;
+      const camDir = path.join(this.deps.recordingRoot, cam);
+      const years = (await this.safeReaddirNames(camDir)).filter((y) => /^\d{4}$/.test(y)).sort();
+      if (years.length === 0) continue; // không phải thư mục camera
+      const y = years[years.length - 1];
+      const months = (await this.safeReaddirNames(path.join(camDir, y)))
+        .filter((m) => /^\d{2}$/.test(m))
+        .sort();
+      if (months.length === 0) continue;
+      const m = months[months.length - 1];
+      const days = (await this.safeReaddirNames(path.join(camDir, y, m)))
+        .filter((d) => /^\d{2}$/.test(d))
+        .sort();
+      if (days.length === 0) continue;
+      out.push({
+        cameraCode: cam,
+        segmentSeconds: this.assumedSegmentSeconds,
+        sampleDir: path.join(camDir, y, m, days[days.length - 1]),
+      });
+    }
+    return out;
   }
 
   private todayDirFor(cameraCode: string): string {

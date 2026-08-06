@@ -137,6 +137,32 @@ async function main(): Promise<void> {
   const pidRegistry = new PidRegistry(resolve(dataDir, "ffmpeg-pids.json"));
   const recordingRoot = resolve(process.cwd(), config.recordingDir);
 
+  // `--disk-guard-dry-run`: chạy thử disk guard rồi THOÁT. Không mở scanner,
+  // không heartbeat, không ghi hình, không xoá byte nào.
+  //
+  // Dùng lúc onboarding kho mới để trả lời "ngưỡng đặt đúng chưa" ngay ngày
+  // lắp máy — mỗi kho có ổ khác, số camera khác, tốc độ ăn đĩa khác (Đại Kim
+  // 900 MB/cam-giờ, máy dev 142). Trước đó chỉ có hai cách biết: chờ đủ lâu,
+  // hoặc để nó xoá thật.
+  //
+  // Chạy ĐƯỢC trong lúc service đang ghi: tiến trình này không thấy camera
+  // nào đang recording nên guard tự suy tốc độ từ segment trên ổ.
+  if (process.argv.includes("--disk-guard-dry-run")) {
+    const dg = new DiskGuard(
+      {
+        recordingRoot,
+        getActiveCameras: () => [],
+        isCutInFlight: () => false,
+      },
+      {
+        warnHours: config.diskGuardWarnHours,
+        actionHours: config.diskGuardActionHours,
+      },
+    );
+    await dg.dryRun();
+    return;
+  }
+
   // RECOVERY_SCAN_DAYS suy từ retention cache (nếu có). Retention là chính
   // sách nghiệp vụ (số ngày giữ segment); scan window phải ≥ retention để
   // agent boot thấy hết segment trên ổ, không có vùng file tồn tại mà DB
