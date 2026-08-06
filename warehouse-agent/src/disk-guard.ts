@@ -93,6 +93,8 @@ export interface DryRunReport {
   walkMs: number;
   statMs: number;
   floorDays: number;
+  /** true = tốc độ là ƯỚC LƯỢNG (có camera phải giả định segmentSeconds). */
+  usedAssumedSegmentSeconds: boolean;
 }
 
 export interface SegmentCandidate {
@@ -163,6 +165,9 @@ const TZ_SLACK_MS = 14 * 60 * 60 * 1000;
 
 /** Số segment gần nhất mỗi cam dùng để đo tốc độ (60s/segment → ~2 giờ ghi). */
 const RATE_SAMPLE_FILES = 120;
+
+/** Số thư mục lùi tối đa mỗi tầng khi tìm thư mục ngày còn segment. */
+const MAX_SAMPLE_DIR_PROBES = 5;
 
 /**
  * Nhắc lại giãn dần cho các trạng thái KÉO DÀI (chạm sàn, không đòi được chỗ).
@@ -327,6 +332,60 @@ function isoDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
+/** Mốc bắt đầu suy từ tên `<code>_<YYYYMMDD>_<HHMMSS>.mp4`. null nếu không khớp. */
+export function parseSegmentStartMs(name: string): number | null {
+  const m = /_(\d{8})_(\d{6})\.mp4$/i.exec(name);
+  if (!m) return null;
+  const [, d, t] = m;
+  const ms = Date.UTC(
+    Number(d.slice(0, 4)),
+    Number(d.slice(4, 6)) - 1,
+    Number(d.slice(6, 8)),
+    Number(t.slice(0, 2)),
+    Number(t.slice(2, 4)),
+    Number(t.slice(4, 6)),
+  );
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Suy `segmentSeconds` THẬT từ khoảng cách giữa các segment liên tiếp.
+ *
+ * Tốt hơn hằng số giả định: mỗi kho có thể cấu hình khác nhau, và đoán sai
+ * làm lệch TUYẾN TÍNH con số tốc độ ăn đĩa (segment thật 120s mà giả định 60
+ * thì tốc độ báo gấp đôi).
+ *
+ * Dùng TRUNG VỊ chứ không phải trung bình: cam ngừng ghi giữa ngày rồi ghi
+ * lại sẽ tạo một khoảng cách khổng lồ, trung bình bị kéo lệch còn trung vị
+ * thì không.
+ *
+ * Trả null nếu quá ít mẫu hoặc kết quả nằm ngoài khoảng hợp lý — caller quay
+ * về hằng số giả định.
+ */
+export function inferSegmentSecondsFromNames(
+  names: string[],
+  opts: { minSeconds?: number; maxSeconds?: number } = {},
+): number | null {
+  const minSeconds = opts.minSeconds ?? 5;
+  const maxSeconds = opts.maxSeconds ?? 600;
+  const starts = names
+    .map(parseSegmentStartMs)
+    .filter((v): v is number => v !== null)
+    .sort((a, b) => a - b);
+  if (starts.length < 3) return null;
+
+  const deltas: number[] = [];
+  for (let i = 1; i < starts.length; i++) {
+    const d = (starts[i] - starts[i - 1]) / 1000;
+    if (d > 0) deltas.push(d);
+  }
+  if (deltas.length === 0) return null;
+  deltas.sort((a, b) => a - b);
+  const median = deltas[Math.floor(deltas.length / 2)];
+  if (median < minSeconds || median > maxSeconds) return null;
+  return median;
+}
+
 // ============================================================================
 // DiskGuard
 // ============================================================================
@@ -351,6 +410,11 @@ export class DiskGuard {
   private readonly maxDeletePerTick: number;
   private readonly fsTimeoutMs: number;
   private readonly assumedSegmentSeconds: number;
+  /**
+   * true khi có camera phải dùng segmentSeconds GIẢ ĐỊNH (không suy được từ
+   * tên file). Chỉ để in ra — người đọc phải biết đâu là số đo, đâu là đoán.
+   */
+  private usedAssumedSegmentSeconds = false;
 
   constructor(
     private readonly deps: DiskGuardDeps,
@@ -474,6 +538,7 @@ export class DiskGuard {
       walkMs,
       statMs,
       floorDays: this.floorDays,
+      usedAssumedSegmentSeconds: this.usedAssumedSegmentSeconds,
     };
 
     this.logDryRun(report);
@@ -488,7 +553,10 @@ export class DiskGuard {
         ` (mức hiện tại: ${r.level})`,
     );
     console.log(
-      `  tốc độ ăn đĩa: ${r.bytesPerRecordingHour === null ? "chưa đo được (không cam nào đang ghi)" : (r.bytesPerRecordingHour / 1024 ** 2).toFixed(0) + " MB mỗi giờ ghi"}`,
+      `  tốc độ ăn đĩa: ${r.bytesPerRecordingHour === null ? "chưa đo được (không có segment nào để lấy mẫu)" : (r.bytesPerRecordingHour / 1024 ** 2).toFixed(0) + " MB mỗi giờ ghi"}` +
+        (r.usedAssumedSegmentSeconds
+          ? ` — CẢNH BÁO: có camera phải dùng segmentSeconds GIẢ ĐỊNH ${this.assumedSegmentSeconds}s (không suy được từ tên file), con số này là ƯỚC LƯỢNG chứ không phải số đo`
+          : " (segmentSeconds suy từ khoảng cách tên file, không giả định)"),
     );
     console.log(
       `  ứng viên xoá: ${r.candidateCount} file, ${fmtGb(r.candidateBytes)}GB` +
@@ -603,6 +671,7 @@ export class DiskGuard {
       // xếp chuỗi = sắp xếp thời gian. Mẫu gần bám sát bitrate hiện tại —
       // quan trọng vì bitrate camera có thể đổi giữa chừng (Đại Kim 170 →
       // 900 MB/cam-giờ trong 12 ngày).
+      const collectedBefore = collected.length;
       const sample = names
         .filter((n) => n.toLowerCase().endsWith(".mp4"))
         .sort()
@@ -621,8 +690,14 @@ export class DiskGuard {
           /* file vừa bị xoá/khoá — bỏ qua */
         }
       }
-      segmentSecondsSum += cam.segmentSeconds;
-      segmentSecondsCount++;
+      // CHỈ tính segmentSeconds của camera THỰC SỰ đóng góp mẫu. Camera có
+      // thư mục rỗng (vừa spawn chưa xoay segment nào, hoặc vừa dừng ghi)
+      // không có byte nào trong `collected` nhưng vẫn kéo trung bình
+      // segmentSeconds → tốc độ tính ra sai mà không dấu vết.
+      if (collected.length > collectedBefore) {
+        segmentSecondsSum += cam.segmentSeconds;
+        segmentSecondsCount++;
+      }
     }
 
     if (segmentSecondsCount === 0) return null;
@@ -680,20 +755,46 @@ export class DiskGuard {
       const camDir = path.join(this.deps.recordingRoot, cam);
       const years = (await this.safeReaddirNames(camDir)).filter((y) => /^\d{4}$/.test(y)).sort();
       if (years.length === 0) continue; // không phải thư mục camera
-      const y = years[years.length - 1];
-      const months = (await this.safeReaddirNames(path.join(camDir, y)))
-        .filter((m) => /^\d{2}$/.test(m))
-        .sort();
-      if (months.length === 0) continue;
-      const m = months[months.length - 1];
-      const days = (await this.safeReaddirNames(path.join(camDir, y, m)))
-        .filter((d) => /^\d{2}$/.test(d))
-        .sort();
-      if (days.length === 0) continue;
+      // Thư mục ngày mới nhất có thể RỖNG (di tích sau khi dọn, hoặc camera
+      // đã gỡ). Lùi dần tới thư mục ngày gần nhất THỰC SỰ CÓ segment — thư
+      // mục rỗng không cho mẫu nào, mà lại làm hỏng phép suy segmentSeconds.
+      // Verify 2026-08-06 trên máy dev: cam_02 và CAM_HONG_TEST đều có thư
+      // mục ngày mới nhất rỗng.
+      let sampleDir: string | null = null;
+      let names: string[] = [];
+      outer: for (const y of [...years].reverse().slice(0, MAX_SAMPLE_DIR_PROBES)) {
+        const months = (await this.safeReaddirNames(path.join(camDir, y)))
+          .filter((mm) => /^\d{2}$/.test(mm))
+          .sort()
+          .reverse();
+        for (const mm of months.slice(0, MAX_SAMPLE_DIR_PROBES)) {
+          const days = (await this.safeReaddirNames(path.join(camDir, y, mm)))
+            .filter((dd) => /^\d{2}$/.test(dd))
+            .sort()
+            .reverse();
+          for (const dd of days.slice(0, MAX_SAMPLE_DIR_PROBES)) {
+            const dir = path.join(camDir, y, mm, dd);
+            const found = (await this.safeReaddirNames(dir)).filter((n) =>
+              n.toLowerCase().endsWith(".mp4"),
+            );
+            if (found.length > 0) {
+              sampleDir = dir;
+              names = found;
+              break outer;
+            }
+          }
+        }
+      }
+      if (sampleDir === null) continue; // camera không còn segment nào
+
+      // Suy segmentSeconds THẬT từ khoảng cách tên file, không giả định:
+      // đoán sai làm lệch TUYẾN TÍNH con số tốc độ ăn đĩa.
+      const measured = inferSegmentSecondsFromNames(names);
+      if (measured === null) this.usedAssumedSegmentSeconds = true;
       out.push({
         cameraCode: cam,
-        segmentSeconds: this.assumedSegmentSeconds,
-        sampleDir: path.join(camDir, y, m, days[days.length - 1]),
+        segmentSeconds: measured ?? this.assumedSegmentSeconds,
+        sampleDir,
       });
     }
     return out;

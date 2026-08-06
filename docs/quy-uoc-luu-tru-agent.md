@@ -94,3 +94,54 @@ chứ không bằng cách chỉnh ngưỡng.
 `dryRun` là một **phương thức riêng**, không phải cờ khởi động: cờ có thể bị
 bật ở kho khách rồi quên, và guard sẽ nằm im vĩnh viễn trong khi nhìn vẫn như
 đang chạy.
+
+---
+
+## 4. Hai lớp lỗi đã gặp, sẽ tái xuất ở chỗ khác
+
+### 4.1. "Chưa đo được" không được mặc định thành "không sao"
+
+Ngưỡng của disk guard tính từ **tốc độ ăn đĩa đo được**. Trước 2026-08-06,
+khi không tiến trình nào đang ghi thì tốc độ = `null`, và cả tầng cảnh báo lẫn
+tầng hành động **tự tắt** — chỉ còn sàn tuyệt đối, mà sàn thì thiết kế để chặn
+guard chạy loạn, không phải để bảo vệ đĩa.
+
+Kịch bản thật: kho nghỉ Tết, camera hỏng cuối tuần, agent vừa khởi động lại.
+Guard chuyển từ chủ động sang gần như trơ, đúng lúc không ai để ý. Không lỗi,
+không cảnh báo — chỉ là một tầng bảo vệ tự tắt.
+
+Đã vá (suy tốc độ từ segment trên ổ). Nhưng lớp lỗi thì tổng quát: **bất kỳ
+ngưỡng nào tính từ một đại lượng đo được đều có trạng thái "chưa đo được", và
+mặc định của trạng thái đó phải được chọn có ý thức** chứ không để rơi vào
+`null` rồi tắt lặng lẽ.
+
+### 4.2. Bản ghi THI HÀNH không phải bản ghi KẾT QUẢ
+
+Đã gặp hai lần, ở hai hệ thống khác nhau — nên không phải bài học riêng của
+một dự án:
+
+- BetacomEdu: migration được ghi nhận là đã chạy nhưng không có tác dụng.
+- Ở đây: `Remove-Item`/`fs.unlink` có thể thất bại (file còn handle — trên
+  Windows là `EBUSY`, hành vi **lặp lại được** chứ không hi hữu) mà vẫn bị
+  đếm là "đã xoá".
+
+Cách xử lý đã áp dụng ở cả hai lớp:
+
+- `cleanup-segments.ps1` chỉ tăng `$totalDeleted` **sau khi** `Remove-Item`
+  thành công (verify: chọn 11, báo 9, thực sự mất 9).
+- `disk-guard.ts` đo lại `statfs` sau **mỗi lô** và có báo động riêng cho ca
+  "xoá được file mà không đòi được chỗ" — khác hẳn "đĩa sắp đầy", nguyên nhân
+  và cách xử lý đều khác.
+
+Hệ quả cho báo động sau này: vì `EBUSY` là bình thường ở kho đang ghi, ngưỡng
+báo động về file bị khoá phải theo **tỷ lệ** chứ không theo sự hiện diện. Vài
+file khoá ở rìa mới nhất là đúng thiết kế; phần lớn lô bị khoá mới là dấu hiệu
+có thứ khác đang giữ file (Defender, tiến trình sao lưu).
+
+### 4.3. Giả định về thời gian trong môi trường thật luôn thô hơn trong đầu
+
+- Granularity timer Windows ~15,6ms: test nào dựa vào `setTimeout` dưới ~20ms
+  đều không đáng tin (đã làm nhấp nháy test coalesce của `SerializedWriter`).
+- `LastWriteTime` của segment lệch `started_at` khoảng 60 giây (thời điểm ghi
+  **xong** so với ghi **bắt đầu**) — nên con số `-WhatIf` không bao giờ khớp
+  tuyệt đối với một truy vấn DB theo `started_at`.

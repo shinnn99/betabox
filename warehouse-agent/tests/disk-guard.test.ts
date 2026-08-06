@@ -7,6 +7,8 @@ import path from "node:path";
 import {
   DiskGuard,
   RepeatNotifier,
+  inferSegmentSecondsFromNames,
+  parseSegmentStartMs,
   classifyLevel,
   computeBytesPerRecordingHour,
   computeRecordingHoursRemaining,
@@ -153,6 +155,59 @@ test("orderSegmentCandidates: đệm múi giờ — ngày sát sàn KHÔNG bị 
     { nowMs: now, floorDays: 7 },
   );
   assert.deepEqual(out, []);
+});
+
+// ============================================================================
+// segmentSeconds suy từ tên file — thay cho hằng số giả định
+// ============================================================================
+
+test("parseSegmentStartMs: đọc mốc từ tên chuẩn, từ chối tên lạ", () => {
+  assert.equal(
+    parseSegmentStartMs("cam_01_20260806_143000.mp4"),
+    Date.UTC(2026, 7, 6, 14, 30, 0),
+  );
+  assert.equal(parseSegmentStartMs("abcdefab-cdef-4def-8def-abc.mp4"), null);
+  assert.equal(parseSegmentStartMs("cam_01_2026_1430.mp4"), null);
+});
+
+test("inferSegmentSeconds: segment 60s → 60", () => {
+  const names = ["a_20260806_100000.mp4", "a_20260806_100100.mp4", "a_20260806_100200.mp4", "a_20260806_100300.mp4"];
+  assert.equal(inferSegmentSecondsFromNames(names), 60);
+});
+
+test("inferSegmentSeconds: TRUNG VỊ nên gap giữa ngày không kéo lệch", () => {
+  // 4 segment 60s, rồi cam ngừng 5 tiếng, rồi 3 segment 60s nữa.
+  const names = [
+    "a_20260806_100000.mp4", "a_20260806_100100.mp4", "a_20260806_100200.mp4",
+    "a_20260806_150000.mp4", "a_20260806_150100.mp4", "a_20260806_150200.mp4",
+  ];
+  assert.equal(
+    inferSegmentSecondsFromNames(names),
+    60,
+    "trung bình sẽ ra ~1000s vì gap 5 tiếng; trung vị phải giữ 60",
+  );
+});
+
+test("inferSegmentSeconds: quá ít mẫu hoặc ngoài khoảng hợp lý → null", () => {
+  assert.equal(inferSegmentSecondsFromNames(["a_20260806_100000.mp4"]), null);
+  // Khoảng cách 2 tiếng — ngoài trần 600s.
+  assert.equal(
+    inferSegmentSecondsFromNames([
+      "a_20260806_100000.mp4", "a_20260806_120000.mp4", "a_20260806_140000.mp4",
+    ]),
+    null,
+  );
+});
+
+test("inferSegmentSeconds: tên không theo khuôn (clip _clips) → null", () => {
+  assert.equal(
+    inferSegmentSecondsFromNames([
+      "abcdefab-cdef-4def-8def-abcdefabcdef.mp4",
+      "bbcdefab-cdef-4def-8def-abcdefabcdef.mp4",
+      "cbcdefab-cdef-4def-8def-abcdefabcdef.mp4",
+    ]),
+    null,
+  );
 });
 
 // ============================================================================
