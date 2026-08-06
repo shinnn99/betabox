@@ -62,6 +62,7 @@ import {
 } from "./ffmpeg-marker-sweep";
 import { callBootDeclare } from "./boot-declare";
 import { FfmpegRuntimeWatchdog } from "./ffmpeg-runtime-watchdog";
+import { DiskGuard } from "./disk-guard";
 import { listActiveRecordings } from "./recording";
 import {
   verifyStaleMarker,
@@ -1328,6 +1329,7 @@ async function main(): Promise<void> {
   // capture reference. Runtime chỉ được assign sau khi tạo dưới đây, nên
   // ping() đầu tiên có thể gọi khi watchdog chưa sẵn — dùng `?.` an toàn.
   let runtimeWatchdog: FfmpegRuntimeWatchdog | undefined;
+  let diskGuard: DiskGuard | undefined;
 
   // Heartbeat so the backend dashboard knows the agent is alive.
   // sendHeartbeat đã retry 3 lần với backoff — chỉ đến đây khi tất cả
@@ -1612,6 +1614,49 @@ async function main(): Promise<void> {
   });
   runtimeWatchdog.start();
 
+  // Disk guard — tầng HÀNH ĐỘNG (cục bộ, không phụ thuộc cloud).
+  // `cleanup-segments.ps1` thi hành retention theo LỊCH (Chủ nhật hàng tuần),
+  // đĩa thì đầy theo giây. Guard đo mỗi 5' bằng statfs (không duyệt cây), và
+  // chỉ duyệt cây khi thật sự phải chọn file để xoá.
+  // Ngưỡng tính bằng GIỜ GHI, suy từ segment kho đó vừa ghi — tự hiệu chỉnh
+  // khi thêm camera hoặc camera đổi bitrate (Đại Kim đã nhảy 5,3× trong 12
+  // ngày). Sàn tuyệt đối 7 ngày: chạm sàn thì DỪNG + báo động, không xoá tiếp.
+  diskGuard = new DiskGuard({
+    recordingRoot,
+    getActiveCameras: () =>
+      listActiveRecordings().map((r) => ({
+        cameraCode: r.spec.cameraCode,
+        segmentSeconds: r.spec.segmentSeconds,
+      })),
+    // Đang cắt clip thì hoãn: job cắt có thể đọc segment cũ bất kỳ. Ở hiện
+    // trạng (bucket TTL 72h nên hầu hết clip phải cắt lại từ segment) đây
+    // không phải ca hiếm.
+    isCutInFlight: () => encodeGate.isBusy(),
+  }, {
+    checkIntervalMs: config.diskGuardCheckIntervalMs,
+    warnHours: config.diskGuardWarnHours,
+    actionHours: config.diskGuardActionHours,
+  });
+  // Tự tố giác: env ngưỡng đi theo binary tới mọi máy khách và có thể bị đặt
+  // nhầm ở đó. Blast radius đã bị sàn 7 ngày chặn (tệ nhất là xoá xuống sàn,
+  // không xoá sạch), nhưng rủi ro im lặng thì phải biến thành rủi ro nhìn
+  // thấy được: console.error đi thẳng lên `agent_log_events`, nên nếu dòng
+  // này xuất hiện ở máy khách thì thấy ngay, không phải đi kiểm từng máy.
+  const forcedThresholdEnv = [
+    "DISK_GUARD_WARN_HOURS",
+    "DISK_GUARD_ACTION_HOURS",
+    "DISK_GUARD_CHECK_INTERVAL_MS",
+  ].filter((k) => process.env[k] !== undefined && process.env[k] !== "");
+  if (forcedThresholdEnv.length > 0) {
+    console.error(
+      `[disk-guard] NGƯỠNG ĐANG BỊ ÉP THỦ CÔNG qua env: ` +
+        forcedThresholdEnv.map((k) => `${k}=${process.env[k]}`).join(", ") +
+        `. Đây là cấu hình để VERIFY trên máy dev — nếu thấy dòng này trên ` +
+        `máy khách thì gỡ khỏi .env và restart service.`,
+    );
+  }
+  diskGuard.start();
+
   // Camera probe (mở rộng):
   //   Nguồn A — lifecycle.probeTargets(): camera đang recording hoặc đang
   //     long-retry vì tắt vật lý (giữ nguyên hành vi cũ).
@@ -1733,6 +1778,7 @@ async function main(): Promise<void> {
     clearInterval(pollTimer);
     clearInterval(cameraProbeTimer);
     runtimeWatchdog?.stop();
+    diskGuard?.stop();
     for (const s of sessions.values()) s.stop();
 
     const SHUTDOWN_TIMEOUT_MS = 4500;
