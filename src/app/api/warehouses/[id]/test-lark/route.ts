@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermissionStrict, isError } from "@/lib/supabase/guard";
 import { sendLarkWebhook, buildLarkCardPayload } from "@/lib/lark/client";
+import { formatVnDateTime } from "@/lib/time/vietnam";
 
 export const runtime = "nodejs";
 
@@ -57,7 +58,9 @@ export async function POST(_req: Request, { params }: RouteContext) {
   const cardPayload = buildLarkCardPayload({
     title: `[${wh.name}] Test kết nối`,
     bodyLines: [
-      "**Thời điểm:** " + now.toLocaleString("vi-VN"),
+      // Giờ VN — toLocaleString("vi-VN") chỉ đổi ĐỊNH DẠNG, không đổi TZ; trên
+      // Vercel (TZ=UTC) nó vẫn ra sớm 7 tiếng.
+      "**Thời điểm:** " + formatVnDateTime(now),
       "**Nội dung:** Đây là tin thử kết nối từ trang Cấu hình thông báo.",
       "_Nếu bạn thấy tin này = webhook hoạt động bình thường._",
     ],
