@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isError, requirePermission } from "@/lib/supabase/guard";
 import { deriveCameraOnlineState } from "@/lib/camera/online-state";
+import { vnHour } from "@/lib/time/vietnam";
 import type {
   PackingEventStatus,
   PackingEventTimingStatus,
@@ -253,8 +254,9 @@ export async function GET() {
           staffValid.set(ev.staff_id, (staffValid.get(ev.staff_id) ?? 0) + 1);
         }
         if (ev.scanned_at) {
-          const h = new Date(ev.scanned_at).getHours();
-          if (h >= 0 && h < 24) hourBuckets[h] += 1;
+          // Giờ VN — xem ghi chú cùng loại ở api/dashboard/production.
+          const h = vnHour(ev.scanned_at);
+          if (h !== null && h >= 0 && h < 24) hourBuckets[h] += 1;
         }
         // Track timing windows still open. work_started_at is set by the
         // RPC at scan time only for valid events; ignore missing values

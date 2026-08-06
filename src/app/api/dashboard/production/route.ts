@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isError, requirePermission } from "@/lib/supabase/guard";
+import { vnHour } from "@/lib/time/vietnam";
 
 export const runtime = "nodejs";
 
@@ -76,8 +77,10 @@ export async function GET(req: Request) {
     const buckets = new Array(24).fill(0) as number[];
     for (const ev of data ?? []) {
       if (!ev.scanned_at) continue;
-      const h = new Date(ev.scanned_at as string).getHours();
-      if (h >= 0 && h < 24) buckets[h] += 1;
+      // Giờ VN, KHÔNG getHours(): route chạy TZ=UTC trên Vercel, ca sáng kho
+      // sẽ rơi vào bucket 0-2 và bị lát 07h..19h dưới đây cắt mất.
+      const h = vnHour(ev.scanned_at as string);
+      if (h !== null && h >= 0 && h < 24) buckets[h] += 1;
     }
     const series: SeriesPoint[] = [];
     for (let h = SHIFT_START; h <= SHIFT_END; h += 1) {

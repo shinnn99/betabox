@@ -1,6 +1,8 @@
 // Pure: build message input cho Lark card theo event_type. Không throw,
 // không I/O. Trả về shape cho buildLarkCardPayload trong client.ts.
 
+import { formatVnTime } from "../time/vietnam.ts";
+
 export type LarkEventType =
   | "packing_issue_duplicated"
   | "packing_issue_no_active_session"
@@ -36,20 +38,14 @@ const EVENT_LABEL: Record<LarkEventType, string> = {
   packing_issue_invalid_code: "Mã quét không hợp lệ",
 };
 
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const pad = (n: number) => n.toString().padStart(2, "0");
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-
 // Cap số mã liệt kê để card không phình vô hạn khi camera rớt 100 lần.
 const MAX_LISTED_WAYBILLS = 10;
 
 export function buildMessageParts(input: BuildMessageInput): CardMessageParts {
   const label = EVENT_LABEL[input.eventType];
   const wb = input.waybillCode ?? "(không có mã)";
-  const time = formatTime(input.scannedAtIso);
+  // Giờ VN — route chạy trên Vercel (TZ=UTC), getHours() sẽ ra sớm 7 tiếng.
+  const time = formatVnTime(input.scannedAtIso);
 
   const title = `[${input.warehouseName}] ${label}`;
 
