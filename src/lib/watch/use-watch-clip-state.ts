@@ -200,6 +200,9 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
         setOfflineDurationSeconds(null);
         setRegenerating(false);
         setRegenerationState(null);
+        // Màn hình order_open đã nói đủ lý do; giữ thêm regenerationError
+        // chỉ tạo hai thông điệp chồng nhau cho cùng một chuyện.
+        setRegenerationError(null);
         // Dời mốc elapsed theo từng tick: thời gian chờ đơn đóng KHÔNG
         // phải thời gian cắt clip. Nếu không dời, lúc chuyển sang
         // preparing_cut counter sẽ nhảy vào "Đang tải clip... 240s".
@@ -268,6 +271,15 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
               "Đơn đang được đóng gói, chưa cắt được clip đầy đủ.")
             : "Kho đang offline, thử lại sau khi có kết nối.",
         );
+        // VẪN kick tick dù không enqueue được. /watch là nguồn chân lý
+        // cho màn hình hiển thị, còn retry chỉ là hành động.
+        //
+        // Không kick thì lối vào mode='generate' (modal tự gọi retry lúc
+        // mount, không qua nút bấm) đứng nguyên ở state 'idle' → rơi vào
+        // fallback "Trạng thái chưa xác định", bấm Thử lại lại 409 →
+        // ngõ cụt. Kick tick thì /watch trả order_open hoặc
+        // warehouse_offline và user thấy đúng lý do.
+        schedule(0, () => void tick());
         return;
       }
     } catch (err) {
