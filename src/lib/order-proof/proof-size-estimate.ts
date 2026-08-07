@@ -41,30 +41,49 @@ const MIB = 1024 * 1024;
  */
 export function getProofUploadGuardBytes(): number {
   const raw = Number(process.env.MAX_PROOF_CLIP_UPLOAD_BYTES);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 49 * MIB;
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 50 * MIB;
+}
+
+/**
+ * Hệ số bù chênh giữa "tổng byte nguồn" và "byte file thật".
+ *
+ * ffmpeg cắt copy theo keyframe nên clip dôi vài giây so với cửa sổ yêu
+ * cầu, cộng overhead container. Đo trên 9 clip có phủ 100% của camera
+ * Dahua 01 (2026-08-07), lệch thực tế/ước lượng:
+ *
+ *   0,9 · 3,1 · 3,8 · 3,8 · 4,1 · 4,9 · 5,4 · 6,5 · 23,5 %
+ *
+ * Mẫu 23,5% là clip 20s — dôi 5s keyframe trên nền quá ngắn nên tỷ lệ
+ * lớn, và nhóm clip ngắn không bao giờ nằm gần trần 50 MiB nên không
+ * kéo hệ số lên. Nhóm cần phân loại chính xác là clip 180–500s, đang
+ * lệch 1–6,5% với tâm ~4%. Chọn 1.05.
+ *
+ * Áp cho CẢ HAI phương pháp ước lượng: cả hai đều đang dự báo output
+ * của cùng một phép ffmpeg copy có dôi keyframe.
+ *
+ * Đây là hệ số ĐO ĐƯỢC, không phải biên an toàn bịa ra. Benchmark lại
+ * thì cập nhật con số, đừng cộng thêm biên cho "chắc ăn".
+ */
+export function getProofSizeEstimateFactor(): number {
+  const raw = Number(process.env.PROOF_SIZE_ESTIMATE_FACTOR);
+  return Number.isFinite(raw) && raw > 0 ? raw : 1.05;
 }
 
 /**
  * Ngưỡng CẢNH BÁO (amber), thấp hơn trần upload. Không chặn gì — chỉ
  * để người vận hành thấy đơn đang tiến sát giới hạn.
  *
- * Mặc định 48 MiB chứ không phải 47 MiB. Lý do là số đo, không phải cảm
- * tính: clip capped_timeout 190s của kho Đại Kim rơi vào 45–49 MB, nên
- * tỷ lệ bị bôi vàng trên 4491 segment thật (14 ngày) là
+ * Mặc định 49 MiB, ngay dưới trần 50 MiB.
  *
- *   ngưỡng 47 MiB → 89,0% clip capped thành amber
- *   ngưỡng 48 MiB →  7,9%
- *   guard  49 MiB →  0,2% thật sự vượt
- *
- * 89% amber tức là cảnh báo mất hết ý nghĩa ngay ngày đầu. 48 MiB giữ
- * được tín hiệu mà vẫn báo trước khi chạm guard.
- *
- * Hạ về 47 MiB bằng env nếu muốn nhạy hơn — nó không chặn gì cả, chỉ
- * đổi lượng nhiễu. Đừng biến amber thành đỏ.
+ * LƯU Ý khi đọc badge ở Đại Kim: với bitrate hiện tại, clip capped 190s
+ * thật nặng khoảng 49,4 MiB (đo 2026-08-07), nên phần lớn sẽ hiện
+ * `near_limit`. Đó là SỰ THẬT chứ không phải nhiễu — kho đang chạy ở
+ * ~99% trần upload và 7% clip capped thật sự vượt. Đừng nâng ngưỡng này
+ * lên để cho bảng đỡ vàng: cách sửa đúng là hạ bitrate camera.
  */
 export function getProofSizeWarnBytes(): number {
   const raw = Number(process.env.PROOF_CLIP_WARN_BYTES);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 48 * MIB;
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 49 * MIB;
 }
 
 export interface ProofSizeThresholds {
@@ -143,6 +162,11 @@ export interface ProofSizeEstimate {
   proof_window_seconds: number;
   upload_guard_bytes: number;
   estimate_method: ProofSizeEstimateMethod;
+  /**
+   * Hệ số đã nhân vào ước lượng. Trả ra để lần benchmark sau không phải
+   * đoán production đang chạy công thức nào.
+   */
+  estimate_correction_factor: number;
 }
 
 /**
@@ -195,16 +219,23 @@ export interface EstimateInput {
   fallbackBytesPerSecond: number | null;
   guardBytes: number;
   warnBytes: number;
+  /**
+   * Hệ số bù keyframe + container. Bỏ trống thì lấy
+   * getProofSizeEstimateFactor(). Test truyền vào để cố định.
+   */
+  correctionFactor?: number;
 }
 
 export function estimateProofSize(input: EstimateInput): ProofSizeEstimate {
   const { window, segments, fallbackBytesPerSecond, guardBytes, warnBytes } =
     input;
+  const factor = input.correctionFactor ?? getProofSizeEstimateFactor();
   const windowSeconds = window.windowSeconds;
 
   const base = {
     proof_window_seconds: windowSeconds,
     upload_guard_bytes: guardBytes,
+    estimate_correction_factor: factor,
   };
 
   if (windowSeconds <= 0) {
@@ -228,7 +259,9 @@ export function estimateProofSize(input: EstimateInput): ProofSizeEstimate {
 
   const coverage = coveredSeconds / windowSeconds;
   if (sumBytes > 0 && coverage >= MIN_SEGMENT_COVERAGE_RATIO) {
-    const bytes = Math.round(sumBytes);
+    // Hệ số áp ở CẢ HAI nhánh: dù ước lượng từ segment thật hay từ p95,
+    // thứ cần dự báo vẫn là byte file ffmpeg copy xuất ra.
+    const bytes = Math.round(sumBytes * factor);
     return {
       ...base,
       proof_size_risk: classify(bytes, guardBytes, warnBytes),
@@ -239,7 +272,7 @@ export function estimateProofSize(input: EstimateInput): ProofSizeEstimate {
   }
 
   if (fallbackBytesPerSecond && fallbackBytesPerSecond > 0) {
-    const bytes = Math.round(fallbackBytesPerSecond * windowSeconds);
+    const bytes = Math.round(fallbackBytesPerSecond * windowSeconds * factor);
     return {
       ...base,
       proof_size_risk: classify(bytes, guardBytes, warnBytes),

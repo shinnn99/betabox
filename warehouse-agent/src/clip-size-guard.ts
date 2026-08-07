@@ -16,6 +16,11 @@
  * Quyết định theo BYTE THẬT từ stat(), không suy từ duration: bitrate
  * camera thay đổi (đổi cam, đổi độ phân giải, cảnh động) thì mọi công
  * thức theo duration sai ngay.
+ *
+ * Ngưỡng mặc định = ĐÚNG trần đo được, không trừ biên. Bản đầu để
+ * 49 MiB và E2E production chứng minh sai — xem chú thích ở config.ts.
+ * Guard chỉ đổi 413 khó hiểu thành thông báo rõ; nó không phải chỗ tạo
+ * headroom.
  */
 
 export interface ClipSizeInput {

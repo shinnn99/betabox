@@ -186,6 +186,7 @@ interface ProofRisk {
   proof_window_seconds: number;
   upload_guard_bytes: number;
   estimate_method: "overlapping_segments" | "camera_recent_p95" | "none";
+  estimate_correction_factor: number;
 }
 
 interface ProofRiskResponse {

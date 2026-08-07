@@ -19,8 +19,15 @@ import {
  */
 
 const MIB = 1024 * 1024;
-const LIMIT = 49 * MIB; // mặc định config.maxProofClipUploadBytes
-const HARD_LIMIT = 50 * MIB; // trần thật đo được của project
+/**
+ * Mặc định config.maxProofClipUploadBytes = ĐÚNG trần đo được.
+ *
+ * Bản đầu để 49 MiB. E2E production 2026-08-07 bác bỏ: clip capped 190s
+ * thật nặng 49,3 MiB và upload OK — guard 49 MiB đã chặn oan. Áp phân
+ * bố bitrate thật, 49 MiB từ chối 87,6% clip chạy được trong khi chỉ
+ * 7,0% thật sự vượt 50 MiB.
+ */
+const LIMIT = 50 * MIB;
 
 /** Bytes của clip `seconds` giây ở `kbPerSec` KB/s. */
 function clipBytes(seconds: number, kbPerSec: number): number {
@@ -34,13 +41,23 @@ test("ca 190s/capped ở bitrate p50 → CHO upload (không chặn nhầm clip h
   assert.equal(evaluateClipSize({ fileSizeBytes: size, durationSeconds: 190, limitBytes: LIMIT }), null);
 });
 
-test("ca 190s/capped ở bitrate MAX 265KB/s → vẫn dưới trần cứng 50MiB", () => {
-  // Đây là lý do KHÔNG đặt guard ở 45–47MB: mép trên của clip capped
-  // hợp lệ là ~49,2MB, guard thấp hơn sẽ từ chối chính nó.
+test("ca E2E THẬT 2026-08-07: clip 194s nặng 49,3 MiB → PHẢI cho upload", () => {
+  // Số đo thật, không dựng: SPXVN064759877478 cắt ra 194s / 51.694.899
+  // byte, upload OK, promote ready, playback OK. Guard 49 MiB cũ đã chặn
+  // đúng file này — đây là ca chốt chặn hồi quy cho quyết định đó.
+  const size = Math.round(49.3 * MIB);
+  assert.equal(
+    evaluateClipSize({ fileSizeBytes: size, durationSeconds: 194, limitBytes: LIMIT }),
+    null,
+    "clip đã chứng minh upload được không được phép bị guard chặn",
+  );
+});
+
+test("ca 190s/capped ở bitrate MAX 265KB/s → vẫn dưới trần 50MiB", () => {
   const size = clipBytes(190, 265);
   assert.ok(
-    size < HARD_LIMIT,
-    `clip capped tệ nhất phải vẫn upload được: ${size} vs ${HARD_LIMIT}`,
+    size < LIMIT,
+    `clip capped tệ nhất phải vẫn upload được: ${size} vs ${LIMIT}`,
   );
 });
 

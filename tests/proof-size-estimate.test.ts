@@ -7,6 +7,7 @@ import {
 import {
   classify,
   estimateProofSize,
+  getProofSizeEstimateFactor,
   percentile95BytesPerSecond,
   resolveProofSizeThresholds,
   type SegmentForEstimate,
@@ -21,9 +22,11 @@ import {
  */
 
 const MIB = 1024 * 1024;
-const GUARD = 49 * MIB;
-const WARN = 47 * MIB;
+const GUARD = 50 * MIB;
+const WARN = 49 * MIB;
 const KBPS_256 = 256 * 1024; // byte/giây
+/** Hệ số keyframe + container, đo trên 9 clip thật (xem module). */
+const FACTOR = 1.05;
 
 const SCAN = new Date("2026-08-07T08:00:00.000Z");
 const iso = (offsetSeconds: number) =>
@@ -132,13 +135,15 @@ test("checkout 528s có segment phủ đủ → over_limit, cộng theo phần c
     fallbackBytesPerSecond: KBPS_256,
     guardBytes: GUARD,
     warnBytes: WARN,
+    correctionFactor: FACTOR,
   });
 
   assert.equal(est.estimate_method, "overlapping_segments");
   assert.equal(est.proof_size_risk, "over_limit");
   assert.equal(est.proof_window_seconds, 528);
-  // 528s × 256 KB/s ≈ 132 MiB. Cho sai số nhỏ do làm tròn tỷ lệ chồng lấn.
-  const expected = 528 * KBPS_256;
+  assert.equal(est.estimate_correction_factor, FACTOR);
+  // 528s × 256 KB/s × 1.05 ≈ 139 MiB. Sai số nhỏ do làm tròn tỷ lệ chồng lấn.
+  const expected = 528 * KBPS_256 * FACTOR;
   assert.ok(
     Math.abs((est.estimated_file_size_bytes ?? 0) - expected) < expected * 0.02,
     `ước tính ${est.estimated_file_size_bytes} lệch quá xa ${expected}`,
@@ -146,7 +151,7 @@ test("checkout 528s có segment phủ đủ → over_limit, cộng theo phần c
   assert.ok((est.estimated_bitrate_kbps ?? 0) > 1900);
 });
 
-test("capped 190s có segment phủ đủ → near_limit, KHÔNG phải over_limit", () => {
+test("capped 190s @p50: near_limit — sát trần thật, KHÔNG phải nhiễu", () => {
   const window = computeFinalizedClipWindow({
     scannedAt: SCAN,
     workEndedAt: iso(600),
@@ -161,10 +166,15 @@ test("capped 190s có segment phủ đủ → near_limit, KHÔNG phải over_lim
     fallbackBytesPerSecond: KBPS_256,
     guardBytes: GUARD,
     warnBytes: WARN,
+    correctionFactor: FACTOR,
   });
   assert.equal(est.estimate_method, "overlapping_segments");
-  // 190s × 256 KB/s ≈ 47,5 MiB → giữa ngưỡng cảnh báo 47 và guard 49.
+  // 190s × 256 KB/s × 1.05 ≈ 49,9 MiB — giữa warn 49 và guard 50.
+  // E2E 2026-08-07 đo clip thật 49,3 MiB, khớp bậc độ lớn. Đơn capped
+  // bình thường của Đại Kim ĐANG sát trần; amber ở đây là sự thật.
   assert.equal(est.proof_size_risk, "near_limit");
+  const mib = (est.estimated_file_size_bytes ?? 0) / MIB;
+  assert.ok(mib > 49 && mib < 50, `ước tính ${mib.toFixed(1)} MiB`);
 });
 
 test("đơn ngắn → safe", () => {
@@ -282,14 +292,30 @@ test("biên phân loại: safe < warn <= near_limit <= guard < over_limit", () =
   assert.equal(classify(GUARD + 1, GUARD, WARN), "over_limit");
 });
 
-test("mặc định: guard 49 MiB, cảnh báo 48 MiB", () => {
-  // 48 chứ không phải 47: đo trên 4491 segment thật của Đại Kim, ngưỡng
-  // 47 MiB bôi vàng 89% clip capped 190s — cảnh báo mất hết ý nghĩa.
+test("mặc định: guard 50 MiB (đúng trần đo được), cảnh báo 49 MiB", () => {
+  // Guard = ĐÚNG trần, không trừ biên. Bản đầu để 49 MiB và E2E
+  // production 2026-08-07 chứng minh sai: clip capped thật 49,3 MiB
+  // upload OK nhưng đã bị guard 49 MiB chặn. Áp phân bố bitrate thật,
+  // guard 49 MiB từ chối 87,6% clip chạy được.
   const t = resolveProofSizeThresholds();
-  assert.equal(t.guardBytes, 49 * MIB);
-  assert.equal(t.warnBytes, 48 * MIB);
+  assert.equal(t.guardBytes, 50 * MIB);
+  assert.equal(t.warnBytes, 49 * MIB);
   assert.equal(t.warnNormalized, false);
   assert.ok(t.warnBytes < t.guardBytes);
+});
+
+test("hệ số hiệu chỉnh mặc định 1.05 và có mặt trong kết quả", () => {
+  assert.equal(getProofSizeEstimateFactor(), 1.05);
+});
+
+test("file ĐÚNG BẰNG trần vẫn được coi là trong giới hạn", () => {
+  // Phép đo: 50 MiB → 200 OK, 51 MiB → 413. So sánh phải là `>`.
+  const t = resolveProofSizeThresholds();
+  assert.equal(classify(t.guardBytes, t.guardBytes, t.warnBytes), "near_limit");
+  assert.equal(
+    classify(t.guardBytes + 1, t.guardBytes, t.warnBytes),
+    "over_limit",
+  );
 });
 
 test("cấu hình sai thứ tự: warn >= guard bị kẹp xuống dưới guard", () => {
@@ -336,7 +362,7 @@ test("guard quá nhỏ: warn không được rơi về 0 (mọi clip thành near
   }
 });
 
-test("ở ngưỡng mặc định, clip capped 190s @p50 KHÔNG còn là amber", () => {
+test("ở ngưỡng mặc định, clip capped 190s @p50 nằm giữa warn và guard", () => {
   const window = computeFinalizedClipWindow({
     scannedAt: SCAN,
     workEndedAt: iso(600),
@@ -353,7 +379,9 @@ test("ở ngưỡng mặc định, clip capped 190s @p50 KHÔNG còn là amber",
     guardBytes: t.guardBytes,
     warnBytes: t.warnBytes,
   });
-  assert.equal(est.proof_size_risk, "safe");
+  // Dùng hệ số mặc định (không truyền correctionFactor) — đây là ca
+  // kiểm cấu hình production thật, không phải số cố định của test.
+  assert.equal(est.proof_size_risk, "near_limit");
 });
 
 test("p95 bỏ qua file thiếu dữ liệu và nghiêng về phía nặng", () => {
