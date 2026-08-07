@@ -51,6 +51,7 @@ import { EncodeGate } from "./encode-gate";
 import { describeFetchError, LogRateLimiter } from "./fetch-error";
 import { installFatalHandlers, swallow } from "./fatal";
 import { uploadWithTimeout } from "./upload";
+import { evaluateClipSize } from "./clip-size-guard";
 import { PidRegistry } from "./pid-registry";
 import {
   recoverZombieFfmpeg,
@@ -725,6 +726,32 @@ async function main(): Promise<void> {
           `codec_name=${codecProbe.codecName} codec_tag=${codecProbe.codecTag} ` +
           `elapsed=${cutResult.elapsedMs}ms`,
       );
+
+      // === STEP 4b: Size guard TRƯỚC khi xin signed URL ===
+      // Trần project đo được 2026-08-07: 50 MiB OK, 51 MiB → 413
+      // EntityTooLarge. Trước đây agent cứ PUT rồi mới biết, khách nhận
+      // "Cắt clip thất bại" kèm chuỗi HTTP thô không nói được gì.
+      //
+      // Guard dựa trên stat() file THẬT (cutResult.fileSizeBytes), không
+      // suy từ duration — bitrate camera đổi là công thức theo duration
+      // sai ngay. Trả error code riêng + đủ số để chẩn đoán từ xa:
+      // dung lượng, độ dài, bitrate thực tế.
+      const sizeRejection = evaluateClipSize({
+        fileSizeBytes: cutResult.fileSizeBytes,
+        durationSeconds: cutResult.durationSeconds,
+        limitBytes: config.maxProofClipUploadBytes,
+      });
+      if (sizeRejection) {
+        console.error(
+          `[clip-cutter] size guard clip=${p.clip_id} ` +
+            `size=${sizeRejection.metadata.file_size_bytes} ` +
+            `limit=${sizeRejection.metadata.limit_bytes} ` +
+            `duration=${sizeRejection.metadata.duration_seconds}s ` +
+            `bitrate=${sizeRejection.metadata.bitrate_kbps}kbps`,
+        );
+        await failCommand(sizeRejection.message, sizeRejection.metadata);
+        return;
+      }
 
       // === STEP 5: Fetch signed upload URL (backend tính path v2 từ clip_id) ===
       const urlResult = await fetchClipUploadUrl({

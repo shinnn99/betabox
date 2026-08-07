@@ -97,6 +97,27 @@ const EnvSchema = z.object({
    * tần suất request vs độ tươi log. ERROR flush ngay bỏ qua chu kỳ.
    */
   LOG_EVENTS_FLUSH_MS: z.coerce.number().int().positive().default(30000),
+  /**
+   * Trần dung lượng clip agent chịu PUT lên bucket.
+   *
+   * Trần THẬT của Supabase project đo được 2026-08-07 bằng cách PUT file
+   * tăng dần qua đúng đường signed-upload-url: 50 MiB OK, 51 MiB trả
+   * 413 `EntityTooLarge`. Tức trần đúng bằng 50 MiB = 52.428.800 byte.
+   *
+   * Mặc định 49 MiB — chừa 1 MiB dưới trần đo được. KHÔNG đặt thấp hơn
+   * nhiều (VD 45 MiB) vì clip capped_timeout 190s ở Đại Kim đo trên 4441
+   * segment thật rơi vào 45,2–49,2 MB: guard 45–47 MiB sẽ TỪ CHỐI phần
+   * lớn clip hợp lệ, biến lỗi upload hiếm thành lỗi từ chối thường xuyên.
+   * Muốn có headroom thật thì hạ bitrate camera, không hạ ngưỡng này.
+   *
+   * Có env để kho có bitrate khác hoặc project đổi plan thì chỉnh được
+   * mà không build lại agent.
+   */
+  MAX_PROOF_CLIP_UPLOAD_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(49 * 1024 * 1024),
   // BURN_* env đã xoá 2026-07-05: đường clip chốt "video thuần" —
   // không burn (nướng vào file), không overlay (đè giao diện), không
   // vẽ mark gap. Thông tin đơn (mã vận đơn/kho/bàn/nhân viên/camera/
@@ -127,6 +148,7 @@ export interface AgentConfig {
   segmentWatchPollMs: number;
   logEventsEnabled: boolean;
   logEventsFlushMs: number;
+  maxProofClipUploadBytes: number;
 }
 
 export function loadConfig(): AgentConfig {
@@ -173,5 +195,6 @@ export function loadConfig(): AgentConfig {
     segmentWatchPollMs: env.SEGMENT_WATCH_POLL_MS,
     logEventsEnabled: env.LOG_EVENTS_ENABLED,
     logEventsFlushMs: env.LOG_EVENTS_FLUSH_MS,
+    maxProofClipUploadBytes: env.MAX_PROOF_CLIP_UPLOAD_BYTES,
   };
 }
