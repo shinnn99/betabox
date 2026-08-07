@@ -741,7 +741,7 @@ function WarehouseDialog({
     status: initial?.status ?? "active",
     session_fallback_seconds: initial?.session_fallback_seconds ?? 30,
     max_order_seconds:
-      initial?.packing_timing_config?.max_order_seconds ?? 600,
+      initial?.packing_timing_config?.max_order_seconds ?? 180,
     video_pre_seconds:
       initial?.packing_timing_config?.video_pre_seconds ?? 10,
     video_default_post_seconds:
@@ -861,7 +861,7 @@ function WarehouseDialog({
             </div>
             <Field
               label="Thời gian tối đa một đơn (giây)"
-              hint="Đơn kéo dài quá ngưỡng này sẽ bị đóng bằng timeout. Clip cũng không dài quá ngưỡng này. Khuyến nghị 600 (10 phút)."
+              hint="Ngưỡng nghiệp vụ: đơn kéo dài hơn mức này bị đánh dấu vượt ngưỡng và thời gian ghi lại đúng bằng mức này. Khuyến nghị 180 (3 phút). Lưu ý: nâng cao hơn sẽ sinh clip nặng hơn — clip vượt trần dung lượng sẽ không tải lên được."
             >
               <input
                 type="number"

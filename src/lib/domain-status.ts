@@ -27,6 +27,34 @@ export const PACKING_EVENT_TIMING_STATUSES = [
 export type PackingEventTimingStatus =
   (typeof PACKING_EVENT_TIMING_STATUSES)[number];
 
+/**
+ * Chỉ HAI trạng thái này cho ra `work_duration_seconds` là số ĐO ĐƯỢC.
+ *
+ *   capped_timeout    → duration bị ép = max_order_seconds (ngưỡng cấu
+ *                       hình), không phải thời gian đóng gói thật.
+ *   default_estimated → duration bị ép = default_last_order_seconds
+ *                       (60s mặc định) vì ra ca quá muộn.
+ *   open              → chưa có duration.
+ *   not_applicable    → đơn không mở cửa sổ timing.
+ *
+ * Trộn số ép cứng vào KPI năng suất làm sai lệch cả hai chiều. Đo ở kho
+ * Đại Kim 2026-08-07: trung bình gộp 95,3s vs trung bình đo được 68,2s,
+ * trong khi gap thật trung bình là 260,2s. Không con số gộp nào dùng
+ * được để đánh giá năng suất.
+ */
+export const PACKING_EVENT_MEASURED_TIMING_STATUSES: readonly PackingEventTimingStatus[] =
+  ["finalized_by_next_scan", "finalized_by_checkout"];
+
+/** true khi work_duration_seconds của event là số đo được, không phải số ép. */
+export function isMeasuredDuration(
+  timingStatus: string | null | undefined,
+): boolean {
+  return (
+    timingStatus === "finalized_by_next_scan" ||
+    timingStatus === "finalized_by_checkout"
+  );
+}
+
 export const PACKING_EVENT_ASSIGNMENT_METHODS = [
   "active_session",
   "fallback_recent_session",
@@ -66,6 +94,10 @@ export const ORDER_PROOF_CLIP_STATUSES = [
   "ready",
   "failed",
   "superseded",
+  // Thêm 2026-08-07 để khớp CHECK constraint đã có từ migration
+  // 20260723173403_add_evicted_status_to_clips. File này drift 15 ngày —
+  // 'evicted' đã được ghi vào DB (37 row) mà union TS chưa biết.
+  "evicted",
 ] as const;
 export type OrderProofClipStatus = (typeof ORDER_PROOF_CLIP_STATUSES)[number];
 

@@ -1,5 +1,9 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  computeFinalizedClipWindow,
+  MAX_CLIP_DURATION_SECONDS,
+} from "@/lib/order-proof/clip-window";
 
 // Resolves the clip window for one packing_event ("scan A") according
 // to warehouse business rules:
@@ -84,37 +88,25 @@ const FALLBACK_BEFORE_NEXT = 2;
 const FALLBACK_DEFAULT_POST = 60;
 
 /**
- * Buffer sau `work_ended_at` — nhét thêm N giây để bắt trọn hành động
- * cuối (dán tem, xoay gói, đưa vào rổ). Không lớn — 5s là đủ cho "cái
- * hành động tiếp theo là bấm quét đơn kế".
- */
-const WORK_ENDED_POST_BUFFER_SECONDS = 5;
-
-/**
- * Ngưỡng độ dài tối thiểu của clip khi ưu tiên `work_ended_at`. Nếu
- * work_duration < ngưỡng này (VD RPC set work_ended_at ngay khi scan
- * kế đến 3s sau) → clip quá ngắn để đủ bằng chứng đóng gói. Extend
- * tới `scanned_at + MIN_CLIP_DURATION` bằng cách dùng default_post
- * làm sàn.
+ * Sàn/trần/buffer của cửa sổ clip nằm ở clip-window.ts — dùng chung với
+ * bộ ước lượng dung lượng proof.
  *
- * 15s không cứng — chỉ để tránh clip dài <10s không thấy hành động
- * đóng gói nào. Nếu Hạnh gặp ca lỗi ngược lại (clip quá dài do work
- * cực nhanh), giảm số này.
- */
-const MIN_CLIP_DURATION_SECONDS = 15;
-
-/**
- * Trần độ dài clip — 10 phút. Trùng nghiệp vụ `max_order_seconds` mặc định
- * ở `warehouses.packing_timing_config`: đơn xử lý tối đa 10 phút, clip
- * cũng không được kéo dài hơn 10 phút tính từ `scanned_at`.
+ * Trần MAX_CLIP_DURATION_SECONDS là giới hạn KỸ THUẬT của proof
+ * pipeline, KHÔNG phải ngưỡng nghiệp vụ `max_order_seconds`. Hai lớp
+ * tách nhau (chốt 2026-08-07):
  *
- * Ưu tiên khi có `work_duration_seconds` hợp lý (≤ MAX): dùng nó.
- * Nếu duration null hoặc vượt MAX: cap ở MAX.
+ *   max_order_seconds  → nghiệp vụ: đánh dấu packing session bất thường.
+ *                        Hiện 180s, xem migration 20260807100000.
+ *   trần này + trần dung lượng (MAX_PROOF_CLIP_UPLOAD_BYTES)
+ *                      → kỹ thuật: proof pipeline chịu được tới đâu.
+ *
+ * Ràng buộc thực tế chặt hơn con số 600s: trần upload của project là
+ * 50 MiB, camera ~256 KB/s → clip vượt ~195s là fail upload. Nên trần
+ * 600s hiện KHÔNG phải chỗ chặn thật; agent chặn trước.
  *
  * Pre-roll `video_pre_seconds` nằm TRƯỚC scanned_at nên tổng độ dài file
  * mp4 có thể lớn hơn MAX một chút (VD 10 phút 10s với pre 10s).
  */
-const MAX_CLIP_DURATION_SECONDS = 600;
 
 // Hard ceilings to defend against a typo / wrong unit in
 // warehouses.packing_timing_config (e.g. someone enters minutes instead
@@ -388,52 +380,20 @@ export async function resolveClipBounds(opts: {
   let sessionEnd: SessionEndInfo | null = null;
 
   if (workEndedIso) {
-    const workEndedMs = new Date(workEndedIso).getTime();
-    // Guard: work_ended_at phải > scanned_at (không rơi vào quá khứ do
-    // clock skew / row cũ). Nếu invalid → fallback xuống next scan.
-    if (!Number.isFinite(workEndedMs) || workEndedMs <= scannedAt.getTime()) {
-      // Nhánh này gần như không xảy ra (RPC luôn set >= scanned_at),
-      // nhưng bảo thủ: fallback thay vì crash / clip 0s.
-      clipEnd = new Date(scannedAt.getTime() + timing.defaultPost * 1000);
-      endReason = "default_post_invalid_work_ended";
-    } else {
-      // Chọn end candidate theo timing_status:
-      //   capped_timeout → work_ended_at = scan kế thật (cách quá xa), bỏ.
-      //     Dùng `scanned_at + work_duration_seconds` (RPC đã cap ở
-      //     max_order_seconds). Nếu duration invalid → cap ở MAX.
-      //   khác → dùng work_ended_at.
-      let candidateMs: number;
-      const isCapped = packingEvent.timing_status === "capped_timeout";
-      const dur = packingEvent.work_duration_seconds;
-      const durValid = typeof dur === "number" && dur > 0 && dur <= MAX_CLIP_DURATION_SECONDS;
-      if (isCapped) {
-        candidateMs = durValid
-          ? scannedAt.getTime() + dur * 1000 + WORK_ENDED_POST_BUFFER_SECONDS * 1000
-          : scannedAt.getTime() + MAX_CLIP_DURATION_SECONDS * 1000;
-      } else {
-        candidateMs = workEndedMs + WORK_ENDED_POST_BUFFER_SECONDS * 1000;
-      }
-
-      // Cap cứng ở MAX_CLIP_DURATION bất kể nhánh nào — phòng ca
-      // work_ended_at vượt max (scan kế đến rất muộn với
-      // timing_status='finalized_by_next_scan').
-      const maxEndMs = scannedAt.getTime() + MAX_CLIP_DURATION_SECONDS * 1000;
-      if (candidateMs > maxEndMs) {
-        clipEnd = new Date(maxEndMs);
-        endReason = "capped_at_max_duration";
-      } else {
-        // Extend nếu clip quá ngắn (work đóng cực nhanh, VD 3s do RPC set
-        // ngay khi scan kế đến). Sàn = scanned_at + MIN_CLIP_DURATION.
-        const minEndMs = scannedAt.getTime() + MIN_CLIP_DURATION_SECONDS * 1000;
-        if (candidateMs < minEndMs) {
-          clipEnd = new Date(minEndMs);
-          endReason = "work_ended_extended_to_min";
-        } else {
-          clipEnd = new Date(candidateMs);
-          endReason = isCapped ? "work_duration_from_capped" : "work_ended";
-        }
-      }
-    }
+    // Cửa sổ của đơn đã đóng tính ở computeFinalizedClipWindow — DÙNG
+    // CHUNG với bộ ước lượng dung lượng proof. Đừng chép logic này ra
+    // chỗ khác: hai nơi tính lệch nhau thì cảnh báo "sắp vượt trần" nói
+    // một số còn agent render ra số khác.
+    const win = computeFinalizedClipWindow({
+      scannedAt,
+      workEndedAt: workEndedIso,
+      timingStatus: packingEvent.timing_status,
+      workDurationSeconds: packingEvent.work_duration_seconds,
+      preSeconds: timing.pre,
+      defaultPostSeconds: timing.defaultPost,
+    });
+    clipEnd = win.clipEnd;
+    endReason = win.endReason;
   } else {
     // Đơn chưa đóng (timing_status='open') → không có work_ended_at.
     // Fallback logic cũ: next scan → session end → default post.

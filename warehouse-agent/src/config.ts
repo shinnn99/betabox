@@ -97,6 +97,32 @@ const EnvSchema = z.object({
    * tần suất request vs độ tươi log. ERROR flush ngay bỏ qua chu kỳ.
    */
   LOG_EVENTS_FLUSH_MS: z.coerce.number().int().positive().default(30000),
+  /**
+   * Trần dung lượng clip agent chịu PUT lên bucket.
+   *
+   * Trần THẬT của Supabase project đo được 2026-08-07 bằng cách PUT file
+   * tăng dần qua đúng đường signed-upload-url: 50 MiB OK, 51 MiB trả
+   * 413 `EntityTooLarge`. Tức trần đúng bằng 50 MiB = 52.428.800 byte,
+   * và file ĐÚNG BẰNG 50 MiB vẫn upload được — so sánh phải là `>`.
+   *
+   * Mặc định = đúng trần đo được, KHÔNG trừ biên an toàn. Bản đầu để
+   * 49 MiB và E2E production 2026-08-07 chứng minh sai: clip capped
+   * 190s thật nặng 49,3 MiB, upload OK, nhưng guard 49 MiB đã chặn nó.
+   * Áp phân bố bitrate thật thì guard 49 MiB từ chối 87,6% clip capped
+   * chạy được, trong khi chỉ 7,0% thật sự vượt 50 MiB.
+   *
+   * Guard này chỉ để đổi một lỗi 413 khó hiểu thành thông báo rõ ràng.
+   * Nó KHÔNG phải chỗ tạo headroom — headroom phải đến từ bitrate
+   * camera. Hạ ngưỡng xuống dưới trần = chặn oan, không phải an toàn.
+   *
+   * Có env để kho có bitrate khác hoặc project đổi plan thì chỉnh được
+   * mà không build lại agent.
+   */
+  MAX_PROOF_CLIP_UPLOAD_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(50 * 1024 * 1024),
   // BURN_* env đã xoá 2026-07-05: đường clip chốt "video thuần" —
   // không burn (nướng vào file), không overlay (đè giao diện), không
   // vẽ mark gap. Thông tin đơn (mã vận đơn/kho/bàn/nhân viên/camera/
@@ -127,6 +153,7 @@ export interface AgentConfig {
   segmentWatchPollMs: number;
   logEventsEnabled: boolean;
   logEventsFlushMs: number;
+  maxProofClipUploadBytes: number;
 }
 
 export function loadConfig(): AgentConfig {
@@ -173,5 +200,6 @@ export function loadConfig(): AgentConfig {
     segmentWatchPollMs: env.SEGMENT_WATCH_POLL_MS,
     logEventsEnabled: env.LOG_EVENTS_ENABLED,
     logEventsFlushMs: env.LOG_EVENTS_FLUSH_MS,
+    maxProofClipUploadBytes: env.MAX_PROOF_CLIP_UPLOAD_BYTES,
   };
 }

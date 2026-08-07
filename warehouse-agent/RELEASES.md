@@ -4,6 +4,43 @@ Ghi từ 0.8.6 trở đi. Mỗi mục nêu: sửa gì, vì sao, và người đi
 
 ---
 
+## 0.8.8 — 2026-08-07
+
+**Clip quá nặng giờ báo rõ lý do thay vì lỗi khó hiểu, và đơn chưa đóng
+không còn bị cắt clip cụt.**
+
+Hai chuyện xảy ra trước bản này:
+
+1. Mở màn hình xem video lúc nhân viên **chưa đóng xong đơn** thì hệ vẫn
+   cắt clip ngay. Lúc đó chưa biết đơn kết thúc khi nào nên clip chỉ lấy
+   60 giây mặc định — và bản cụt đó được lưu làm bằng chứng chính thức.
+   Đã xảy ra thật ở kho Đại Kim: một đơn dài 3 phút chỉ còn clip 70 giây.
+   Giờ màn hình báo "Đơn đang được đóng gói, clip đầy đủ sẽ có sau khi
+   đơn kết thúc" và tự cắt khi đơn đóng — người dùng không phải bấm lại.
+
+2. Clip vượt dung lượng cho phép tải lên thì agent cứ tải rồi mới hỏng,
+   và khách chỉ thấy "Cắt clip thất bại" không rõ nguyên nhân. Giờ agent
+   đo file trước khi tải; quá cỡ thì dừng và báo rõ nặng bao nhiêu, dài
+   bao nhiêu, so với giới hạn nào.
+
+**Đi kèm bản cloud cùng ngày** (deploy cloud trước khi cài agent): màn
+hình Giám sát hiện cảnh báo trước cho những đơn có nguy cơ không tạo
+được video đầy đủ.
+
+Người đi cài cần biết: cài đè như thường lệ, không mất cấu hình, không
+đổi cách agent nói chuyện với cloud. Đây là bản sửa lỗi, không thêm chức
+năng mới.
+
+**Việc cần theo dõi sau khi cài** — quan trọng: đo ngày 07/08 cho thấy
+camera kho Đại Kim đang ghi ở mức nặng tới ngưỡng. Trong 131 đơn kéo dài
+quá 3 phút gần đây, khoảng **27 đơn (21%)** sẽ không tạo được video bằng
+chứng vì file vượt giới hạn tải lên, và gần như toàn bộ số còn lại chỉ
+còn dưới 1 MiB dự phòng. Bản này **không sửa được** chuyện đó — nó chỉ
+làm cho lỗi hiện ra rõ ràng thay vì im lặng. Cách sửa là hạ mức ghi của
+camera, đang xử lý riêng.
+
+---
+
 ## 0.8.7 — 2026-08-05
 
 **Camera "Tạm ngưng" trên dashboard giờ thật sự dừng ghi.**

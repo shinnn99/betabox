@@ -26,7 +26,7 @@ export async function GET() {
       .order("code"),
     admin
       .from("packing_events")
-      .select("status", { count: "exact" })
+      .select("status, timing_status", { count: "exact" })
       .eq("organization_id", ctx.organizationId)
       .gte("scanned_at", startIso)
       .lt("scanned_at", endIso),
@@ -59,8 +59,16 @@ export async function GET() {
     unmapped_scanner: 0,
     invalid_code: 0,
   };
+  // Anomaly nghiệp vụ, KHÔNG phải lỗi hệ thống — đếm riêng, không cộng
+  // vào statusCounts. Đơn vượt max_order_seconds vẫn có status='valid';
+  // nếu không đếm tách thì 131 đơn kiểu này chìm hoàn toàn khỏi màn
+  // giám sát (quan sát ở kho Đại Kim 2026-08-07).
+  let cappedTimeoutToday = 0;
+  let defaultEstimatedToday = 0;
   for (const row of packingToday.data ?? []) {
     statusCounts[row.status] = (statusCounts[row.status] ?? 0) + 1;
+    if (row.timing_status === "capped_timeout") cappedTimeoutToday += 1;
+    else if (row.timing_status === "default_estimated") defaultEstimatedToday += 1;
   }
   const totalToday = (packingToday.data ?? []).length;
 
@@ -74,6 +82,8 @@ export async function GET() {
       no_active_session: statusCounts.no_active_session,
       unmapped_scanner: statusCounts.unmapped_scanner,
       invalid_code: statusCounts.invalid_code,
+      capped_timeout: cappedTimeoutToday,
+      default_estimated: defaultEstimatedToday,
     },
     active_sessions: {
       staff_count: new Set(

@@ -7,6 +7,7 @@ import type {
   PackingEventStatus,
   PackingEventTimingStatus,
 } from "@/lib/domain-status";
+import { isMeasuredDuration } from "@/lib/domain-status";
 
 export const runtime = "nodejs";
 
@@ -72,15 +73,31 @@ interface DashboardOverview {
     duplicated: number;
     errors: number;
     total: number;
+    /**
+     * CHỈ tính trên đơn có duration ĐO ĐƯỢC
+     * (finalized_by_next_scan | finalized_by_checkout).
+     *
+     * capped_timeout ghi duration = max_order_seconds và
+     * default_estimated ghi duration = default_last_order_seconds — cả
+     * hai là số ép cứng theo cấu hình, không phải thời gian đóng gói
+     * thật. Trộn vào KPI năng suất thì con số không nói lên điều gì:
+     * ở kho Đại Kim gộp cho 95,3s trong khi đo được là 68,2s.
+     */
     avg_duration_seconds: number | null;
+    /** Số đơn dùng cho avg ở trên — để UI nói rõ "trên N đơn đo được". */
+    measured_duration_count: number;
+    /** Đơn bị ép duration = ngưỡng cấu hình (vượt max_order_seconds). */
+    capped_duration_count: number;
+    /** Đơn bị ép duration = ước lượng (ra ca quá muộn). */
+    estimated_duration_count: number;
     // Open packing windows: packing_events.timing_status='open'. That
     // means a valid scan landed and we're still waiting for either the
     // next scan or session checkout to close the timing window. It is
     // NOT a packing_events.status — the schema's status enum is
     // valid/duplicated/no_active_session/unmapped_scanner/invalid_code.
     open_packing_windows: number;
-    // Subset of open_packing_windows whose work_started_at is older than
-    // SLOW_MS — operator-facing "đơn đang vượt thời gian" hint.
+    // Subset of open_packing_windows đã mở lâu hơn max_order_seconds của
+    // chính kho đó — tức là sẽ thành capped_timeout khi scan kế tới.
     slow_open_windows: number;
     alerts: number;
   };
@@ -146,17 +163,18 @@ export async function GET() {
       staffProfilesRes,
       stationDevicesRes,
       packingStationsRes,
+      warehousesTimingRes,
       agentForOnlineRes,
     ] = await Promise.all([
       admin
         .from("packing_events")
-        .select("id, waybill_code, status, timing_status, scanned_at, work_duration_seconds, work_started_at, staff_id, station_id")
+        .select("id, waybill_code, status, timing_status, scanned_at, work_duration_seconds, work_started_at, staff_id, station_id, warehouse_id")
         .eq("organization_id", ctx.organizationId)
         .eq("business_date", businessDate)
         .order("scanned_at", { ascending: false }),
       admin
         .from("packing_events")
-        .select("status, work_duration_seconds")
+        .select("status, timing_status, work_duration_seconds")
         .eq("organization_id", ctx.organizationId)
         .eq("business_date", previousDate),
       admin
@@ -190,6 +208,15 @@ export async function GET() {
         .select("id, code, name, status, warehouse_id")
         .eq("organization_id", ctx.organizationId)
         .neq("status", "archived"),
+      // Ngưỡng "đơn đang mở quá lâu" phải là max_order_seconds của chính
+      // kho đó, không phải một hằng số riêng. Trước đây route này dùng
+      // SLOW_MS = 5 phút cứng trong khi kho Đại Kim cấu hình 180s → đơn
+      // 4 phút đã chắc chắn sẽ bị capped_timeout mà dashboard vẫn báo
+      // "Tất cả trong tiến độ".
+      admin
+        .from("warehouses")
+        .select("id, packing_timing_config")
+        .eq("organization_id", ctx.organizationId),
       // Agent gần nhất còn sống — dùng cho deriveCameraOnlineState phân
       // biệt agent-chết (warehouse_disconnected) vs camera-chết (offline).
       admin
@@ -228,8 +255,22 @@ export async function GET() {
     let durCount = 0;
     let openPackingWindows = 0;
     let slowOpenWindows = 0;
+    let cappedDurationCount = 0;
+    let estimatedDurationCount = 0;
     const now = Date.now();
-    const SLOW_MS = 5 * 60 * 1000;
+    // Ngưỡng per-kho, không phải hằng số. Kho thiếu key → 180s, khớp
+    // packing_timing_default_config() trong DB (migration
+    // 20260807100000). Nếu đổi mặc định thì đổi ở migration đó trước.
+    const DEFAULT_MAX_ORDER_SECONDS = 180;
+    const maxOrderSecondsByWarehouse = new Map<string, number>();
+    for (const w of warehousesTimingRes.data ?? []) {
+      const cfg = w.packing_timing_config as Record<string, unknown> | null;
+      const raw = Number(cfg?.max_order_seconds);
+      maxOrderSecondsByWarehouse.set(
+        w.id as string,
+        Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_ORDER_SECONDS,
+      );
+    }
     const hourBuckets = new Array(24).fill(0) as number[];
     const staffValid = new Map<string, number>();
     const staffDup = new Map<string, number>();
@@ -242,7 +283,14 @@ export async function GET() {
       const ts = ev.timing_status as PackingEventTimingStatus | null;
       if (s === "valid") {
         valid += 1;
-        if (typeof ev.work_duration_seconds === "number") {
+        // Chỉ cộng duration ĐO ĐƯỢC vào KPI. Số ép cứng đếm riêng để
+        // vẫn hiện được ra UI mà không làm bẩn trung bình.
+        if (ts === "capped_timeout") cappedDurationCount += 1;
+        else if (ts === "default_estimated") estimatedDurationCount += 1;
+        if (
+          typeof ev.work_duration_seconds === "number" &&
+          isMeasuredDuration(ts)
+        ) {
           durSum += ev.work_duration_seconds;
           durCount += 1;
           if (ev.staff_id) {
@@ -264,7 +312,14 @@ export async function GET() {
         if (ts === "open") {
           openPackingWindows += 1;
           const started = ev.work_started_at || ev.scanned_at;
-          if (started && now - new Date(started).getTime() > SLOW_MS) {
+          const thresholdSeconds =
+            (ev.warehouse_id
+              ? maxOrderSecondsByWarehouse.get(ev.warehouse_id as string)
+              : undefined) ?? DEFAULT_MAX_ORDER_SECONDS;
+          if (
+            started &&
+            now - new Date(started).getTime() > thresholdSeconds * 1000
+          ) {
             slowOpenWindows += 1;
           }
         }
@@ -289,7 +344,12 @@ export async function GET() {
     for (const ev of yesterdayEvents) {
       if (ev.status === "valid") {
         yValid += 1;
-        if (typeof ev.work_duration_seconds === "number") {
+        // Cùng quy tắc với hôm nay — nếu không thì delta hôm-nay/hôm-qua
+        // so hai đại lượng khác nhau.
+        if (
+          typeof ev.work_duration_seconds === "number" &&
+          isMeasuredDuration(ev.timing_status)
+        ) {
           yDurSum += ev.work_duration_seconds;
           yDurCount += 1;
         }
@@ -663,6 +723,9 @@ export async function GET() {
         errors,
         total: valid + duplicated + errors,
         avg_duration_seconds: avgDuration,
+        measured_duration_count: durCount,
+        capped_duration_count: cappedDurationCount,
+        estimated_duration_count: estimatedDurationCount,
         open_packing_windows: openPackingWindows,
         slow_open_windows: slowOpenWindows,
         alerts: totalAlerts,

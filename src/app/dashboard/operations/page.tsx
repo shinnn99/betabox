@@ -25,6 +25,11 @@ import StatCard from "@/components/StatCard";
 import { useToast } from "@/components/ui/Toast";
 
 const POLL_INTERVAL_MS = 3000;
+/**
+ * Ước lượng dung lượng proof chạy nhịp riêng, chậm hơn nhiều: đơn đã
+ * đóng thì con số không đổi, và mỗi lần tính phải query segment.
+ */
+const PROOF_RISK_POLL_INTERVAL_MS = 60000;
 const FLASH_DURATION_MS = 1500;
 const AGENT_OFFLINE_BANNER_AFTER_MIN = 5;
 const STATION_IDLE_WARNING_MINUTES = 10;
@@ -63,6 +68,9 @@ interface SummaryResponse {
     no_active_session: number;
     unmapped_scanner: number;
     invalid_code: number;
+    /** Anomaly nghiệp vụ — đếm riêng, KHÔNG cộng vào số lỗi hệ thống. */
+    capped_timeout: number;
+    default_estimated: number;
   };
   active_sessions: { staff_count: number; station_count: number };
   stale_session_warnings: StaleSessionWarning[];
@@ -156,6 +164,35 @@ interface Issue {
 
 interface IssuesResponse {
   issues: Issue[];
+}
+
+type ProofSizeRisk = "safe" | "near_limit" | "over_limit" | "unknown";
+
+/**
+ * Cảnh báo sớm proof clip vượt trần upload. Poll nhịp RIÊNG, chậm hơn
+ * hẳn activity: đơn đã đóng thì kích thước clip không đổi nữa, và ước
+ * lượng phải query segment nên không đặt chung nhịp 3 giây được.
+ *
+ * Ngưỡng đến từ API (`upload_guard_bytes`) — KHÔNG hardcode 49 MiB ở
+ * component. Agent, API và UI phải cùng một con số, không phải ba
+ * literal độc lập.
+ */
+interface ProofRisk {
+  packing_event_id: string;
+  raw_event_id: string | null;
+  proof_size_risk: ProofSizeRisk;
+  estimated_file_size_bytes: number | null;
+  estimated_bitrate_kbps: number | null;
+  proof_window_seconds: number;
+  upload_guard_bytes: number;
+  estimate_method: "overlapping_segments" | "camera_recent_p95" | "none";
+  estimate_correction_factor: number;
+}
+
+interface ProofRiskResponse {
+  risks: ProofRisk[];
+  upload_guard_bytes: number;
+  warn_bytes: number;
 }
 
 // ─── UI helpers ────────────────────────────────────────────────────────────
@@ -371,7 +408,72 @@ const ACTIVITY_TAB_LABEL: Record<ActivityTab, string> = {
   staff: "QR nhân sự",
 };
 
-function matchActivityTab(ev: ActivityItem, tab: ActivityTab): boolean {
+function formatMiB(bytes: number | null): string {
+  if (bytes == null) return "—";
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+/**
+ * Cảnh báo sớm proof clip quá nặng.
+ *
+ * CHỈ hiện cho `over_limit` và `near_limit`. `safe` không cần nói gì,
+ * và `unknown` KHÔNG được hiện cảnh báo — không đủ dữ liệu để ước lượng
+ * thì im lặng đúng hơn là dựng một cảnh báo mà người đọc không làm gì
+ * được với nó.
+ *
+ * Mọi con số lấy từ API, kể cả ngưỡng. Không viết 49 MiB ở đây.
+ */
+function ProofSizeBadge({ risk }: { risk?: ProofRisk }) {
+  if (!risk) return null;
+  if (risk.proof_size_risk !== "over_limit" && risk.proof_size_risk !== "near_limit") {
+    return null;
+  }
+
+  const size = formatMiB(risk.estimated_file_size_bytes);
+  const guard = formatMiB(risk.upload_guard_bytes);
+  const methodNote =
+    risk.estimate_method === "overlapping_segments"
+      ? "Ước tính từ chính các đoạn video của đơn này."
+      : risk.estimate_method === "camera_recent_p95"
+        ? "Ước tính theo bitrate gần đây của camera (chưa đủ đoạn video phủ khoảng đơn)."
+        : "";
+
+  if (risk.proof_size_risk === "over_limit") {
+    return (
+      <span
+        className="mt-0.5 inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
+        title={
+          `Video đầy đủ của đơn này có khả năng vượt giới hạn tải lên hiện tại ` +
+          `(ước tính ${size} / giới hạn ${guard}, clip ~${risk.proof_window_seconds}s). ` +
+          `Thời gian đóng gói vẫn giữ nguyên; hệ thống chưa tự rút ngắn video. ` +
+          methodNote
+        }
+      >
+        <AlertTriangle className="h-3 w-3" />
+        Proof có nguy cơ vượt giới hạn · ~{size}
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-medium text-slate-500"
+      title={
+        `Ước tính ${size}, gần giới hạn tải lên ${guard}. ` +
+        `Chưa vượt — chưa cần làm gì. ` +
+        methodNote
+      }
+    >
+      Gần giới hạn proof · ~{size}
+    </span>
+  );
+}
+
+function matchActivityTab(
+  ev: ActivityItem,
+  tab: ActivityTab,
+  proofRisk?: ProofRisk,
+): boolean {
   if (tab === "all") return true;
   if (tab === "ok") return ev.kind === "waybill_valid";
   if (tab === "duplicated") return ev.kind === "waybill_duplicated";
@@ -379,7 +481,19 @@ function matchActivityTab(ev: ActivityItem, tab: ActivityTab): boolean {
     return (
       ev.category === "error" ||
       ev.kind === "waybill_duplicated" ||
-      ev.kind === "session_forced_ended"
+      ev.kind === "session_forced_ended" ||
+      // Anomaly nghiệp vụ: đơn vượt thời gian đóng gói cấu hình. Vẫn là
+      // status='valid' nên trước đây không lọt tab nào — 131 đơn ở kho
+      // Đại Kim chìm hoàn toàn. Không phải lỗi hệ thống, nhưng là thứ
+      // người vận hành cần nhìn.
+      ev.timing_status === "capped_timeout" ||
+      // Thời gian bị ước lượng (ra ca quá muộn) — số trong cột Thời gian
+      // không phải đo được, cũng cần soi.
+      ev.timing_status === "default_estimated" ||
+      // Proof ước tính vượt trần upload → khách bấm xem sẽ không có
+      // video. Đây là bộ lọc NGHIỆP VỤ; helper ước lượng không biết gì
+      // về "cần xử lý" hay "checkout".
+      proofRisk?.proof_size_risk === "over_limit"
     );
   if (tab === "staff")
     return (
@@ -403,6 +517,10 @@ export default function OperationsPage() {
   const [activeTab, setActiveTab] = useState<ActivityTab>("all");
   const [dismissedIssueIds, setDismissedIssueIds] = useState<Set<string>>(
     new Set(),
+  );
+
+  const [proofRisks, setProofRisks] = useState<Map<string, ProofRisk>>(
+    new Map(),
   );
 
   const inflightRef = useRef(false);
@@ -482,6 +600,32 @@ export default function OperationsPage() {
     return () => clearInterval(t);
   }, [refresh]);
 
+  // Nhịp riêng cho ước lượng dung lượng proof. Lỗi ở đây KHÔNG được
+  // dựng banner đỏ toàn trang: đây là thông tin bổ trợ, mất nó không
+  // ảnh hưởng giám sát chính.
+  const refreshProofRisks = useCallback(async () => {
+    try {
+      const res = await fetch("/api/warehouse/live/proof-size-risk?limit=60", {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as ProofRiskResponse;
+      const next = new Map<string, ProofRisk>();
+      for (const r of data.risks) {
+        if (r.raw_event_id) next.set(r.raw_event_id, r);
+      }
+      setProofRisks(next);
+    } catch {
+      // Im lặng: badge biến mất, phần còn lại của trang vẫn chạy.
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshProofRisks();
+    const t = setInterval(refreshProofRisks, PROOF_RISK_POLL_INTERVAL_MS);
+    return () => clearInterval(t);
+  }, [refreshProofRisks]);
+
   const visibleIssues = useMemo(
     () => issues.filter((i) => !dismissedIssueIds.has(i.id)),
     [issues, dismissedIssueIds],
@@ -493,8 +637,11 @@ export default function OperationsPage() {
   );
 
   const filteredActivity = useMemo(
-    () => activity.filter((ev) => matchActivityTab(ev, activeTab)),
-    [activity, activeTab],
+    () =>
+      activity.filter((ev) =>
+        matchActivityTab(ev, activeTab, proofRisks.get(ev.raw_event_id)),
+      ),
+    [activity, activeTab, proofRisks],
   );
 
   const onlineAgents = (summary?.agents ?? []).filter((a) => a.online).length;
@@ -502,10 +649,13 @@ export default function OperationsPage() {
   const todayTotal = summary?.today.total_waybill_scans ?? 0;
   const todayValid = summary?.today.valid ?? 0;
   const todayDuplicated = summary?.today.duplicated ?? 0;
+  // Chỉ LỖI hệ thống. Đơn vượt ngưỡng đếm riêng ở todayCapped — trộn
+  // vào đây sẽ nói với người vận hành rằng hệ thống hỏng 131 lần.
   const todayIssueCount =
     (summary?.today.no_active_session ?? 0) +
     (summary?.today.unmapped_scanner ?? 0) +
     (summary?.today.invalid_code ?? 0);
+  const todayCapped = summary?.today.capped_timeout ?? 0;
 
   const agentSummary =
     onlineAgents === totalAgents && totalAgents > 0
@@ -568,12 +718,19 @@ export default function OperationsPage() {
               label="Cần xử lý"
               value={String(todayIssueCount)}
               hint={
+                // Đơn vượt ngưỡng KHÔNG cộng vào con số lỗi (nó là
+                // anomaly nghiệp vụ, không phải hệ thống hỏng) nhưng có
+                // mặt ở hint + trong tab, để không bị chìm.
                 todayIssueCount > 0
-                  ? `${summary?.today.no_active_session ?? 0} chưa vào ca · ${summary?.today.unmapped_scanner ?? 0} chưa gán bàn`
-                  : "Không có lỗi cần xử lý"
+                  ? `${summary?.today.no_active_session ?? 0} chưa vào ca · ${summary?.today.unmapped_scanner ?? 0} chưa gán bàn${todayCapped > 0 ? ` · ${todayCapped} vượt ngưỡng` : ""}`
+                  : todayCapped > 0
+                    ? `Không có lỗi hệ thống · ${todayCapped} đơn vượt thời gian đóng gói`
+                    : "Không có lỗi cần xử lý"
               }
               icon={AlertTriangle}
-              tone={todayIssueCount > 0 ? "rose" : "emerald"}
+              tone={
+                todayIssueCount > 0 ? "rose" : todayCapped > 0 ? "amber" : "emerald"
+              }
             />
           </button>
           <StatCard
@@ -739,6 +896,7 @@ export default function OperationsPage() {
                   {filteredActivity.map((ev) => {
                     const tone = CATEGORY_TONE[ev.category];
                     const flash = freshIds.has(ev.id) ? tone.flash : "";
+                    const proofRisk = proofRisks.get(ev.raw_event_id);
                     return (
                       <tr
                         key={ev.id}
@@ -781,8 +939,22 @@ export default function OperationsPage() {
                           {ev.timing_status === "open" ? (
                             <span className="text-amber-600 font-medium">đang đóng</span>
                           ) : ev.timing_status === "capped_timeout" ? (
-                            <span className="text-rose-600 font-medium" title="Vượt thời gian cấu hình">
-                              quá lâu
+                            // Amber, không phải rose: đây là anomaly nghiệp
+                            // vụ (đơn đóng lâu hơn ngưỡng cấu hình), không
+                            // phải lỗi hệ thống. "quá lâu" cũ dễ đọc thành
+                            // "hệ thống hỏng".
+                            <span
+                              className="text-amber-600 font-medium"
+                              title="Vượt thời gian đóng gói cấu hình — thời gian hiển thị là ngưỡng, không phải số đo được"
+                            >
+                              vượt ngưỡng
+                            </span>
+                          ) : ev.timing_status === "default_estimated" ? (
+                            <span
+                              className="text-slate-500 font-medium italic"
+                              title="Không đo được (ra ca quá muộn sau đơn cuối) — số này là ước lượng cấu hình"
+                            >
+                              ước lượng
                             </span>
                           ) : ev.work_duration_seconds != null ? (
                             <span className="text-slate-700 font-medium tabular-nums">
@@ -810,11 +982,13 @@ export default function OperationsPage() {
                             <span className="text-slate-400">—</span>
                           )}
                         </td>
-                        <td
-                          className="px-4 py-2 text-xs text-slate-500 truncate"
-                          title={ev.note ?? ""}
-                        >
-                          {ev.note ?? ""}
+                        <td className="px-4 py-2 text-xs text-slate-500">
+                          {ev.note && (
+                            <span className="block truncate" title={ev.note}>
+                              {ev.note}
+                            </span>
+                          )}
+                          <ProofSizeBadge risk={proofRisk} />
                         </td>
                       </tr>
                     );
