@@ -63,6 +63,9 @@ interface SummaryResponse {
     no_active_session: number;
     unmapped_scanner: number;
     invalid_code: number;
+    /** Anomaly nghiệp vụ — đếm riêng, KHÔNG cộng vào số lỗi hệ thống. */
+    capped_timeout: number;
+    default_estimated: number;
   };
   active_sessions: { staff_count: number; station_count: number };
   stale_session_warnings: StaleSessionWarning[];
@@ -379,7 +382,15 @@ function matchActivityTab(ev: ActivityItem, tab: ActivityTab): boolean {
     return (
       ev.category === "error" ||
       ev.kind === "waybill_duplicated" ||
-      ev.kind === "session_forced_ended"
+      ev.kind === "session_forced_ended" ||
+      // Anomaly nghiệp vụ: đơn vượt thời gian đóng gói cấu hình. Vẫn là
+      // status='valid' nên trước đây không lọt tab nào — 131 đơn ở kho
+      // Đại Kim chìm hoàn toàn. Không phải lỗi hệ thống, nhưng là thứ
+      // người vận hành cần nhìn.
+      ev.timing_status === "capped_timeout" ||
+      // Thời gian bị ước lượng (ra ca quá muộn) — số trong cột Thời gian
+      // không phải đo được, cũng cần soi.
+      ev.timing_status === "default_estimated"
     );
   if (tab === "staff")
     return (
@@ -502,10 +513,13 @@ export default function OperationsPage() {
   const todayTotal = summary?.today.total_waybill_scans ?? 0;
   const todayValid = summary?.today.valid ?? 0;
   const todayDuplicated = summary?.today.duplicated ?? 0;
+  // Chỉ LỖI hệ thống. Đơn vượt ngưỡng đếm riêng ở todayCapped — trộn
+  // vào đây sẽ nói với người vận hành rằng hệ thống hỏng 131 lần.
   const todayIssueCount =
     (summary?.today.no_active_session ?? 0) +
     (summary?.today.unmapped_scanner ?? 0) +
     (summary?.today.invalid_code ?? 0);
+  const todayCapped = summary?.today.capped_timeout ?? 0;
 
   const agentSummary =
     onlineAgents === totalAgents && totalAgents > 0
@@ -568,12 +582,19 @@ export default function OperationsPage() {
               label="Cần xử lý"
               value={String(todayIssueCount)}
               hint={
+                // Đơn vượt ngưỡng KHÔNG cộng vào con số lỗi (nó là
+                // anomaly nghiệp vụ, không phải hệ thống hỏng) nhưng có
+                // mặt ở hint + trong tab, để không bị chìm.
                 todayIssueCount > 0
-                  ? `${summary?.today.no_active_session ?? 0} chưa vào ca · ${summary?.today.unmapped_scanner ?? 0} chưa gán bàn`
-                  : "Không có lỗi cần xử lý"
+                  ? `${summary?.today.no_active_session ?? 0} chưa vào ca · ${summary?.today.unmapped_scanner ?? 0} chưa gán bàn${todayCapped > 0 ? ` · ${todayCapped} vượt ngưỡng` : ""}`
+                  : todayCapped > 0
+                    ? `Không có lỗi hệ thống · ${todayCapped} đơn vượt thời gian đóng gói`
+                    : "Không có lỗi cần xử lý"
               }
               icon={AlertTriangle}
-              tone={todayIssueCount > 0 ? "rose" : "emerald"}
+              tone={
+                todayIssueCount > 0 ? "rose" : todayCapped > 0 ? "amber" : "emerald"
+              }
             />
           </button>
           <StatCard
@@ -781,8 +802,22 @@ export default function OperationsPage() {
                           {ev.timing_status === "open" ? (
                             <span className="text-amber-600 font-medium">đang đóng</span>
                           ) : ev.timing_status === "capped_timeout" ? (
-                            <span className="text-rose-600 font-medium" title="Vượt thời gian cấu hình">
-                              quá lâu
+                            // Amber, không phải rose: đây là anomaly nghiệp
+                            // vụ (đơn đóng lâu hơn ngưỡng cấu hình), không
+                            // phải lỗi hệ thống. "quá lâu" cũ dễ đọc thành
+                            // "hệ thống hỏng".
+                            <span
+                              className="text-amber-600 font-medium"
+                              title="Vượt thời gian đóng gói cấu hình — thời gian hiển thị là ngưỡng, không phải số đo được"
+                            >
+                              vượt ngưỡng
+                            </span>
+                          ) : ev.timing_status === "default_estimated" ? (
+                            <span
+                              className="text-slate-500 font-medium italic"
+                              title="Không đo được (ra ca quá muộn sau đơn cuối) — số này là ước lượng cấu hình"
+                            >
+                              ước lượng
                             </span>
                           ) : ev.work_duration_seconds != null ? (
                             <span className="text-slate-700 font-medium tabular-nums">

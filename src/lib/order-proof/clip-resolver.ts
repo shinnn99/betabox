@@ -104,9 +104,18 @@ const WORK_ENDED_POST_BUFFER_SECONDS = 5;
 const MIN_CLIP_DURATION_SECONDS = 15;
 
 /**
- * Trần độ dài clip — 10 phút. Trùng nghiệp vụ `max_order_seconds` mặc định
- * ở `warehouses.packing_timing_config`: đơn xử lý tối đa 10 phút, clip
- * cũng không được kéo dài hơn 10 phút tính từ `scanned_at`.
+ * Trần độ dài clip — 10 phút. Đây là giới hạn KỸ THUẬT của proof
+ * pipeline, KHÔNG phải ngưỡng nghiệp vụ `max_order_seconds`. Hai lớp
+ * tách nhau (chốt 2026-08-07):
+ *
+ *   max_order_seconds  → nghiệp vụ: đánh dấu packing session bất thường.
+ *                        Hiện 180s, xem migration 20260807100000.
+ *   trần này + trần dung lượng ở agent (MAX_PROOF_CLIP_UPLOAD_BYTES)
+ *                      → kỹ thuật: proof pipeline chịu được tới đâu.
+ *
+ * Ràng buộc thực tế chặt hơn con số này: trần upload của project là
+ * 50 MiB, camera ~256 KB/s → clip vượt ~195s là fail upload. Nên trần
+ * 600s ở đây hiện KHÔNG phải chỗ chặn thật; agent chặn trước.
  *
  * Ưu tiên khi có `work_duration_seconds` hợp lý (≤ MAX): dùng nó.
  * Nếu duration null hoặc vượt MAX: cap ở MAX.

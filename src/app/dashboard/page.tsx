@@ -85,7 +85,13 @@ interface DashboardOverview {
     duplicated: number;
     errors: number;
     total: number;
+    // CHỈ trên đơn có duration đo được. Đơn vượt ngưỡng
+    // (capped_timeout) và đơn ước lượng (default_estimated) bị loại —
+    // duration của chúng là số ép theo cấu hình, không phải số đo.
     avg_duration_seconds: number | null;
+    measured_duration_count: number;
+    capped_duration_count: number;
+    estimated_duration_count: number;
     // Counts of packing_events.timing_status='open'. These are valid
     // scans whose timing window has not been closed by the next scan
     // or the operator's checkout yet. The schema's status enum has
@@ -306,8 +312,11 @@ export default function DashboardPage() {
             icon={Clock}
             tone="emerald"
             footnote={
+              // Ngưỡng là max_order_seconds per-kho (server tính), nên
+              // không hardcode "5 phút" ở đây nữa — nói sai số phút còn
+              // tệ hơn không nói.
               totals && totals.slow_open_windows > 0
-                ? `${totals.slow_open_windows} đơn quá 5 phút`
+                ? `${totals.slow_open_windows} đơn vượt ngưỡng cấu hình`
                 : "Tất cả trong tiến độ"
             }
             footnoteIcon={Clock}
@@ -340,7 +349,17 @@ export default function DashboardPage() {
                 ? data.deltas.avg_duration_pct <= 0
                 : undefined
             }
-            footnote="so với hôm qua"
+            // Nói rõ mẫu số. Con số này KHÔNG bao gồm đơn vượt ngưỡng và
+            // đơn ước lượng — nếu không ghi ra, người đọc tưởng nó là
+            // trung bình của toàn bộ đơn trong ngày.
+            footnote={
+              totals && (totals.capped_duration_count > 0 || totals.estimated_duration_count > 0)
+                ? `trên ${totals.measured_duration_count} đơn đo được · ${totals.capped_duration_count} vượt ngưỡng${totals.estimated_duration_count > 0 ? ` · ${totals.estimated_duration_count} ước lượng` : ""}`
+                : "so với hôm qua"
+            }
+            footnoteTone={
+              totals && totals.capped_duration_count > 0 ? "amber" : "muted"
+            }
           />
           <MetricCard
             label="Nhân viên đang làm"

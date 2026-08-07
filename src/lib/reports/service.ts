@@ -1,5 +1,6 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { isMeasuredDuration } from "@/lib/domain-status";
 
 export type RangeKey = "7d" | "30d" | "90d";
 export type RangeValue = RangeKey | "custom";
@@ -102,6 +103,7 @@ type EventRow = {
   id: string;
   business_date: string;
   status: string;
+  timing_status: string | null;
   work_duration_seconds: number | null;
   order_id: string | null;
   staff_id: string | null;
@@ -120,7 +122,9 @@ async function fetchEvents(
   for (;;) {
     const { data, error } = await admin
       .from("packing_events")
-      .select("id, business_date, status, work_duration_seconds, order_id, staff_id, manual_error")
+      .select(
+        "id, business_date, status, timing_status, work_duration_seconds, order_id, staff_id, manual_error",
+      )
       .eq("organization_id", organizationId)
       .gte("business_date", fromDate)
       .lte("business_date", toDate)
@@ -156,7 +160,13 @@ function aggregateDaily(
     slot.total += 1;
     if (r.status === "valid") {
       slot.valid += 1;
-      if (typeof r.work_duration_seconds === "number") {
+      // avg_duration_seconds chỉ tính trên duration đo được — xem
+      // isMeasuredDuration. capped_timeout/default_estimated ghi số ép
+      // cứng theo cấu hình, cộng vào là báo cáo năng suất sai.
+      if (
+        typeof r.work_duration_seconds === "number" &&
+        isMeasuredDuration(r.timing_status)
+      ) {
         slot.durSum += r.work_duration_seconds;
         slot.durCount += 1;
       }
@@ -293,7 +303,12 @@ function aggregateStaff(
     if (r.status === "valid") {
       b.valid += 1;
       b.dates.add(r.business_date);
-      if (typeof r.work_duration_seconds === "number") {
+      // Cùng quy tắc với aggregateDaily — năng suất theo nhân sự không
+      // được tính trên số ép cứng.
+      if (
+        typeof r.work_duration_seconds === "number" &&
+        isMeasuredDuration(r.timing_status)
+      ) {
         b.durSum += r.work_duration_seconds;
         b.durCount += 1;
       }
