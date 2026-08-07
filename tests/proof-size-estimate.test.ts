@@ -7,9 +7,8 @@ import {
 import {
   classify,
   estimateProofSize,
-  getProofSizeWarnBytes,
-  getProofUploadGuardBytes,
   percentile95BytesPerSecond,
+  resolveProofSizeThresholds,
   type SegmentForEstimate,
 } from "../src/lib/order-proof/proof-size-estimate";
 
@@ -286,9 +285,55 @@ test("biên phân loại: safe < warn <= near_limit <= guard < over_limit", () =
 test("mặc định: guard 49 MiB, cảnh báo 48 MiB", () => {
   // 48 chứ không phải 47: đo trên 4491 segment thật của Đại Kim, ngưỡng
   // 47 MiB bôi vàng 89% clip capped 190s — cảnh báo mất hết ý nghĩa.
-  assert.equal(getProofUploadGuardBytes(), 49 * MIB);
-  assert.equal(getProofSizeWarnBytes(), 48 * MIB);
-  assert.ok(getProofSizeWarnBytes() < getProofUploadGuardBytes());
+  const t = resolveProofSizeThresholds();
+  assert.equal(t.guardBytes, 49 * MIB);
+  assert.equal(t.warnBytes, 48 * MIB);
+  assert.equal(t.warnNormalized, false);
+  assert.ok(t.warnBytes < t.guardBytes);
+});
+
+test("cấu hình sai thứ tự: warn >= guard bị kẹp xuống dưới guard", () => {
+  // Ca thật: ops hạ upload guard xuống 45 MiB nhưng quên warn 48 MiB.
+  const prevGuard = process.env.MAX_PROOF_CLIP_UPLOAD_BYTES;
+  const prevWarn = process.env.PROOF_CLIP_WARN_BYTES;
+  try {
+    process.env.MAX_PROOF_CLIP_UPLOAD_BYTES = String(45 * MIB);
+    process.env.PROOF_CLIP_WARN_BYTES = String(48 * MIB);
+    const t = resolveProofSizeThresholds();
+    assert.equal(t.guardBytes, 45 * MIB);
+    assert.equal(t.warnNormalized, true);
+    assert.ok(
+      t.warnBytes < t.guardBytes,
+      `warn ${t.warnBytes} phải thấp hơn guard ${t.guardBytes}`,
+    );
+    assert.equal(t.warnBytes, 44 * MIB);
+    // Nửa âm-đúng: phân loại vẫn còn nghĩa sau khi kẹp.
+    assert.equal(classify(43 * MIB, t.guardBytes, t.warnBytes), "safe");
+    assert.equal(classify(44 * MIB, t.guardBytes, t.warnBytes), "near_limit");
+    assert.equal(classify(46 * MIB, t.guardBytes, t.warnBytes), "over_limit");
+  } finally {
+    if (prevGuard === undefined) delete process.env.MAX_PROOF_CLIP_UPLOAD_BYTES;
+    else process.env.MAX_PROOF_CLIP_UPLOAD_BYTES = prevGuard;
+    if (prevWarn === undefined) delete process.env.PROOF_CLIP_WARN_BYTES;
+    else process.env.PROOF_CLIP_WARN_BYTES = prevWarn;
+  }
+});
+
+test("guard quá nhỏ: warn không được rơi về 0 (mọi clip thành near_limit)", () => {
+  const prevGuard = process.env.MAX_PROOF_CLIP_UPLOAD_BYTES;
+  const prevWarn = process.env.PROOF_CLIP_WARN_BYTES;
+  try {
+    process.env.MAX_PROOF_CLIP_UPLOAD_BYTES = String(MIB);
+    process.env.PROOF_CLIP_WARN_BYTES = String(48 * MIB);
+    const t = resolveProofSizeThresholds();
+    assert.ok(t.warnBytes > 0, `warn=${t.warnBytes} phải lớn hơn 0`);
+    assert.ok(t.warnBytes < t.guardBytes);
+  } finally {
+    if (prevGuard === undefined) delete process.env.MAX_PROOF_CLIP_UPLOAD_BYTES;
+    else process.env.MAX_PROOF_CLIP_UPLOAD_BYTES = prevGuard;
+    if (prevWarn === undefined) delete process.env.PROOF_CLIP_WARN_BYTES;
+    else process.env.PROOF_CLIP_WARN_BYTES = prevWarn;
+  }
 });
 
 test("ở ngưỡng mặc định, clip capped 190s @p50 KHÔNG còn là amber", () => {
@@ -300,12 +345,13 @@ test("ở ngưỡng mặc định, clip capped 190s @p50 KHÔNG còn là amber",
     preSeconds: 5,
     defaultPostSeconds: 60,
   });
+  const t = resolveProofSizeThresholds();
   const est = estimateProofSize({
     window,
     segments: segments(-60, 6),
     fallbackBytesPerSecond: KBPS_256,
-    guardBytes: getProofUploadGuardBytes(),
-    warnBytes: getProofSizeWarnBytes(),
+    guardBytes: t.guardBytes,
+    warnBytes: t.warnBytes,
   });
   assert.equal(est.proof_size_risk, "safe");
 });

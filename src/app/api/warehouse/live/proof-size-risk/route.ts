@@ -4,9 +4,8 @@ import { isError, requirePermission } from "@/lib/supabase/guard";
 import { computeFinalizedClipWindow } from "@/lib/order-proof/clip-window";
 import {
   estimateProofSize,
-  getProofSizeWarnBytes,
-  getProofUploadGuardBytes,
   percentile95BytesPerSecond,
+  resolveProofSizeThresholds,
   type ProofSizeEstimate,
   type SegmentForEstimate,
 } from "@/lib/order-proof/proof-size-estimate";
@@ -69,8 +68,9 @@ export async function GET(req: NextRequest) {
   const admin = createAdminClient();
   const orgId = ctx.organizationId;
   const limit = parseLimit(req);
-  const guardBytes = getProofUploadGuardBytes();
-  const warnBytes = getProofSizeWarnBytes();
+  // Lấy cặp ngưỡng đã đảm bảo warn < guard. warn_bytes trả về ở response
+  // là giá trị THẬT đang chạy (đã kẹp nếu env sai thứ tự).
+  const { guardBytes, warnBytes } = resolveProofSizeThresholds();
 
   // 1) Đơn ĐÃ ĐÓNG gần đây. Đơn 'open' không có biên thật nên không
   // ước lượng được (và cũng không được sinh proof — proof-clip-gate).

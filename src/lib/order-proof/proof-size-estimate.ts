@@ -67,6 +67,52 @@ export function getProofSizeWarnBytes(): number {
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 48 * MIB;
 }
 
+export interface ProofSizeThresholds {
+  guardBytes: number;
+  warnBytes: number;
+  /** true khi ngưỡng cảnh báo đã bị kéo xuống vì cấu hình sai thứ tự. */
+  warnNormalized: boolean;
+}
+
+/**
+ * Lấy CẢ HAI ngưỡng cùng lúc, đã đảm bảo `warn < guard`.
+ *
+ * Vì sao trả cặp thay vì hai getter rời: hai ngưỡng chỉ có nghĩa khi
+ * đứng cạnh nhau. Ops hạ `MAX_PROOF_CLIP_UPLOAD_BYTES` xuống 45 MiB mà
+ * quên `PROOF_CLIP_WARN_BYTES` vẫn 48 MiB thì `near_limit` nằm TRÊN
+ * `over_limit` — phân loại vô nghĩa mà không ai thấy. Gọi rời hai getter
+ * là còn để ngỏ khả năng đó.
+ *
+ * Chọn NORMALIZE (kẹp xuống) thay vì fail-fast: đây là tính năng cảnh
+ * báo, không chặn gì cả. Ném lỗi vì một ngưỡng sai sẽ làm mất luôn tín
+ * hiệu — đổi một sai lệch nhỏ về phân loại lấy việc mù hoàn toàn. Cấu
+ * hình sai vẫn được log to kèm cả hai số để không im lặng trôi qua, và
+ * `warn_bytes` API trả về là giá trị ĐÃ kẹp, nên xem response là biết
+ * ngưỡng thật đang chạy.
+ */
+export function resolveProofSizeThresholds(): ProofSizeThresholds {
+  const guardBytes = getProofUploadGuardBytes();
+  const configuredWarn = getProofSizeWarnBytes();
+
+  if (configuredWarn < guardBytes) {
+    return { guardBytes, warnBytes: configuredWarn, warnNormalized: false };
+  }
+
+  // Kẹp xuống dưới guard. Với guard quá nhỏ (cấu hình sai nặng), lùi
+  // theo tỷ lệ để warn không rơi xuống 0 — warn = 0 biến MỌI clip thành
+  // near_limit, tệ hơn cả cấu hình sai ban đầu.
+  const clamped = guardBytes - MIB;
+  const warnBytes = clamped > 0 ? clamped : Math.floor(guardBytes * 0.9);
+
+  console.warn(
+    `[proof-size] PROOF_CLIP_WARN_BYTES=${configuredWarn} >= ` +
+      `MAX_PROOF_CLIP_UPLOAD_BYTES=${guardBytes} — ngưỡng cảnh báo phải THẤP HƠN ` +
+      `trần upload. Đang kẹp xuống ${warnBytes}. Sửa env để hết dòng log này.`,
+  );
+
+  return { guardBytes, warnBytes, warnNormalized: true };
+}
+
 export const PROOF_SIZE_RISKS = [
   "safe",
   "near_limit",
