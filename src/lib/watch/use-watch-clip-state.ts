@@ -38,6 +38,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const ACTIVE_POLL_INTERVAL_MS = 2000;
 const OFFLINE_POLL_INTERVAL_MS = 20000;
+/**
+ * Nhịp poll khi đơn còn đang đóng gói. Chậm hơn active (không có gì để
+ * chờ ở phía agent) nhưng nhanh hơn offline — đơn đóng bằng scan kế
+ * thường trong vài chục giây tới vài phút, user không nên phải đợi thêm
+ * 20s nữa mới thấy clip bắt đầu cắt.
+ */
+const ORDER_OPEN_POLL_INTERVAL_MS = 5000;
 
 export type WatchClipState =
   | "idle"
@@ -46,7 +53,14 @@ export type WatchClipState =
   | "failed"
   | "warehouse_offline"
   | "offline_giveup"
-  | "network_error";
+  | "network_error"
+  /**
+   * Đơn chưa đóng (packing_events.timing_status='open'). KHÔNG cắt clip ở
+   * trạng thái này — biên clip chưa xác định, cắt bây giờ sẽ ra clip cụt
+   * 60s và bị lưu làm bằng chứng. Poll tiếp ở nhịp chậm: đơn đóng xong
+   * (scan kế / ra ca) là tick sau tự chuyển sang preparing_cut.
+   */
+  | "order_open";
 
 export type RegenerationState = "encoding" | "uploading";
 
@@ -56,7 +70,8 @@ interface WatchApiResponse {
     | "ready"
     | "failed"
     | "warehouse_offline"
-    | "offline_giveup";
+    | "offline_giveup"
+    | "order_open";
   signed_url?: string;
   expires_at?: string;
   regenerating?: boolean;
@@ -64,6 +79,7 @@ interface WatchApiResponse {
   regeneration_error?: string;
   error?: string;
   offline_duration_seconds?: number;
+  open_duration_seconds?: number;
 }
 
 export interface UseWatchClipStateResult {
@@ -71,6 +87,8 @@ export interface UseWatchClipStateResult {
   signedUrl: string | null;
   errorMessage: string | null;
   offlineDurationSeconds: number | null;
+  /** Chỉ có khi state=order_open: đơn đã mở bao nhiêu giây. */
+  openDurationSeconds: number | null;
   elapsedSeconds: number;
   /** Safe-retry: đang regenerate song song với ready cũ. */
   regenerating: boolean;
@@ -89,6 +107,9 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
   const [offlineDurationSeconds, setOfflineDurationSeconds] = useState<
     number | null
   >(null);
+  const [openDurationSeconds, setOpenDurationSeconds] = useState<number | null>(
+    null,
+  );
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [regenerating, setRegenerating] = useState(false);
   const [regenerationState, setRegenerationState] =
@@ -171,9 +192,25 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
         schedule(OFFLINE_POLL_INTERVAL_MS, () => void tick());
         return;
       }
+      if (data.state === "order_open") {
+        // Đơn chưa đóng — server không enqueue cut. KHÔNG stop poll: khi
+        // đơn đóng, tick kế nhận preparing_cut và chạy tiếp bình thường.
+        setState("order_open");
+        setOpenDurationSeconds(data.open_duration_seconds ?? null);
+        setOfflineDurationSeconds(null);
+        setRegenerating(false);
+        setRegenerationState(null);
+        // Dời mốc elapsed theo từng tick: thời gian chờ đơn đóng KHÔNG
+        // phải thời gian cắt clip. Nếu không dời, lúc chuyển sang
+        // preparing_cut counter sẽ nhảy vào "Đang tải clip... 240s".
+        startedAtRef.current = Date.now();
+        schedule(ORDER_OPEN_POLL_INTERVAL_MS, () => void tick());
+        return;
+      }
       if (data.state === "preparing_cut") {
         setState("preparing_cut");
         setOfflineDurationSeconds(null);
+        setOpenDurationSeconds(null);
         setRegenerating(false);
         setRegenerationState(null);
         schedule(ACTIVE_POLL_INTERVAL_MS, () => void tick());
@@ -198,6 +235,7 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
     setErrorMessage(null);
     setSignedUrl(null);
     setOfflineDurationSeconds(null);
+    setOpenDurationSeconds(null);
     setRegenerating(false);
     setRegenerationState(null);
     setRegenerationError(null);
@@ -215,9 +253,21 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
         method: "POST",
         cache: "no-store",
       });
-      // 409 agent_offline → không kick tick vì server không enqueue được.
+      // 409 = server KHÔNG enqueue được. Hai lý do khác nhau hẳn, phải
+      // đọc body để báo đúng: agent offline (chờ mạng) vs đơn chưa đóng
+      // (chờ nghiệp vụ). Báo nhầm "kho offline" khi kho vẫn online sẽ
+      // đẩy người dùng đi kiểm tra sai chỗ.
       if (res.status === 409) {
-        setRegenerationError("Kho đang offline, thử lại sau khi có kết nối.");
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+          message?: string;
+        } | null;
+        setRegenerationError(
+          body?.error === "order_still_open"
+            ? (body.message ??
+              "Đơn đang được đóng gói, chưa cắt được clip đầy đủ.")
+            : "Kho đang offline, thử lại sau khi có kết nối.",
+        );
         return;
       }
     } catch (err) {
@@ -279,6 +329,7 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
     signedUrl,
     errorMessage,
     offlineDurationSeconds,
+    openDurationSeconds,
     elapsedSeconds,
     regenerating,
     regenerationState,

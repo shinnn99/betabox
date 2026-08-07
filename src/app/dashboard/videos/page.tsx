@@ -1547,6 +1547,24 @@ function ModalBody({ watch }: { watch: ReturnType<typeof useWatchClipState> }) {
     );
   }
 
+  if (watch.state === "order_open") {
+    // Đơn chưa kết thúc → chưa biết biên clip. Không cắt, không bắt user
+    // bấm gì: hook vẫn poll, đơn đóng xong là tự chuyển sang cắt.
+    const opened = watch.openDurationSeconds;
+    return (
+      <MessageBox
+        title="Đơn đang được đóng gói"
+        message={
+          (opened != null
+            ? `Đơn đã mở ${formatOfflineDuration(opened)}. `
+            : "") +
+          "Clip đầy đủ sẽ có sau khi đơn kết thúc (quét mã đơn kế tiếp hoặc nhân viên ra ca). Cửa sổ này tự cập nhật, không cần đóng."
+        }
+        icon={Package}
+      />
+    );
+  }
+
   if (watch.state === "preparing_cut") {
     return (
       <ProgressBox

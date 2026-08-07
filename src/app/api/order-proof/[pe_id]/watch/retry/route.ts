@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { readAgentLiveness } from "@/lib/watch/agent-liveness";
 import { enqueueCutClip } from "@/lib/agent-commands/enqueue";
+import { evaluateProofClipGate } from "@/lib/order-proof/proof-clip-gate";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -55,7 +56,7 @@ export async function POST(_req: Request, ctx: RouteContext) {
 
   const { data: pe } = await admin
     .from("packing_events")
-    .select("id, organization_id")
+    .select("id, organization_id, timing_status")
     .eq("id", packingEventId)
     .maybeSingle();
   if (!pe) {
@@ -70,6 +71,18 @@ export async function POST(_req: Request, ctx: RouteContext) {
     return NextResponse.json(
       { error: "cross_org_access_denied" },
       { status: 403 },
+    );
+  }
+
+  // 0) Proof integrity (2026-08-07): đơn chưa đóng thì KHÔNG cắt.
+  // Cùng lý do với chốt chặn ở /watch — resolver thiếu work_ended_at sẽ
+  // rơi nhánh default_post 60s và lưu clip cụt làm bằng chứng. Retry thủ
+  // công là đường thứ hai vào enqueueCutClip nên phải chặn cả hai.
+  const gate = evaluateProofClipGate(pe.timing_status);
+  if (!gate.allowed) {
+    return NextResponse.json(
+      { error: gate.reason, message: gate.message },
+      { status: 409 },
     );
   }
 

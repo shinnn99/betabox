@@ -11,6 +11,7 @@ import {
   type AgentLiveness,
 } from "@/lib/watch/agent-liveness";
 import { createProofClipSignedUrlByPackingEvent } from "@/lib/watch/proof-clip-signed-url";
+import { evaluateProofClipGate } from "@/lib/order-proof/proof-clip-gate";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,7 +44,8 @@ type WatchState =
   | "ready"
   | "failed"
   | "warehouse_offline"
-  | "offline_giveup";
+  | "offline_giveup"
+  | "order_open";
 
 type RegenerationState = "encoding" | "uploading";
 
@@ -60,6 +62,8 @@ interface WatchResponse {
   /** Set khi state=failed. */
   error?: string;
   offline_duration_seconds?: number;
+  /** Set khi state=order_open — giây đơn đã mở, để UI hiện tiến độ. */
+  open_duration_seconds?: number;
 }
 
 function offlineResponse(liveness: AgentLiveness): NextResponse<WatchResponse> {
@@ -118,7 +122,9 @@ export async function POST(_req: Request, ctx: RouteContext) {
 
   const { data: pe } = await admin
     .from("packing_events")
-    .select("id, organization_id, proof_camera_id")
+    .select(
+      "id, organization_id, proof_camera_id, timing_status, work_started_at, scanned_at",
+    )
     .eq("id", packingEventId)
     .maybeSingle();
   if (!pe) {
@@ -208,6 +214,31 @@ export async function POST(_req: Request, ctx: RouteContext) {
     }
 
     return NextResponse.json<WatchResponse>(base);
+  }
+
+  // ======= CHỐT CHẶN: đơn còn 'open' → KHÔNG sinh proof clip =======
+  // Proof integrity (2026-08-07). Trước đây mở /watch lúc đơn chưa đóng
+  // vẫn enqueue cut: resolver không có work_ended_at nên rơi nhánh
+  // fallback `default_post` (60s mặc định) và clip 60s ĐÓ được lưu làm
+  // bằng chứng chính thức cho đơn thực tế dài hơn nhiều.
+  //
+  // Bằng chứng thật đã cắn: clip SPXVN066995638828 (kho Đại Kim) dài 70s
+  // với end_reason='default_post', trong khi packing_event có
+  // work_duration_seconds=180 (capped_timeout).
+  //
+  // Vị trí chốt: SAU nhánh ready (clip đã cắt xong vẫn xem được — không
+  // cắt mất tính khả dụng), TRƯỚC mọi nhánh enqueue. Đơn đóng xong thì
+  // tick kế tự chuyển sang cắt với biên đúng, user không phải bấm gì.
+  if (!evaluateProofClipGate(pe.timing_status).allowed) {
+    const openedAtIso = pe.work_started_at ?? pe.scanned_at;
+    const openedMs = openedAtIso ? new Date(openedAtIso).getTime() : NaN;
+    const openSeconds = Number.isFinite(openedMs)
+      ? Math.max(0, Math.floor((Date.now() - openedMs) / 1000))
+      : 0;
+    return NextResponse.json<WatchResponse>({
+      state: "order_open",
+      open_duration_seconds: openSeconds,
+    });
   }
 
   // ================ NHÁNH 2: KHÔNG có ready ================
