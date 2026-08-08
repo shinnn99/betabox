@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   computeFinalizedClipWindow,
   MAX_CLIP_DURATION_SECONDS,
-} from "../src/lib/order-proof/clip-window";
+} from "../src/lib/order-proof/clip-window.ts";
 import {
   classify,
   estimateProofSize,
@@ -11,7 +11,7 @@ import {
   percentile95BytesPerSecond,
   resolveProofSizeThresholds,
   type SegmentForEstimate,
-} from "../src/lib/order-proof/proof-size-estimate";
+} from "../src/lib/order-proof/proof-size-estimate.ts";
 
 /**
  * Cửa sổ clip + ước lượng dung lượng proof.

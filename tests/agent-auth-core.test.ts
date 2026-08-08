@@ -15,7 +15,7 @@ import {
   NONCE_SAFETY_BUFFER_MS,
   type AgentAuthHeadersV1,
   type AgentAuthHeadersV2,
-} from "../src/lib/warehouse/agent-auth-core";
+} from "../src/lib/warehouse/agent-auth-core.ts";
 
 const SECRET = "test_secret_16_bytes_min";
 const NOW = 1_800_000_000_000; // 2027-01-15

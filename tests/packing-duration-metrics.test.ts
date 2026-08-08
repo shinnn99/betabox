@@ -4,7 +4,7 @@ import {
   isMeasuredDuration,
   PACKING_EVENT_TIMING_STATUSES,
   PACKING_EVENT_MEASURED_TIMING_STATUSES,
-} from "../src/lib/domain-status";
+} from "../src/lib/domain-status.ts";
 
 /**
  * Quy tắc: KPI thời gian đóng gói chỉ tính trên duration ĐO ĐƯỢC.

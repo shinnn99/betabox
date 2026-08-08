@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { secureCompare, verifyBearerSecret } from "../src/lib/secure-compare";
+import { secureCompare, verifyBearerSecret } from "../src/lib/secure-compare.ts";
 
 /**
  * Test HIGH-14: timing-safe secret compare + Bearer verify.

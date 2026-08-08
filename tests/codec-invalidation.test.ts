@@ -4,7 +4,7 @@ import {
   CONNECTION_FIELDS,
   buildCodecInvalidationPatch,
   detectConnectionChange,
-} from "../src/lib/camera/codec-invalidation";
+} from "../src/lib/camera/codec-invalidation.ts";
 
 /**
  * Test HIGH-11: detect connection change + build invalidation patch.

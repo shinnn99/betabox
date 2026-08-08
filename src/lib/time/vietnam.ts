@@ -64,6 +64,41 @@ export function formatVnTime(iso: string): string {
   return `${pad(p.hour)}:${pad(p.minute)}:${pad(p.second)}`;
 }
 
+/**
+ * "YYYY-MM-DD" theo giờ VN — khoá ngày dùng cho query param và <input
+ * type="date">. KHÔNG dùng `toISOString().slice(0,10)`: đó là ngày UTC,
+ * mà từ 00:00 đến 06:59 giờ VN thì ngày UTC vẫn còn là hôm qua — ca sáng
+ * sớm ở kho sẽ mở nhầm nhật ký ngày hôm trước. Input hỏng → chuỗi rỗng.
+ */
+export function vnDateKey(input: string | number | Date = new Date()): string {
+  const p = vnParts(input);
+  if (!p) return "";
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}`;
+}
+
+/** Khoá ngày "2026-08-07" → nhãn người đọc "07/08/2026". */
+export function formatDateKeyVn(key: string): string {
+  const [y, m, d] = key.split("-");
+  return d && m && y ? `${d}/${m}/${y}` : key;
+}
+
+/**
+ * Cộng/trừ ngày trên khoá "YYYY-MM-DD".
+ *
+ * Tính bằng Date.UTC nên không dính TZ của máy: khoá ở đây là ngày lịch
+ * VN thuần, không phải một instant — đem cộng bằng Date local sẽ lệch khi
+ * trình duyệt để múi giờ khác. Input hỏng → trả nguyên input.
+ */
+export function shiftDateKey(key: string, deltaDays: number): string {
+  const [y, m, d] = key.split("-").map((p) => Number.parseInt(p, 10));
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) {
+    return key;
+  }
+  const shifted = new Date(Date.UTC(y, m - 1, d) + deltaDays * 86_400_000);
+  if (Number.isNaN(shifted.getTime())) return key;
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
+}
+
 /** "dd/MM/yyyy HH:mm:ss" giờ VN. Input hỏng → trả nguyên input. */
 export function formatVnDateTime(input: string | number | Date): string {
   const p = vnParts(input);

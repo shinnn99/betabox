@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deriveUiState } from "../src/lib/recording/ui-state";
+import { deriveUiState } from "../src/lib/recording/ui-state.ts";
 
 /**
  * B2 CRIT-2: deriveUiState với connection_lost mapping.

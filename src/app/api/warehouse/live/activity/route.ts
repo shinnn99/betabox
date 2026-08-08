@@ -2,12 +2,13 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, isError } from "@/lib/supabase/guard";
+import { resolveVietnamDayScope } from "@/lib/warehouse/time-range";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
+const MAX_LIMIT = 500;
 
 type ActivityKind =
   | "session_started"
@@ -50,6 +51,13 @@ function parseLimit(req: NextRequest): number {
   return Math.min(n, MAX_LIMIT);
 }
 
+/**
+ * Bảng hoạt động LUÔN bó trong một ngày VN — mặc định hôm nay.
+ *
+ * Trước đây endpoint này lấy N sự kiện mới nhất bất kể ngày, nên khi hôm
+ * nay quét ít thì bảng kéo cả dữ liệu hôm qua lên trong khi 4 thẻ KPI
+ * phía trên chỉ đếm hôm nay — hai con số cạnh nhau mâu thuẫn.
+ */
 export async function GET(req: NextRequest) {
   const ctx = await requirePermission("warehouse.view");
   if (isError(ctx)) return ctx;
@@ -57,23 +65,46 @@ export async function GET(req: NextRequest) {
   const admin = createAdminClient();
   const limit = parseLimit(req);
   const orgId = ctx.organizationId;
+  const day = resolveVietnamDayScope(req.nextUrl.searchParams.get("date"));
 
-  const { data: raws, error: rawErr } = await admin
-    .from("warehouse_scan_raw_events")
-    .select(
-      "id, scanner_device_code, raw_value, scan_type, scanned_at, received_at",
-    )
-    .eq("organization_id", orgId)
-    .order("received_at", { ascending: false })
-    .limit(limit);
+  // `scanned_at` chứ không phải `received_at`: summary/issues/stations đều
+  // bó ngày theo scanned_at, dùng cột khác ở đây là đẻ lại đúng cái mâu
+  // thuẫn số liệu vừa đi sửa. Thứ tự hiển thị vẫn theo received_at.
+  const [rawsRes, countRes] = await Promise.all([
+    admin
+      .from("warehouse_scan_raw_events")
+      .select(
+        "id, scanner_device_code, raw_value, scan_type, scanned_at, received_at",
+      )
+      .eq("organization_id", orgId)
+      .gte("scanned_at", day.startIso)
+      .lt("scanned_at", day.endIso)
+      .order("received_at", { ascending: false })
+      .limit(limit),
+    admin
+      .from("warehouse_scan_raw_events")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", orgId)
+      .gte("scanned_at", day.startIso)
+      .lt("scanned_at", day.endIso),
+  ]);
+
+  const { data: raws, error: rawErr } = rawsRes;
 
   if (rawErr) {
     return NextResponse.json({ error: rawErr.message }, { status: 500 });
   }
 
+  const meta = {
+    date: day.dateKey,
+    invalid_date: day.invalidDate,
+    limit,
+    total: countRes.count ?? (raws?.length ?? 0),
+  };
+
   const rawIds = (raws ?? []).map((r) => r.id);
   if (rawIds.length === 0) {
-    return NextResponse.json({ activity: [] });
+    return NextResponse.json({ activity: [], ...meta });
   }
 
   const [scanResults, packings] = await Promise.all([
@@ -292,5 +323,5 @@ export async function GET(req: NextRequest) {
     };
   });
 
-  return NextResponse.json({ activity });
+  return NextResponse.json({ activity, ...meta });
 }
