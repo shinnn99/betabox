@@ -4,12 +4,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
+  CalendarDays,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   CircleAlert,
   CircleX,
   Clock,
   Copy,
+  History,
   PackageCheck,
   PackageX,
   PlugZap,
@@ -23,6 +26,7 @@ import {
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import StatCard from "@/components/StatCard";
 import { useToast } from "@/components/ui/Toast";
+import { formatDateKeyVn, shiftDateKey, vnDateKey } from "@/lib/time/vietnam";
 
 const POLL_INTERVAL_MS = 3000;
 /**
@@ -31,6 +35,10 @@ const POLL_INTERVAL_MS = 3000;
  */
 const PROOF_RISK_POLL_INTERVAL_MS = 60000;
 const FLASH_DURATION_MS = 1500;
+/** Số dòng nhật ký tải mỗi lần. Bấm "Tải thêm" cộng thêm một bậc. */
+const ACTIVITY_PAGE_SIZE = 100;
+/** Phải khớp MAX_LIMIT ở /api/warehouse/live/activity. */
+const ACTIVITY_MAX_LIMIT = 500;
 const AGENT_OFFLINE_BANNER_AFTER_MIN = 5;
 const STATION_IDLE_WARNING_MINUTES = 10;
 
@@ -138,6 +146,12 @@ interface ActivityItem {
 
 interface ActivityResponse {
   activity: ActivityItem[];
+  /** Ngày VN mà server thực sự trả (có thể khác ngày client gửi nếu gửi rác). */
+  date: string;
+  invalid_date: boolean;
+  limit: number;
+  /** Tổng sự kiện của ngày đó, kể cả phần chưa tải. */
+  total: number;
 }
 
 type IssueKind =
@@ -512,6 +526,7 @@ export default function OperationsPage() {
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [activityError, setActivityError] = useState<string | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [freshIds, setFreshIds] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<ActivityTab>("all");
@@ -519,53 +534,124 @@ export default function OperationsPage() {
     new Set(),
   );
 
+  // Nhật ký hoạt động bó trong MỘT ngày VN, mặc định hôm nay. Đổi ngày chỉ
+  // ảnh hưởng bảng này: thẻ KPI, bàn đóng hàng và panel "Cần xử lý" là
+  // trạng thái ĐANG DIỄN RA, chọn ngày quá khứ cho chúng thì vô nghĩa
+  // (bàn nào "đang có người" hôm qua không phải câu hỏi có nghĩa).
+  const [todayKey, setTodayKey] = useState(() => vnDateKey());
+  // Cùng một giá trị, không gọi vnDateKey() lần hai: hai lần gọi có thể
+  // rơi hai bên nửa đêm và trang mở ra đã ở trạng thái "xem ngày cũ".
+  const [dateKey, setDateKey] = useState(todayKey);
+  const [activityLimit, setActivityLimit] = useState(ACTIVITY_PAGE_SIZE);
+  const [activityTotal, setActivityTotal] = useState(0);
+  const isToday = dateKey === todayKey;
+
   const [proofRisks, setProofRisks] = useState<Map<string, ProofRisk>>(
     new Map(),
   );
 
   const inflightRef = useRef(false);
+  const activityInflightRef = useRef(false);
   const seenIdsRef = useRef<Set<string>>(new Set());
   const firstLoadRef = useRef(true);
+  const dateKeyRef = useRef(dateKey);
+  const prevTodayKeyRef = useRef(todayKey);
+
+  useEffect(() => {
+    dateKeyRef.current = dateKey;
+  }, [dateKey]);
+
+  /**
+   * Đổi ngày phải xoá dấu vết sự kiện đã thấy, nếu không toàn bộ nhật ký
+   * ngày mới sẽ bị coi là "sự kiện vừa xảy ra" và nổ một tràng toast.
+   */
+  const goToDate = useCallback((next: string) => {
+    if (!next) return;
+    setDateKey(next);
+    dateKeyRef.current = next;
+    setActivityLimit(ACTIVITY_PAGE_SIZE);
+    seenIdsRef.current = new Set();
+    firstLoadRef.current = true;
+    setFreshIds(new Set());
+  }, []);
+
+  const loadMoreActivity = useCallback(() => {
+    // Dòng tải thêm là dòng CŨ hơn — không phải sự kiện mới, chặn toast.
+    firstLoadRef.current = true;
+    setActivityLimit((prev) =>
+      Math.min(prev + ACTIVITY_PAGE_SIZE, ACTIVITY_MAX_LIMIT),
+    );
+  }, []);
 
   const refresh = useCallback(async () => {
     if (inflightRef.current) return;
     inflightRef.current = true;
     try {
-      const [s1, s2, s3, s4] = await Promise.all([
+      const [s1, s2, s3] = await Promise.all([
         fetch("/api/warehouse/live/summary", { cache: "no-store" }),
         fetch("/api/warehouse/live/stations", { cache: "no-store" }),
-        fetch("/api/warehouse/live/activity?limit=60", { cache: "no-store" }),
         fetch("/api/warehouse/live/issues?limit=30", { cache: "no-store" }),
       ]);
-      if (!s1.ok || !s2.ok || !s3.ok || !s4.ok) {
+      if (!s1.ok || !s2.ok || !s3.ok) {
         throw new Error("Một hoặc nhiều endpoint live trả lỗi");
       }
-      const [sum, st, act, iss] = (await Promise.all([
+      const [sum, st, iss] = (await Promise.all([
         s1.json(),
         s2.json(),
         s3.json(),
-        s4.json(),
-      ])) as [SummaryResponse, StationsResponse, ActivityResponse, IssuesResponse];
-
-      // Diff detect before mutating state.
-      const wasFirstLoad = firstLoadRef.current;
-      const newEvents: ActivityItem[] = [];
-      for (const ev of act.activity) {
-        if (!seenIdsRef.current.has(ev.id)) {
-          seenIdsRef.current.add(ev.id);
-          if (!wasFirstLoad) newEvents.push(ev);
-        }
-      }
-      seenIdsRef.current = new Set(act.activity.map((e) => e.id));
+      ])) as [SummaryResponse, StationsResponse, IssuesResponse];
 
       setSummary(sum);
       setStations(st.stations);
-      setActivity(act.activity);
       setIssues(iss.issues);
       setError(null);
       setLastRefreshed(new Date());
+      // Bảng treo qua đêm: ngày VN đổi thì thẻ KPI đã nhảy sang ngày mới,
+      // nhật ký phải đi theo — nếu không màn hình kho im lặng đứng ở hôm qua.
+      setTodayKey(vnDateKey());
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      inflightRef.current = false;
+    }
+  }, []);
 
-      if (!wasFirstLoad && newEvents.length > 0) {
+  const refreshActivity = useCallback(async () => {
+    if (activityInflightRef.current) return;
+    activityInflightRef.current = true;
+    try {
+      const res = await fetch(
+        `/api/warehouse/live/activity?date=${dateKey}&limit=${activityLimit}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) throw new Error("Không tải được nhật ký hoạt động");
+      const act = (await res.json()) as ActivityResponse;
+      if (act.date !== dateKeyRef.current) {
+        // Server bác ngày client gửi (không có thật) và đã rơi về hôm nay:
+        // kéo client theo, nếu không nhãn ngày và dữ liệu sẽ đứng lệch
+        // nhau vĩnh viễn vì nhánh dưới cứ bỏ mọi phản hồi.
+        if (act.invalid_date) goToDate(act.date);
+        // Còn lại là phản hồi của ngày cũ về muộn sau khi người dùng đã
+        // bấm sang ngày khác → bỏ, đừng vẽ dữ liệu ngày này dưới nhãn
+        // ngày kia.
+        return;
+      }
+
+      const wasFirstLoad = firstLoadRef.current;
+      const newEvents: ActivityItem[] = [];
+      for (const ev of act.activity) {
+        if (!seenIdsRef.current.has(ev.id) && !wasFirstLoad) newEvents.push(ev);
+      }
+      seenIdsRef.current = new Set(act.activity.map((e) => e.id));
+
+      setActivity(act.activity);
+      setActivityTotal(act.total);
+      setActivityError(null);
+      firstLoadRef.current = false;
+
+      // Chỉ hôm nay mới có "sự kiện vừa xảy ra". Xem lại ngày cũ mà nổ
+      // toast + nháy dòng là báo động giả.
+      if (!wasFirstLoad && isToday && newEvents.length > 0) {
         for (const ev of newEvents) {
           const { variant, message } = describeActivityToast(ev);
           if (variant === "success") toast.success(message);
@@ -586,13 +672,12 @@ export default function OperationsPage() {
           });
         }, FLASH_DURATION_MS);
       }
-      firstLoadRef.current = false;
     } catch (e) {
-      setError((e as Error).message);
+      setActivityError((e as Error).message);
     } finally {
-      inflightRef.current = false;
+      activityInflightRef.current = false;
     }
-  }, [toast]);
+  }, [dateKey, activityLimit, isToday, toast, goToDate]);
 
   useEffect(() => {
     refresh();
@@ -600,14 +685,33 @@ export default function OperationsPage() {
     return () => clearInterval(t);
   }, [refresh]);
 
+  // Người đang đứng ở "hôm nay" thì qua nửa đêm đi theo ngày mới; người
+  // đang soi một ngày quá khứ thì giữ nguyên chỗ họ đang xem.
+  useEffect(() => {
+    if (prevTodayKeyRef.current !== todayKey) {
+      const wasOnToday = dateKeyRef.current === prevTodayKeyRef.current;
+      prevTodayKeyRef.current = todayKey;
+      if (wasOnToday) goToDate(todayKey);
+    }
+  }, [todayKey, goToDate]);
+
+  useEffect(() => {
+    refreshActivity();
+    // Ngày quá khứ đứng yên — poll 3 giây chỉ tốn request.
+    if (!isToday) return;
+    const t = setInterval(refreshActivity, POLL_INTERVAL_MS);
+    return () => clearInterval(t);
+  }, [refreshActivity, isToday]);
+
   // Nhịp riêng cho ước lượng dung lượng proof. Lỗi ở đây KHÔNG được
   // dựng banner đỏ toàn trang: đây là thông tin bổ trợ, mất nó không
   // ảnh hưởng giám sát chính.
   const refreshProofRisks = useCallback(async () => {
     try {
-      const res = await fetch("/api/warehouse/live/proof-size-risk?limit=60", {
-        cache: "no-store",
-      });
+      const res = await fetch(
+        `/api/warehouse/live/proof-size-risk?date=${dateKey}&limit=60`,
+        { cache: "no-store" },
+      );
       if (!res.ok) return;
       const data = (await res.json()) as ProofRiskResponse;
       const next = new Map<string, ProofRisk>();
@@ -618,13 +722,15 @@ export default function OperationsPage() {
     } catch {
       // Im lặng: badge biến mất, phần còn lại của trang vẫn chạy.
     }
-  }, []);
+  }, [dateKey]);
 
   useEffect(() => {
     refreshProofRisks();
+    // Ngày quá khứ: đơn đã đóng, ước lượng không đổi nữa — tải một lần.
+    if (!isToday) return;
     const t = setInterval(refreshProofRisks, PROOF_RISK_POLL_INTERVAL_MS);
     return () => clearInterval(t);
-  }, [refreshProofRisks]);
+  }, [refreshProofRisks, isToday]);
 
   const visibleIssues = useMemo(
     () => issues.filter((i) => !dismissedIssueIds.has(i.id)),
@@ -846,36 +952,97 @@ export default function OperationsPage() {
           <div className="p-4 lg:px-5 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
             <div>
               <p className="text-sm font-semibold text-slate-800">
-                Hoạt động gần nhất
+                {isToday
+                  ? "Hoạt động hôm nay"
+                  : `Hoạt động ngày ${formatDateKeyVn(dateKey)}`}
               </p>
               <p className="text-xs text-slate-500">
-                Tất cả lần quét và vào/ra ca, mới nhất ở trên
+                {activityTotal > 0
+                  ? `${activityTotal} lần quét và vào/ra ca trong ngày, mới nhất ở trên`
+                  : "Tất cả lần quét và vào/ra ca trong ngày, mới nhất ở trên"}
+                {activityError ? ` · ${activityError}` : ""}
               </p>
             </div>
-            <div className="inline-flex items-center gap-0.5 p-0.5 rounded-xl bg-slate-100">
-              {(Object.keys(ACTIVITY_TAB_LABEL) as ActivityTab[]).map((tab) => {
-                const active = tab === activeTab;
-                return (
-                  <button
-                    key={tab}
-                    type="button"
-                    onClick={() => setActiveTab(tab)}
-                    className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors ${
-                      active
-                        ? "bg-white text-slate-900 shadow-sm"
-                        : "text-slate-600 hover:text-slate-900"
-                    }`}
-                  >
-                    {ACTIVITY_TAB_LABEL[tab]}
-                  </button>
-                );
-              })}
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-0.5">
+                <button
+                  type="button"
+                  onClick={() => goToDate(shiftDateKey(dateKey, -1))}
+                  title="Ngày trước"
+                  aria-label="Ngày trước"
+                  className="h-7 w-7 inline-flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </button>
+                <label className="inline-flex items-center gap-1.5 px-1.5 cursor-pointer">
+                  <CalendarDays className="h-3.5 w-3.5 text-slate-400" />
+                  <input
+                    type="date"
+                    value={dateKey}
+                    max={todayKey}
+                    onChange={(e) => goToDate(e.target.value)}
+                    className="text-xs font-semibold text-slate-700 bg-transparent outline-none cursor-pointer"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => goToDate(shiftDateKey(dateKey, 1))}
+                  disabled={isToday}
+                  title="Ngày sau"
+                  aria-label="Ngày sau"
+                  className="h-7 w-7 inline-flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 disabled:opacity-30 disabled:hover:bg-transparent"
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {!isToday && (
+                <button
+                  type="button"
+                  onClick={() => goToDate(todayKey)}
+                  className="h-8 px-3 rounded-xl text-xs font-semibold text-slate-600 border border-slate-200 hover:bg-slate-50"
+                >
+                  Về hôm nay
+                </button>
+              )}
+              <div className="inline-flex items-center gap-0.5 p-0.5 rounded-xl bg-slate-100">
+                {(Object.keys(ACTIVITY_TAB_LABEL) as ActivityTab[]).map((tab) => {
+                  const active = tab === activeTab;
+                  return (
+                    <button
+                      key={tab}
+                      type="button"
+                      onClick={() => setActiveTab(tab)}
+                      className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors ${
+                        active
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      {ACTIVITY_TAB_LABEL[tab]}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
+          {!isToday && (
+            <div className="px-4 lg:px-5 py-2 bg-amber-50 border-b border-amber-100 text-[11px] text-amber-800 flex items-start gap-2">
+              <History className="h-3.5 w-3.5 mt-px shrink-0" />
+              <span>
+                Đang xem lại ngày {formatDateKeyVn(dateKey)} — bảng này không tự
+                cập nhật. Thẻ số, bàn đóng hàng và panel &ldquo;Cần xử lý&rdquo;
+                phía trên vẫn là hôm nay.
+              </span>
+            </div>
+          )}
           <div>
             {filteredActivity.length === 0 ? (
               <p className="text-xs text-slate-500 p-4 text-center">
-                Không có hoạt động phù hợp.
+                {activity.length === 0
+                  ? isToday
+                    ? "Hôm nay chưa có lần quét nào."
+                    : `Ngày ${formatDateKeyVn(dateKey)} không có lần quét nào.`
+                  : "Không có hoạt động phù hợp với bộ lọc đang chọn."}
               </p>
             ) : (
               <table className="w-full text-sm table-fixed border-separate border-spacing-0">
@@ -997,6 +1164,31 @@ export default function OperationsPage() {
               </table>
             )}
           </div>
+          {activity.length < activityTotal && (
+            <div className="border-t border-slate-100 px-4 lg:px-5 py-3 flex items-center justify-center gap-3 flex-wrap">
+              <p className="text-xs text-slate-500">
+                Đang hiển thị {activity.length} / {activityTotal} sự kiện của
+                ngày (mới nhất trước).
+              </p>
+              {activityLimit < ACTIVITY_MAX_LIMIT ? (
+                <button
+                  type="button"
+                  onClick={loadMoreActivity}
+                  className="h-8 px-3 rounded-xl text-xs font-semibold text-slate-700 border border-slate-200 hover:bg-slate-50"
+                >
+                  Tải thêm
+                </button>
+              ) : (
+                // Nói thẳng phần bị cắt. Trần im lặng đọc thành "đã xem hết
+                // ngày" trong khi còn hàng trăm đơn chưa hiện.
+                <span className="text-xs text-amber-700">
+                  Đã tới trần {ACTIVITY_MAX_LIMIT} dòng — {activityTotal - activity.length}{" "}
+                  sự kiện đầu ngày chưa hiện. Dùng Báo cáo hiệu suất để xem cả
+                  ngày.
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Agent footer */}

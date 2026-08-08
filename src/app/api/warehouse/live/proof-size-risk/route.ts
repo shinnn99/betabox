@@ -9,6 +9,7 @@ import {
   type ProofSizeEstimate,
   type SegmentForEstimate,
 } from "@/lib/order-proof/proof-size-estimate";
+import { resolveVietnamDayScope } from "@/lib/warehouse/time-range";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -68,6 +69,10 @@ export async function GET(req: NextRequest) {
   const admin = createAdminClient();
   const orgId = ctx.organizationId;
   const limit = parseLimit(req);
+  // Cùng ngày với bảng hoạt động. Không bó ngày ở đây thì khi người dùng
+  // xem lại hôm qua, badge biến mất và tab "Cần xử lý" đếm thiếu đơn
+  // proof quá nặng — im lặng báo sót, đúng thứ tab đó sinh ra để chặn.
+  const day = resolveVietnamDayScope(req.nextUrl.searchParams.get("date"));
   // Lấy cặp ngưỡng đã đảm bảo warn < guard. warn_bytes trả về ở response
   // là giá trị THẬT đang chạy (đã kẹp nếu env sai thứ tự).
   const { guardBytes, warnBytes } = resolveProofSizeThresholds();
@@ -83,6 +88,8 @@ export async function GET(req: NextRequest) {
     .eq("status", "valid")
     .not("work_ended_at", "is", null)
     .not("proof_camera_id", "is", null)
+    .gte("scanned_at", day.startIso)
+    .lt("scanned_at", day.endIso)
     .order("scanned_at", { ascending: false })
     .limit(limit);
 
