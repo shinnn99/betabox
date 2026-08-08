@@ -4,7 +4,7 @@ import {
   buildAuditRow,
   logPlatformAuditWith,
   type PlatformAuditWriter,
-} from "../src/lib/platform/audit-core";
+} from "../src/lib/platform/audit-core.ts";
 
 /**
  * Test HIGH-7: platform audit core.

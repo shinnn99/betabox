@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 
 process.env.BC_TEST_STUB_ADMIN = "1";
 
-const mod = await import("../src/lib/warehouse/agent-auth");
-const telemetry = await import("../src/lib/warehouse/agent-sig-telemetry");
+const mod = await import("../src/lib/warehouse/agent-auth.ts");
+const telemetry = await import("../src/lib/warehouse/agent-sig-telemetry.ts");
 
 /**
  * Test consumeNonce + verifyAgentRequest với mock Supabase client.
@@ -124,7 +124,7 @@ import { createHmac } from "node:crypto";
 import {
   canonicalV2,
   bodySha256Hex,
-} from "../src/lib/warehouse/agent-auth-core";
+} from "../src/lib/warehouse/agent-auth-core.ts";
 
 const SECRET = "test_secret_16_bytes_min";
 const NOW = 1_800_000_000_000;

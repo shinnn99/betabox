@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { evaluateProofClipGate } from "../src/lib/order-proof/proof-clip-gate";
+import { evaluateProofClipGate } from "../src/lib/order-proof/proof-clip-gate.ts";
 
 /**
  * Cổng chặn cắt proof clip khi đơn chưa đóng.

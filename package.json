@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "node --import ./tests/register.mjs --conditions=react-server --experimental-strip-types --test \"tests/*.test.ts\"",
     "check:signed-url": "node scripts/check-proof-clip-signed-url.mjs"
   },
   "dependencies": {
