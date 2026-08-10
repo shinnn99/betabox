@@ -43,7 +43,18 @@ export default async function DashboardRouteLayout({
     const supabase = await createClient();
     const { data: claimsData } = await supabase.auth.getClaims();
     const userId = claimsData?.claims?.sub as string | undefined;
-    if (userId && (await checkPlatformAdmin(userId))) {
+    let isPlatform = false;
+    if (userId) {
+      try {
+        isPlatform = !!(await checkPlatformAdmin(userId));
+      } catch {
+        // Không kết luận được → KHÔNG chuyển hướng. Proxy đã chặn request
+        // này bằng 503 trước khi tới đây; nếu vì lý do nào đó lọt xuống,
+        // để trang render và API tự trả lỗi thật, đừng đá người dùng sang
+        // /platform mà họ có thể không có quyền.
+      }
+    }
+    if (isPlatform) {
       redirect("/platform");
     }
     // Không phải platform admin mà vẫn không có org → để nguyên cho guard

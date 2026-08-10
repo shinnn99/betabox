@@ -1,6 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
-import { createClient } from "@supabase/supabase-js";
 import { NextResponse, type NextRequest } from "next/server";
+import { checkPlatformAdmin } from "@/lib/platform/admin-check";
 
 const PUBLIC_PATHS = ["/login", "/auth", "/signup"];
 
@@ -110,25 +110,27 @@ export async function updateSession(request: NextRequest) {
     (user && isDashboardPath && !hasOrgClaim && !hasImpersonateCookie);
 
   if (shouldCheckPlatform) {
+    // Dùng chung checkPlatformAdmin — MỘT nguồn sự thật với guard.ts và
+    // src/proxy.ts. Trước đây chỗ này tự dựng client và tự query, và bản
+    // sao đó lặng lẽ lệch: nó viết `const { data } = await ...`, bỏ rơi
+    // `error`. supabase-js KHÔNG throw khi 401/5xx nên `catch` không bao
+    // giờ chạy — service key sai biến thành `isPlatform = false`, và
+    // platform owner bị đẩy vào dashboard tenant. Sự cố 10/08/2026.
     let isPlatform = false;
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (serviceKey && user) {
-      try {
-        const admin = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL!,
-          serviceKey,
-          { auth: { autoRefreshToken: false, persistSession: false } }
-        );
-        const { data } = await admin
-          .from("platform_admins")
-          .select("id")
-          .eq("id", user.sub as string)
-          .eq("status", "active")
-          .maybeSingle();
-        isPlatform = !!data;
-      } catch (e) {
-        console.error("[proxy] platform_admins check error:", e);
-      }
+    try {
+      isPlatform = !!(await checkPlatformAdmin(user!.sub as string));
+    } catch {
+      // KHÔNG đoán. Đoán sai ở đây đưa người dùng vào đúng màn hình sai và
+      // đổ lỗi cho tài khoản của họ. Trả lỗi hạ tầng cho đúng bản chất —
+      // checkPlatformAdmin đã log kèm nguyên nhân.
+      return NextResponse.json(
+        {
+          error: "platform_check_unavailable",
+          message:
+            "Không xác định được loại tài khoản (không truy vấn được platform_admins). Kiểm tra SUPABASE_SERVICE_ROLE_KEY của deployment.",
+        },
+        { status: 503 },
+      );
     }
     if (path === "/login") {
       const url = request.nextUrl.clone();

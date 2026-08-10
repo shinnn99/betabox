@@ -110,7 +110,24 @@ export async function proxy(request: NextRequest) {
     }
 
     // Check platform admin — lớp B (một nguồn sự thật, dùng chung với guard)
-    const platform = await checkPlatformAdmin(userId);
+    //
+    // Không kết luận được (service key sai / Supabase 5xx) thì DỪNG, đừng
+    // rơi xuống nhánh dưới. Nhánh dưới XOÁ cookie impersonate — với một
+    // platform admin thật đang làm việc, đó là phá phiên của họ vì một lỗi
+    // hạ tầng nhất thời. Fail-closed nhưng không phá dữ liệu.
+    let platform: Awaited<ReturnType<typeof checkPlatformAdmin>>;
+    try {
+      platform = await checkPlatformAdmin(userId);
+    } catch {
+      return NextResponse.json(
+        {
+          error: "platform_check_unavailable",
+          message:
+            "Không xác định được loại tài khoản (không truy vấn được platform_admins). Kiểm tra SUPABASE_SERVICE_ROLE_KEY của deployment.",
+        },
+        { status: 503 },
+      );
+    }
     if (!platform) {
       // Tenant KHÔNG platform-admin đã có cookie impersonate (giả/stale) →
       // dọn cookie + redirect về chính URL đó (browser gửi request 2 KHÔNG

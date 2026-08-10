@@ -137,7 +137,20 @@ async function readClaims(): Promise<ApiContext | NextResponse> {
   }
 
   // ═══════ CÓ TOKEN — LỚP B: check platform_admins ═══════
-  const platform = await checkPlatformAdmin(jwt.userId);
+  //
+  // Không kết luận được → 503, KHÔNG rơi xuống nhánh `!platform`. Nhánh đó
+  // hiểu là "tenant cầm token bất thường" và lặng lẽ hạ xuống đường tenant;
+  // với một platform admin thật gặp lỗi hạ tầng, đó là gán nhầm danh tính
+  // rồi ghi log cảnh báo sai sự thật.
+  let platform: Awaited<ReturnType<typeof checkPlatformAdmin>>;
+  try {
+    platform = await checkPlatformAdmin(jwt.userId);
+  } catch {
+    return NextResponse.json(
+      { error: "platform_check_unavailable" },
+      { status: 503 },
+    );
+  }
 
   if (!platform) {
     console.warn("[guard] non-platform user has org-context token", {
@@ -291,7 +304,18 @@ export async function requirePlatformRole(
   const jwt = await readJwtClaims();
   if (jwt instanceof NextResponse) return jwt;
 
-  const platform = await checkPlatformAdmin(jwt.userId);
+  // 503 chứ không 403 khi không kết luận được: 403 nói "bạn không có quyền"
+  // — sai sự thật với một platform admin thật, và đẩy người đi tìm lỗi
+  // phân quyền trong khi hỏng là service key.
+  let platform: Awaited<ReturnType<typeof checkPlatformAdmin>>;
+  try {
+    platform = await checkPlatformAdmin(jwt.userId);
+  } catch {
+    return NextResponse.json(
+      { error: "platform_check_unavailable" },
+      { status: 503 },
+    );
+  }
   if (!platform) {
     return NextResponse.json(
       { error: "forbidden_platform_only" },
