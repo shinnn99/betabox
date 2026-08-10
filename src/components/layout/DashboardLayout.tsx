@@ -28,25 +28,22 @@ export default function DashboardLayout({
   const [collapsed, setCollapsed] = useState(false);
   const [isImpersonating, setIsImpersonating] = useState(false);
 
+  // Trạng thái impersonate đọc MỘT LẦN từ cờ server-render ở
+  // src/app/dashboard/layout.tsx, không poll endpoint.
+  //
+  // Trước đây chỗ này fetch /api/platform/current-impersonate-org mỗi 3 giây
+  // trên MỌI trang dashboard, cho MỌI user — chỉ để quyết định có chừa 40px
+  // cho banner đỏ hay không. Với tenant thường (không bao giờ impersonate)
+  // đó là 1.200 request/giờ/tab hoàn toàn vô ích, và mỗi request còn kéo
+  // theo một lượt session refresh ở proxy.
+  //
+  // An toàn vì cờ chỉ đổi khi cookie impersonate đổi, mà đường đó LUÔN kết
+  // thúc bằng full reload (ImpersonateWatcher) → server render lại cờ mới.
   useEffect(() => {
-    let cancelled = false;
-    const check = async () => {
-      try {
-        const res = await fetch("/api/platform/current-impersonate-org", {
-          cache: "no-store",
-        });
-        const data = await res.json();
-        if (!cancelled) setIsImpersonating(Boolean(data.orgId));
-      } catch {
-        if (!cancelled) setIsImpersonating(false);
-      }
-    };
-    check();
-    const id = window.setInterval(check, 3000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
+    const flag = document
+      .querySelector("[data-impersonating]")
+      ?.getAttribute("data-impersonating");
+    setIsImpersonating(flag === "1");
   }, []);
 
   useEffect(() => {

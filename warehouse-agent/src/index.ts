@@ -78,7 +78,11 @@ import {
  * setInterval riêng, key khác nhau — 1 limiter chứa nhiều key OK.
  */
 const fetchLogLimiter = new LogRateLimiter();
-import { probeTargets, reportProbes } from "./camera-probe";
+import {
+  probeTargets,
+  reportProbes,
+  type ActiveCameraItem,
+} from "./camera-probe";
 import {
   listCandidateSubnets,
   rankCandidateSubnets,
@@ -1642,35 +1646,45 @@ async function main(): Promise<void> {
   // Camera probe (mở rộng):
   //   Nguồn A — lifecycle.probeTargets(): camera đang recording hoặc đang
   //     long-retry vì tắt vật lý (giữ nguyên hành vi cũ).
-  //   Nguồn B — cloud fetch all_active: mọi camera status='active' của org,
+  //   Nguồn B — danh sách camera status='active' của org do cloud gửi về,
   //     kể cả chưa recording. Để UI hiện Online cho camera vừa cấu hình,
   //     không bắt user Test kết nối tay hoặc chờ Start recording.
   // Union theo cameraId (A tinh — có rtspUrl tin cậy từ config file/desired;
   // B chỉ dùng cho camera A không có).
   //
-  // Nếu fetch B fail (mạng flake) → skip, dùng A một mình như cũ. Không
-  // block probe loop.
+  // Nguồn B trước đây là một request RIÊNG mỗi nhịp 30s
+  // (recording-credentials?all_active). Nay nó đi nhờ PHẢN HỒI của chính
+  // request báo probe — xem chú thích piggy-back ở route
+  // /api/agent/camera-probe. Hệ quả: danh sách dùng cho nhịp này là của
+  // nhịp trước, trễ tối đa 30s.
+  //
+  // Nếu chuyến gần nhất hỏng (mạng flake) → giữ danh sách cũ, dùng A là
+  // chính. Không block probe loop, và tuyệt đối không hạ về mảng rỗng.
+  //
+  // null = chưa biết gì → không thu hồi desired của ai.
+  let lastActiveCameras: ActiveCameraItem[] | null = null;
+
+  // Một lượt fetch lúc khởi động để nhịp probe ĐẦU TIÊN đã có danh sách,
+  // giữ nguyên hành vi cũ ngay sau boot. Từ nhịp thứ hai trở đi danh sách
+  // đi nhờ phản hồi probe, không tốn request riêng.
+  swallow(
+    fetchAllActiveCameraCredentials({
+      backendUrl: config.backendUrl,
+      agentCode: config.agentCode,
+      agentSecret: config.agentSecret,
+    }).then((creds) => {
+      lastActiveCameras = creds;
+    }),
+    "warm active-cameras cache",
+  );
+
   const cameraProbeTimer = setInterval(async () => {
-    // Fetch TRƯỚC khi lấy probeTargets: response all_active vừa là nguồn B
-    // cho probe, vừa là nhịp đồng bộ desired. Camera bị tạm ngưng phải
-    // được thu hồi rồi mới tính targets, để không probe tiếp thứ vừa bỏ.
-    let activeCameraIds: string[] | null = null;
-    let activeCreds: Array<{ camera_id: string; camera_code: string; rtsp_url: string }> = [];
-    try {
-      const creds = await fetchAllActiveCameraCredentials({
-        backendUrl: config.backendUrl,
-        agentCode: config.agentCode,
-        agentSecret: config.agentSecret,
-      });
-      activeCreds = creds;
-      // Chỉ set khi fetch THÀNH CÔNG. null = không biết gì, không thu hồi.
-      activeCameraIds = creds.map((c) => c.camera_id);
-    } catch (err) {
-      // Log nhưng không throw — probe local vẫn chạy.
-      console.warn(
-        `[camera-probe] fetch all_active failed: ${(err as Error).message}`,
-      );
-    }
+    // Thu hồi desired TRƯỚC khi tính targets, để không probe tiếp thứ vừa
+    // bỏ. Nguồn là danh sách của nhịp trước — trễ tối đa một nhịp (30s).
+    const activeCameraIds: string[] | null = lastActiveCameras
+      ? lastActiveCameras.map((c) => c.camera_id)
+      : null;
+    const activeCreds: ActiveCameraItem[] = lastActiveCameras ?? [];
 
     // Thu hồi desired cho camera cloud không còn công nhận (tạm ngưng /
     // xóa / đổi org). null (fetch fail) được xử lý bên trong = không thu
@@ -1696,18 +1710,24 @@ async function main(): Promise<void> {
     const targets = [...localTargets, ...allActiveTargets];
     if (targets.length === 0) return;
     const results = await probeTargets(targets);
+
     // Fast recovery: probe biết trước ffmpeg — nếu camera sống lại
     // (probe ok 2 nhịp liên tiếp) trong khi state đang chờ long-retry
     // timer 5', trigger spawn ngay không đợi hết timer.
     for (const r of results) {
       lifecycle.notifyProbeResult(r.camera_id, r.ok);
     }
-    await reportProbes({
+    // Xin luôn danh sách active cho nhịp sau — gộp hai request thành một.
+    // Hỏng thì trả null; giữ danh sách cũ, KHÔNG hạ về mảng rỗng (mảng rỗng
+    // nghĩa là "org không còn camera nào" → thu hồi desired toàn kho).
+    const fresh = await reportProbes({
       backendUrl: config.backendUrl,
       agentCode: config.agentCode,
       agentSecret: config.agentSecret,
       probes: results,
+      wantActiveCameras: true,
     });
+    if (fresh) lastActiveCameras = fresh;
   }, config.cameraProbeIntervalMs);
 
   // Retry queued scans periodically.

@@ -6,6 +6,10 @@ import {
 } from "@/lib/warehouse/agent-auth";
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
+import {
+  listCameraCredentials,
+  type CameraCredentialItem,
+} from "@/lib/camera/active-credentials";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,12 +39,13 @@ interface ProbeItem {
 }
 
 type ParseOutcome =
-  | { ok: true; probes: ProbeItem[] }
+  | { ok: true; probes: ProbeItem[]; wantActiveCameras: boolean }
   | { ok: false; error: string };
 
 function parseBody(raw: unknown): ParseOutcome {
   if (!raw || typeof raw !== "object") return { ok: false, error: "invalid_body" };
   const r = raw as Record<string, unknown>;
+  const wantActiveCameras = r.want_active_cameras === true;
   const probes = r.probes;
   if (!Array.isArray(probes)) return { ok: false, error: "probes_required" };
   if (probes.length === 0) return { ok: false, error: "probes_empty" };
@@ -63,7 +68,7 @@ function parseBody(raw: unknown): ParseOutcome {
     }
     out.push({ camera_id: cameraId, ok, latency_ms: latencyMs });
   }
-  return { ok: true, probes: out };
+  return { ok: true, probes: out, wantActiveCameras };
 }
 
 export async function POST(req: Request) {
@@ -260,5 +265,39 @@ export async function POST(req: Request) {
     );
   }
 
-  return NextResponse.json({ ok: true, updated });
+  // Piggy-back danh sách camera active vào phản hồi probe.
+  //
+  // Trước đây mỗi nhịp probe 30s agent bắn HAI request: một lượt
+  // recording-credentials?all_active để biết org còn công nhận camera nào,
+  // rồi một lượt báo kết quả probe về đây. Gộp lại còn một: 172.800 →
+  // 86.400 request/tháng cho mỗi agent chạy 24/7.
+  //
+  // Đổi lại, agent dùng danh sách của nhịp TRƯỚC (trễ 30s) để thu hồi
+  // desired-recording. Camera vừa bị "Tạm ngưng" trên dashboard sẽ bị probe
+  // thêm đúng một nhịp — chấp nhận được, và vẫn tốt hơn hướng ngược lại
+  // (gộp theo chiều kia thì kết quả probe về chậm 30s, làm đôi độ trễ phát
+  // hiện camera offline vốn đang là 1-30s).
+  //
+  // Body vẫn phải khai `want_active_cameras` mới trả: đây là credential
+  // RTSP plaintext, không rót vào mọi phản hồi theo mặc định.
+  let activeCameras: CameraCredentialItem[] | undefined;
+  if (parsed.wantActiveCameras) {
+    const creds = await listCameraCredentials(
+      admin,
+      agent.organization_id,
+      null,
+    );
+    if ("error" in creds) {
+      // Probe ĐÃ ghi xong ở trên — không đánh hỏng cả request vì phần
+      // piggy-back. Agent thấy field vắng thì giữ danh sách cũ (null =
+      // "không biết gì", không thu hồi desired).
+      console.warn(
+        `[camera-probe] active_cameras lookup failed agent=${agent.id} message=${creds.error}`,
+      );
+    } else {
+      activeCameras = creds.items;
+    }
+  }
+
+  return NextResponse.json({ ok: true, updated, active_cameras: activeCameras });
 }
