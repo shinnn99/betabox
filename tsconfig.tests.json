@@ -1,0 +1,12 @@
+{
+  "//": "Typecheck cho bộ test. Tách khỏi tsconfig.json vì test import module của warehouse-agent, mà agent có dependency riêng không được cài trong build web trên Vercel — để chung là gãy `next build`. Chạy bằng `pnpm typecheck:tests`, cần đã `pnpm install` trong warehouse-agent.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false,
+    "types": ["node"]
+  },
+  "//include": "CHỈ tests/. Đừng thêm warehouse-agent/src/** vào đây: agent có tsconfig riêng (lib/types khác) và tự kiểm bằng `tsc` trong thư mục nó; kéo cả cây agent vào kiểm dưới lib của web sẽ đẻ ra lỗi giả (ví dụ upload.ts dùng fetch với Buffer). Import trong test tự lôi đúng những file cần kiểm.",
+  "include": ["tests/**/*.ts"],
+  "exclude": ["node_modules", "warehouse-agent/node_modules"]
+}

@@ -31,5 +31,12 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "warehouse-agent", "scripts", "supabase/functions"]
+  "//exclude-tests": "Bộ test import cả module của warehouse-agent, mà agent có dependency riêng (zod, dotenv) KHÔNG được cài trong build của web. `exclude` chỉ chặn file làm gốc chương trình, không chặn file bị import kéo vào — nên chỉ liệt kê `warehouse-agent` là chưa đủ: một dòng import trong tests/ vẫn lôi nguyên chuỗi agent vào và làm gãy `next build` trên Vercel (đã cắn 10/08/2026). Test không nằm trong bundle nên không cần typecheck lúc build; chúng được kiểm riêng bằng `pnpm typecheck:tests`.",
+  "exclude": [
+    "node_modules",
+    "warehouse-agent",
+    "scripts",
+    "supabase/functions",
+    "tests"
+  ]
 }

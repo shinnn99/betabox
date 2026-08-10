@@ -9,6 +9,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --import ./tests/register.mjs --conditions=react-server --experimental-strip-types --test \"tests/*.test.ts\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
     "check:signed-url": "node scripts/check-proof-clip-signed-url.mjs"
   },
   "dependencies": {
