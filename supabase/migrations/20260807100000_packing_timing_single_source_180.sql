@@ -354,7 +354,15 @@ end;
 $function$;
 
 -- 6) close_stale_sessions: bỏ literal 12.
-create or replace function public.close_stale_sessions(p_organization_id uuid)
+--
+-- GIỮ NGUYÊN `default null` của tham số. Postgres không cho phép
+-- `create or replace` bỏ default đã có (SQLSTATE 42P13 "cannot remove
+-- parameter defaults from existing function") — bỏ đi là migration abort
+-- giữa chừng. `pg_get_function_identity_arguments` KHÔNG hiện default,
+-- phải dùng `pg_get_function_arguments` mới thấy.
+create or replace function public.close_stale_sessions(
+  p_organization_id uuid default null
+)
 returns table(closed_sessions integer, closed_packing_events integer)
 language plpgsql
 set search_path to 'public', 'pg_temp'

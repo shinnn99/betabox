@@ -313,7 +313,10 @@ end;
 $function$;
 
 -- 4) close_stale_sessions về bản literal 12.
-CREATE OR REPLACE FUNCTION public.close_stale_sessions(p_organization_id uuid)
+-- Giữ `default null` — create or replace không bỏ được default đã có.
+CREATE OR REPLACE FUNCTION public.close_stale_sessions(
+  p_organization_id uuid DEFAULT NULL
+)
 RETURNS TABLE(closed_sessions integer, closed_packing_events integer)
 LANGUAGE plpgsql
 SET search_path TO 'public', 'pg_temp'
