@@ -36,6 +36,17 @@ export interface ProbeResult {
   latency_ms: number | null;
 }
 
+/**
+ * Camera org còn công nhận là active, cloud gửi kèm phản hồi probe.
+ * Cùng shape với item của recording-credentials (all_active) — cố ý, để
+ * chỗ dùng không phải phân biệt nguồn.
+ */
+export interface ActiveCameraItem {
+  camera_id: string;
+  camera_code: string;
+  rtsp_url: string;
+}
+
 export function extractHostPort(
   rtspUrl: string,
 ): { host: string; port: number } | null {
@@ -95,14 +106,27 @@ export async function probeTargets(
   return results;
 }
 
+/**
+ * Báo kết quả probe VÀ (tuỳ chọn) xin luôn danh sách camera active của org
+ * trong cùng một request.
+ *
+ * Trả `null` khi không xin, hoặc khi request hỏng / cloud không kèm danh
+ * sách. `null` mang nghĩa "không biết gì" — caller PHẢI hiểu là không thu
+ * hồi desired-recording, chứ không phải "org không còn camera nào".
+ * Hiểu nhầm chỗ này là tắt ghi hình toàn kho mỗi lần rớt mạng.
+ */
 export async function reportProbes(params: {
   backendUrl: string;
   agentCode: string;
   agentSecret: string;
   probes: ProbeResult[];
-}): Promise<void> {
-  if (params.probes.length === 0) return;
-  const body = JSON.stringify({ probes: params.probes });
+  wantActiveCameras?: boolean;
+}): Promise<ActiveCameraItem[] | null> {
+  if (params.probes.length === 0) return null;
+  const body = JSON.stringify({
+    probes: params.probes,
+    want_active_cameras: params.wantActiveCameras === true,
+  });
   try {
     const res = await fetchWithRetrySigned(
       `${params.backendUrl}${AGENT_API_PATHS.cameraProbe}`,
@@ -124,8 +148,15 @@ export async function reportProbes(params: {
       console.warn(
         `[camera-probe] report failed ${res.status}: ${text.slice(0, 200)}`,
       );
+      return null;
     }
+    if (!params.wantActiveCameras) return null;
+    const json = (await res.json().catch(() => null)) as {
+      active_cameras?: ActiveCameraItem[];
+    } | null;
+    return Array.isArray(json?.active_cameras) ? json.active_cameras : null;
   } catch (err) {
     console.warn(`[camera-probe] report threw: ${describeFetchError(err)}`);
+    return null;
   }
 }

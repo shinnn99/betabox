@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import { apiFetch, useImpersonatingOrgId } from "@/lib/api-fetch";
+import { startVisibilityPolling } from "@/lib/polling/visibility-poller";
 
 /**
  * 1.2: banner persistent "camera không phải H.264".
@@ -46,10 +47,15 @@ export default function CodecWarningBanner() {
       }
     }
     void load();
-    const id = setInterval(load, POLL_INTERVAL_MS);
+    // Banner này nằm trong layout nên poll trên MỌI trang dashboard —
+    // gate visibility ở đây cắt được nhiều request nhất trong các nhịp phụ.
+    const stopPolling = startVisibilityPolling({
+      intervalMs: POLL_INTERVAL_MS,
+      onTick: () => void load(),
+    });
     return () => {
       cancelled = true;
-      clearInterval(id);
+      stopPolling();
     };
   }, [impersonatingOrgId]);
 

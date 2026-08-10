@@ -27,6 +27,7 @@ import DashboardLayout from "@/components/layout/DashboardLayout";
 import StatCard from "@/components/StatCard";
 import { useToast } from "@/components/ui/Toast";
 import { formatDateKeyVn, shiftDateKey, vnDateKey } from "@/lib/time/vietnam";
+import { startVisibilityPolling } from "@/lib/polling/visibility-poller";
 
 const POLL_INTERVAL_MS = 3000;
 /**
@@ -178,6 +179,21 @@ interface Issue {
 
 interface IssuesResponse {
   issues: Issue[];
+}
+
+/**
+ * Phản hồi của /api/warehouse/live/overview — bốn khối cũ trong một request.
+ *
+ * `activity` null khi client xin `include_activity=0` (đang xem ngày quá
+ * khứ: nhật ký không đổi nên nhịp poll không kéo lại) HOẶC khi riêng phần
+ * nhật ký lỗi — phân biệt hai ca bằng `activity_error`.
+ */
+interface OverviewResponse {
+  summary: SummaryResponse;
+  stations: StationsResponse;
+  issues: IssuesResponse;
+  activity: ActivityResponse | null;
+  activity_error: string | null;
 }
 
 type ProofSizeRisk = "safe" | "near_limit" | "over_limit" | "unknown";
@@ -551,11 +567,31 @@ export default function OperationsPage() {
   );
 
   const inflightRef = useRef(false);
-  const activityInflightRef = useRef(false);
   const seenIdsRef = useRef<Set<string>>(new Set());
   const firstLoadRef = useRef(true);
   const dateKeyRef = useRef(dateKey);
   const prevTodayKeyRef = useRef(todayKey);
+
+  // Ba ref dưới đây để fetchOverview KHÔNG phải nhận dep nào đổi theo mỗi
+  // lần chọn ngày / tải thêm. Nếu để dep thật, callback đổi danh tính →
+  // effect poll dựng lại setInterval → nhịp 3 giây bị reset mỗi thao tác.
+  const activityLimitRef = useRef(activityLimit);
+  const isTodayRef = useRef(isToday);
+  /**
+   * "Lượt gọi tới BẮT BUỘC kèm nhật ký."
+   *
+   * Nhịp poll của một ngày quá khứ mặc định không kéo nhật ký về. Nhưng
+   * lúc vừa đổi sang ngày đó — hoặc vừa bấm "Tải thêm" — thì đúng là phải
+   * kéo. Nếu ngay lúc ấy đang có request bay và lượt này bị chặn bởi
+   * inflight, cờ giữ lại ý định để nhịp kế tiếp làm nốt; không có cờ thì
+   * bảng nhật ký của ngày quá khứ đứng trắng vĩnh viễn.
+   */
+  const forceActivityRef = useRef(true);
+
+  useEffect(() => {
+    activityLimitRef.current = activityLimit;
+    isTodayRef.current = isToday;
+  }, [activityLimit, isToday]);
 
   useEffect(() => {
     dateKeyRef.current = dateKey;
@@ -583,49 +619,15 @@ export default function OperationsPage() {
     );
   }, []);
 
-  const refresh = useCallback(async () => {
-    if (inflightRef.current) return;
-    inflightRef.current = true;
-    try {
-      const [s1, s2, s3] = await Promise.all([
-        fetch("/api/warehouse/live/summary", { cache: "no-store" }),
-        fetch("/api/warehouse/live/stations", { cache: "no-store" }),
-        fetch("/api/warehouse/live/issues?limit=30", { cache: "no-store" }),
-      ]);
-      if (!s1.ok || !s2.ok || !s3.ok) {
-        throw new Error("Một hoặc nhiều endpoint live trả lỗi");
-      }
-      const [sum, st, iss] = (await Promise.all([
-        s1.json(),
-        s2.json(),
-        s3.json(),
-      ])) as [SummaryResponse, StationsResponse, IssuesResponse];
-
-      setSummary(sum);
-      setStations(st.stations);
-      setIssues(iss.issues);
-      setError(null);
-      setLastRefreshed(new Date());
-      // Bảng treo qua đêm: ngày VN đổi thì thẻ KPI đã nhảy sang ngày mới,
-      // nhật ký phải đi theo — nếu không màn hình kho im lặng đứng ở hôm qua.
-      setTodayKey(vnDateKey());
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      inflightRef.current = false;
-    }
-  }, []);
-
-  const refreshActivity = useCallback(async () => {
-    if (activityInflightRef.current) return;
-    activityInflightRef.current = true;
-    try {
-      const res = await fetch(
-        `/api/warehouse/live/activity?date=${dateKey}&limit=${activityLimit}`,
-        { cache: "no-store" },
-      );
-      if (!res.ok) throw new Error("Không tải được nhật ký hoạt động");
-      const act = (await res.json()) as ActivityResponse;
+  /**
+   * Vẽ phần nhật ký của phản hồi overview.
+   *
+   * Tách khỏi hàm fetch vì nó còn phải quyết định "dòng nào là MỚI" để nổ
+   * toast và nháy nền — logic đó bám vào seenIdsRef/firstLoadRef, không
+   * liên quan gì đến chuyện lấy dữ liệu về bằng đường nào.
+   */
+  const applyActivity = useCallback(
+    (act: ActivityResponse) => {
       if (act.date !== dateKeyRef.current) {
         // Server bác ngày client gửi (không có thật) và đã rơi về hôm nay:
         // kéo client theo, nếu không nhãn ngày và dữ liệu sẽ đứng lệch
@@ -651,7 +653,7 @@ export default function OperationsPage() {
 
       // Chỉ hôm nay mới có "sự kiện vừa xảy ra". Xem lại ngày cũ mà nổ
       // toast + nháy dòng là báo động giả.
-      if (!wasFirstLoad && isToday && newEvents.length > 0) {
+      if (!wasFirstLoad && isTodayRef.current && newEvents.length > 0) {
         for (const ev of newEvents) {
           const { variant, message } = describeActivityToast(ev);
           if (variant === "success") toast.success(message);
@@ -672,18 +674,64 @@ export default function OperationsPage() {
           });
         }, FLASH_DURATION_MS);
       }
+    },
+    [toast, goToDate],
+  );
+
+  /**
+   * MỘT request cho cả màn hình: KPI + bàn đóng hàng + cần xử lý + nhật ký.
+   *
+   * Trước đây mỗi nhịp 3 giây bắn 4 request riêng; nhịp giữ nguyên 3 giây
+   * nhưng số request xuống còn 1/4. Người đứng ở kho không thấy khác gì.
+   */
+  const fetchOverview = useCallback(async () => {
+    if (inflightRef.current) return;
+    inflightRef.current = true;
+    const withActivity = forceActivityRef.current || isTodayRef.current;
+    try {
+      const qs = new URLSearchParams({
+        date: dateKeyRef.current,
+        issues_limit: "30",
+        activity_limit: String(activityLimitRef.current),
+        include_activity: withActivity ? "1" : "0",
+      });
+      const res = await fetch(`/api/warehouse/live/overview?${qs}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) throw new Error("Endpoint giám sát trả lỗi");
+      const data = (await res.json()) as OverviewResponse;
+
+      setSummary(data.summary);
+      setStations(data.stations.stations);
+      setIssues(data.issues.issues);
+      setError(null);
+      setLastRefreshed(new Date());
+      // Bảng treo qua đêm: ngày VN đổi thì thẻ KPI đã nhảy sang ngày mới,
+      // nhật ký phải đi theo — nếu không màn hình kho im lặng đứng ở hôm qua.
+      setTodayKey(vnDateKey());
+
+      // Nhật ký hỏng KHÔNG được kéo theo cả màn hình: giữ đúng hai tầng lỗi
+      // như hồi còn bốn endpoint rời.
+      if (data.activity_error) setActivityError(data.activity_error);
+      else if (data.activity) applyActivity(data.activity);
+
+      // Chỉ hạ cờ khi request đã về tới nơi. Hỏng giữa chừng thì ý định
+      // "phải kéo nhật ký" còn nguyên cho nhịp sau.
+      if (withActivity) forceActivityRef.current = false;
     } catch (e) {
-      setActivityError((e as Error).message);
+      setError((e as Error).message);
     } finally {
-      activityInflightRef.current = false;
+      inflightRef.current = false;
     }
-  }, [dateKey, activityLimit, isToday, toast, goToDate]);
+  }, [applyActivity]);
 
   useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, POLL_INTERVAL_MS);
-    return () => clearInterval(t);
-  }, [refresh]);
+    void fetchOverview();
+    return startVisibilityPolling({
+      intervalMs: POLL_INTERVAL_MS,
+      onTick: () => void fetchOverview(),
+    });
+  }, [fetchOverview]);
 
   // Người đang đứng ở "hôm nay" thì qua nửa đêm đi theo ngày mới; người
   // đang soi một ngày quá khứ thì giữ nguyên chỗ họ đang xem.
@@ -695,13 +743,13 @@ export default function OperationsPage() {
     }
   }, [todayKey, goToDate]);
 
+  // Đổi ngày hoặc bấm "Tải thêm" → lượt gọi tới phải kèm nhật ký, kể cả
+  // khi đang xem ngày quá khứ (nhịp poll ngày cũ mặc định bỏ qua nhật ký
+  // vì nó không đổi nữa).
   useEffect(() => {
-    refreshActivity();
-    // Ngày quá khứ đứng yên — poll 3 giây chỉ tốn request.
-    if (!isToday) return;
-    const t = setInterval(refreshActivity, POLL_INTERVAL_MS);
-    return () => clearInterval(t);
-  }, [refreshActivity, isToday]);
+    forceActivityRef.current = true;
+    void fetchOverview();
+  }, [dateKey, activityLimit, fetchOverview]);
 
   // Nhịp riêng cho ước lượng dung lượng proof. Lỗi ở đây KHÔNG được
   // dựng banner đỏ toàn trang: đây là thông tin bổ trợ, mất nó không
@@ -728,8 +776,10 @@ export default function OperationsPage() {
     refreshProofRisks();
     // Ngày quá khứ: đơn đã đóng, ước lượng không đổi nữa — tải một lần.
     if (!isToday) return;
-    const t = setInterval(refreshProofRisks, PROOF_RISK_POLL_INTERVAL_MS);
-    return () => clearInterval(t);
+    return startVisibilityPolling({
+      intervalMs: PROOF_RISK_POLL_INTERVAL_MS,
+      onTick: refreshProofRisks,
+    });
   }, [refreshProofRisks, isToday]);
 
   const visibleIssues = useMemo(

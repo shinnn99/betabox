@@ -6,8 +6,7 @@ import {
 } from "@/lib/warehouse/agent-auth";
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
-import { decryptPassword } from "@/lib/camera/crypto";
-import { buildRtspUrl } from "@/lib/camera/rtsp";
+import { listCameraCredentials } from "@/lib/camera/active-credentials";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -111,67 +110,21 @@ export async function POST(req: Request) {
 
   // Filter theo organization_id của agent — KHÔNG tin camera_ids từ client.
   // Camera không thuộc org agent thì lặng lẽ bị loại, không leak "exists".
-  // Khi all_active=true, bỏ qua .in() và trả về mọi camera status=active
-  // của org (dùng cho probe loop mở rộng — probe cả camera chưa recording).
-  //
-  // `status='active'` áp cho CẢ HAI nhánh (2026-08-05). Trước đây nhánh
-  // camera_ids trả credential bất kể status → bấm "Tạm ngưng" trên
-  // dashboard không hề tới được agent: agent vẫn xin được credential, boot()
-  // vẫn thấy camera trong response nên giữ desired, và long-retry vẫn spawn
-  // ffmpeg mỗi 5 phút. Ca cắn thật: hik_01 kho Đại Kim bị tạm ngưng
-  // 31/07 nhưng vẫn bị thử ghi tới 05/08 (~78 lần/ngày), và người dùng
-  // KHÔNG có đường nào dừng qua UI vì cloud tin là camera không ghi.
-  //
-  // Response thiếu camera = thu hồi ý định ghi, agent phải xóa desired.
-  // Đây là hợp đồng giữa hai bên — xem `syncDesiredWithActiveCameras`
-  // và nhánh `!cred` trong long-retry ở recording-lifecycle.ts.
-  let camsQuery = admin
-    .from("cameras")
-    .select(
-      "id, camera_code, ip, rtsp_port, username, password_ciphertext, password_iv, password_tag, rtsp_path",
-    )
-    .eq("organization_id", agent.organization_id)
-    .eq("status", "active");
-  if (!parsed.all_active) {
-    camsQuery = camsQuery.in("id", parsed.camera_ids);
-  }
-  const { data: cams, error: camErr } = await camsQuery;
-
-  if (camErr) {
+  // Khi all_active=true, trả về mọi camera status=active của org.
+  // Chi tiết hợp đồng "response thiếu camera = thu hồi ý định ghi" nằm ở
+  // listCameraCredentials.
+  const result = await listCameraCredentials(
+    admin,
+    agent.organization_id,
+    parsed.all_active ? null : parsed.camera_ids,
+  );
+  if ("error" in result) {
     return NextResponse.json(
-      { error: "lookup_failed", message: camErr.message },
+      { error: "lookup_failed", message: result.error },
       { status: 500 },
     );
   }
-
-  const items = (cams ?? []).map((c) => {
-    let password: string | null = null;
-    if (c.password_ciphertext && c.password_iv && c.password_tag) {
-      try {
-        password = decryptPassword({
-          ciphertext: c.password_ciphertext,
-          iv: c.password_iv,
-          tag: c.password_tag,
-        });
-      } catch {
-        password = null;
-      }
-    }
-    const rtspUrl = buildRtspUrl({
-      ip: c.ip,
-      port: c.rtsp_port,
-      username: c.username,
-      password,
-      path: c.rtsp_path,
-    });
-    return {
-      camera_id: c.id,
-      camera_code: c.camera_code,
-      rtsp_url: rtspUrl,
-      transport: "tcp" as const,
-      segment_seconds: 60,
-    };
-  });
+  const items = result.items;
 
   const { error: seenErr } = await admin
     .from("warehouse_agents")

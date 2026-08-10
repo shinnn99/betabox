@@ -23,7 +23,15 @@ export default async function DashboardRouteLayout({
   const orgId = orgInfo?.orgId ?? "";
 
   return (
-    <div data-render-org-id={orgId} className="contents">
+    <div
+      data-render-org-id={orgId}
+      // Cờ server-render để DashboardLayout (client) biết có đang impersonate
+      // hay không mà KHÔNG phải poll endpoint. Đổi impersonate luôn kéo theo
+      // full reload (ImpersonateWatcher đường 3), nên giá trị nhúng ở đây
+      // không bao giờ cũ hơn màn hình đang hiển thị.
+      data-impersonating={orgInfo?.isImpersonating ? "1" : "0"}
+      className="contents"
+    >
       {orgInfo?.isImpersonating && (
         <>
           <ImpersonateBanner orgName={orgInfo.orgName} />

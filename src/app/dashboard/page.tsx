@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { apiFetch, useImpersonatingOrgId } from "@/lib/api-fetch";
+import { startVisibilityPolling } from "@/lib/polling/visibility-poller";
 
 interface HourlyPoint {
   hour: number;
@@ -210,11 +211,15 @@ export default function DashboardPage() {
     };
 
     void fetchOverview();
-    const id = setInterval(fetchOverview, REFRESH_MS);
+    // Tab ẩn thì không ai đọc — bỏ nhịp, hiện lại thì làm mới ngay.
+    const stopPolling = startVisibilityPolling({
+      intervalMs: REFRESH_MS,
+      onTick: () => void fetchOverview(),
+    });
     return () => {
       cancelled = true;
       controller.abort();
-      clearInterval(id);
+      stopPolling();
     };
   }, [impersonatingOrgId]);
 

@@ -13,7 +13,15 @@ import { useEffect, useRef } from "react";
 // Cơ chế:
 //   1. visibilitychange (tab thành visible) → fetch check.
 //   2. focus (tab được click focus) → fetch check.
-//   3. Interval 3s khi tab visible → poll backup.
+//   3. Interval khi tab visible → poll backup.
+//
+// Component này CHỈ được mount khi thật sự đang impersonate (điều kiện ở
+// src/app/dashboard/layout.tsx) → tenant thường không phát request nào.
+// Interval là lưới an toàn cho trường hợp cả visibilitychange lẫn focus đều
+// miss; hai event kia mới là đường phát hiện chính, nên 30s là đủ và rẻ hơn
+// 3s mười lần.
+const POLL_INTERVAL_MS = 30_000;
+
 export default function ImpersonateWatcher({
   renderOrgId,
 }: {
@@ -51,10 +59,10 @@ export default function ImpersonateWatcher({
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("focus", onFocus);
 
-    // Interval 3s khi tab visible (backup nếu event miss)
+    // Interval khi tab visible (backup nếu event miss)
     const intervalId = setInterval(() => {
       if (document.visibilityState === "visible") check();
-    }, 3000);
+    }, POLL_INTERVAL_MS);
 
     return () => {
       stopped = true;

@@ -35,7 +35,17 @@ const EnvSchema = z.object({
   RETRY_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
   RECONNECT_DELAY_MS: z.coerce.number().int().positive().default(5000),
   HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
-  DISCOVERY_INTERVAL_MS: z.coerce.number().int().positive().default(15000),
+  /**
+   * Interval agent báo danh sách cổng COM local lên cloud và nhận lại
+   * binding máy quét (POST /api/warehouse/discovery).
+   *
+   * 60s chứ không phải 15s: cổng COM chỉ đổi khi có người cắm/rút máy quét
+   * — vài lần một tháng, không phải vài lần một phút. Ở 15s nhịp này ngốn
+   * 172.800 request/tháng cho mỗi agent chạy 24/7, chỉ để nghe lại đúng
+   * câu trả lời cũ. Đổi lại: cắm máy quét mới thì chờ tối đa 60s mới nhận,
+   * và người đi cắm dây đằng nào cũng đứng đó lâu hơn thế.
+   */
+  DISCOVERY_INTERVAL_MS: z.coerce.number().int().positive().default(60000),
   DEFAULT_BAUD_RATE: z.coerce.number().int().positive().default(9600),
   /**
    * Interval agent short-poll cloud xem có job mới không

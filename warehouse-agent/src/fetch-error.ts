@@ -216,10 +216,21 @@ export class LogRateLimiter {
     { firstAt: number; lastAt: number; count: number; lastSummaryAt: number }
   >();
 
+  private readonly summaryIntervalMs: number;
+  private readonly resetAfterMs: number;
+
+  // Gán tường minh thay vì parameter property (`constructor(private readonly
+  // x)`): Node chạy TypeScript ở chế độ strip-only, mà strip-only không hiểu
+  // cú pháp đó — nguyên file, và mọi module import nó, không nạp được trong
+  // bộ test. Ở đây camera-probe.ts import fetch-error, nên giữ parameter
+  // property đồng nghĩa với việc không test được lớp gọi mạng của agent.
   constructor(
-    private readonly summaryIntervalMs: number = 5 * 60 * 1000,
-    private readonly resetAfterMs: number = 10 * 60 * 1000,
-  ) {}
+    summaryIntervalMs: number = 5 * 60 * 1000,
+    resetAfterMs: number = 10 * 60 * 1000,
+  ) {
+    this.summaryIntervalMs = summaryIntervalMs;
+    this.resetAfterMs = resetAfterMs;
+  }
 
   /**
    * Gọi mỗi lần muốn log. Trả về "log_first" / "silent" / "log_summary".
