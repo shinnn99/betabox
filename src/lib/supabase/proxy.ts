@@ -34,6 +34,9 @@ const PUBLIC_API_PREFIXES = [
   // V6: Signup công khai (user chưa có tài khoản → không session). Route
   // tự bảo vệ bằng Turnstile captcha + rate-limit (IP + email).
   "/api/signup",
+  // Liveness probe cho uptime monitor (không cookie). Route không chạm DB,
+  // không trả gì ngoài {ok, ts} — xem src/app/api/health/route.ts.
+  "/api/health",
 ];
 
 export async function updateSession(request: NextRequest) {
