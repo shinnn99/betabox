@@ -1,0 +1,30 @@
+# /etc/systemd/system/betabox-syscheck.service
+#
+# Tự kiểm hạ tầng Betabox + gửi cảnh báo Lark khi có mục warn/crit.
+# Khuôn theo betabox-cleanup.service: không User=, không WorkingDirectory=
+# (chỉ gọi curl, không chạy trong thư mục app).
+#
+# Khác cleanup ở hai chỗ, cả hai đều có lý do:
+#   * -X POST — route /api/system/check chỉ nhận POST (GET dành cho
+#     /api/system/status, route đó khoá sau platform admin).
+#   * --max-time 60 thay vì 300 — mọi truy vấn trong route đã có trần 4s,
+#     nếu quá 60s nghĩa là app treo chứ không phải việc lâu. Treo lâu hơn
+#     nhịp timer (15 phút) sẽ chồng lần chạy.
+#
+# ExecStartPost là dead-man switch: chỉ chạy khi ExecStart exit 0, nên
+# healthchecks.io sẽ báo khi CHÍNH con cảnh báo này chết — thứ mà bản
+# thân nó không tự báo được.
+#
+# ⚠ THAY UUID DƯỚI ĐÂY bằng check MỚI trên healthchecks.io (chu kỳ 15
+# phút, grace 1 giờ). KHÔNG dùng lại UUID của betabox-cleanup: dùng chung
+# thì cleanup ping mỗi ngày sẽ giữ check luôn xanh và che mất việc
+# syscheck đã chết.
+
+[Unit]
+Description=Betabox system self-check (hạ tầng + cảnh báo Lark)
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/betabox-cron.env
+ExecStart=/usr/bin/curl -fsS -X POST --max-time 60 -H "Authorization: Bearer ${CRON_SECRET}" https://betabox.betacom.agency/api/system/check
+ExecStartPost=/usr/bin/curl -fsS -m 10 https://hc-ping.com/THAY-BANG-UUID-SYSCHECK-MOI

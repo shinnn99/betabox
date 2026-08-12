@@ -31,6 +31,15 @@ const PUBLIC_API_PREFIXES = [
   // trong route. Không có session cookie, phải bypass proxy nếu không sẽ
   // bị 401 trước khi route được gọi.
   "/api/cron",
+  // Tự kiểm hạ tầng, systemd timer gọi mỗi 15 phút với Bearer $CRON_SECRET.
+  //
+  // CỐ Ý ghi hẹp "/api/system/check" chứ KHÔNG phải "/api/system": khớp
+  // theo tiền tố nên "/api/system" sẽ mở luôn cho "/api/system/status" —
+  // route đó trả tình trạng hạ tầng và chỉ platform admin được xem. Nó có
+  // guard riêng, nhưng mở tiền tố sẽ tháo mất lớp session của proxy, để
+  // route đứng một mình trên đúng một lớp bảo vệ. Thêm từng đường một,
+  // mỗi đường phải tự chứng minh là nó tự xác thực được.
+  "/api/system/check",
   // V6: Signup công khai (user chưa có tài khoản → không session). Route
   // tự bảo vệ bằng Turnstile captcha + rate-limit (IP + email).
   "/api/signup",

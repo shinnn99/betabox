@@ -1,0 +1,20 @@
+# /etc/systemd/system/betabox-syscheck.timer
+#
+# Mỗi 15 phút, đúng phút 0/15/30/45.
+#
+# Persistent=true: sau khi VPS tắt/khởi động lại, systemd chạy bù MỘT lần
+# ngay thay vì đợi tới mốc kế. Đúng thứ mình cần — máy vừa bật lại là lúc
+# đáng kiểm nhất.
+#
+# Không đặt RandomizedDelaySec: chỉ có một máy gọi, không có đàn máy nào
+# để giãn tải, và giờ chạy lệch làm khó đối chiếu log.
+
+[Unit]
+Description=Run betabox system self-check every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
