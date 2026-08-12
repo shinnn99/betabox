@@ -4,6 +4,34 @@ Ghi từ 0.8.6 trở đi. Mỗi mục nêu: sửa gì, vì sao, và người đi
 
 ---
 
+## 0.8.9 — 2026-08-11
+
+**Đơn không còn kẹt "Đang cắt" vĩnh viễn khi agent báo kết quả không tới
+được cloud.**
+
+Chuyện xảy ra hôm 11/08 ở kho Đại Kim: máy kho có lúc gọi nhầm sang bản
+cloud cũ đã ngừng hoạt động (do đổi máy chủ, DNS chưa cắt hẳn), nên lời
+báo "cắt clip xong/lỗi" của agent rơi mất giữa đường. Lệnh cắt đã được
+ghi nhận là hỏng, nhưng ô trạng thái của đơn vẫn quay "Đang cắt" mãi và
+không có cả nút Thử lại. Đơn SPXVN068642901568 kẹt như vậy.
+
+Bản này thêm **hộp thư đi**: lời báo nào không gửi được thì agent ghi
+xuống ổ đĩa và gửi lại mỗi phút cho tới khi cloud nhận — sống qua cả
+việc khởi động lại máy. Lời báo bị cloud từ chối vì sai nội dung (chứ
+không phải lỗi đường truyền) thì bỏ ngay, không gửi lại vô ích, và ghi
+rõ vào log.
+
+**Đi kèm bản cloud cùng ngày** (nên deploy cloud trước): cloud tự đóng
+trạng thái clip khi nhận được báo lỗi của lệnh cắt, và tự dọn những clip
+kẹt quá 5 phút mà không còn lệnh cắt nào đang chạy. Ba lớp này độc lập
+nhau — thủng lớp nào vẫn còn lớp sau đỡ.
+
+Người đi cài cần biết: cài đè như thường lệ, không mất cấu hình, không
+đổi cách agent nói chuyện với cloud. Có thêm một file hàng đợi mới trong
+thư mục `data` (`pending-clip-results.jsonl`) — bình thường nó rỗng.
+
+---
+
 ## 0.8.8 — 2026-08-07
 
 **Clip quá nặng giờ báo rõ lý do thay vì lỗi khó hiểu, và đơn chưa đóng

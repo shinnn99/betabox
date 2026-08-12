@@ -68,6 +68,13 @@ import {
   verifyStaleMarker,
   quarantineStaleGeneration,
 } from "./stale-recovery";
+import {
+  ClipResultOutbox,
+  isExpiredOutboxItem,
+  isPermanentClipResultStatus,
+  type OutboxClipResult,
+  type QueuedClipResult,
+} from "./clip-result-outbox";
 
 /**
  * Rate limiter dùng chung cho các fetch loop trong index.ts (heartbeat,
@@ -137,7 +144,133 @@ async function main(): Promise<void> {
   // CRIT-1 (B2): PID registry persist ffmpeg PID + boot recovery kill
   // zombie sau kill -9 agent.
   const pidRegistry = new PidRegistry(resolve(dataDir, "ffmpeg-pids.json"));
+  // Outbox callback clip-cut-result (2026-08-11). Nằm cạnh các queue
+  // khác trong dataDir để installer/backup gom một chỗ.
+  const clipResultOutbox = new ClipResultOutbox(
+    resolve(dataDir, "pending-clip-results.jsonl"),
+  );
   const recordingRoot = resolve(process.cwd(), config.recordingDir);
+
+  /**
+   * Giao callback clip-cut-result CÓ HẬU KIỂM (2026-08-11).
+   *
+   * Trước đây gọi thẳng `postClipCutResult` rồi bỏ kết quả — callback
+   * trượt thì không ai biết, row clip kẹt 'pending' vĩnh viễn (sự cố
+   * SPXVN068642901568, backend trả 451 vì DNS máy kho còn trỏ Vercel cũ).
+   * Giờ: 2xx → xong; 4xx cứng → bỏ + log ERROR; còn lại (451/5xx/mạng)
+   * → xếp outbox trên ổ, drain lo gửi lại.
+   */
+  async function deliverClipCutResult(payload: OutboxClipResult): Promise<void> {
+    const res = await postClipCutResult({
+      backendUrl: config.backendUrl,
+      agentCode: config.agentCode,
+      agentSecret: config.agentSecret,
+      ...payload,
+    });
+    if (res.ok) return;
+
+    const reason = res.status === 0 ? "network" : `http_${res.status}`;
+    if (isPermanentClipResultStatus(res.status)) {
+      console.error(
+        `[clip-outbox] BỎ callback clip=${payload.clipId} outcome=${payload.outcome}: ${reason} — backend từ chối vì nội dung request, gửi lại cũng vậy`,
+      );
+      return;
+    }
+
+    // 'encoding' chỉ là tín hiệu tiến độ cho UI (progress_state). Gửi
+    // muộn vài phút thì vô nghĩa, mà còn có thể đè progress của lần cắt
+    // sau. Log rồi bỏ — không xếp hàng.
+    if (payload.outcome === "encoding") {
+      console.warn(
+        `[clip-outbox] bỏ tín hiệu tiến độ clip=${payload.clipId}: ${reason} (không xếp outbox)`,
+      );
+      return;
+    }
+
+    try {
+      await clipResultOutbox.append(payload, reason);
+      console.warn(
+        `[clip-outbox] xếp hàng callback clip=${payload.clipId} outcome=${payload.outcome}: ${reason}`,
+      );
+    } catch (err) {
+      // Không ghi được outbox = mất hẳn callback này. Cloud vẫn còn lớp
+      // 2 (reconcile theo command-result) và lớp 3 (quét pending mồ
+      // côi), nhưng phải kêu to vì đây là lỗi ổ đĩa.
+      console.error(
+        `[clip-outbox] GHI OUTBOX HỎNG clip=${payload.clipId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Gửi lại các callback đang nằm trong outbox. Chạy ở boot + mỗi
+   * `clipOutboxDrainMs`. Tuần tự (không song song) vì số item luôn nhỏ
+   * và gửi tuần tự giữ đúng thứ tự thời gian của các generation.
+   */
+  async function drainClipResultOutbox(): Promise<void> {
+    let items: QueuedClipResult[];
+    try {
+      items = await clipResultOutbox.readAll();
+    } catch (err) {
+      console.error(`[clip-outbox] đọc outbox hỏng: ${(err as Error).message}`);
+      return;
+    }
+    if (items.length === 0) return;
+
+    const nowMs = Date.now();
+    const keep: QueuedClipResult[] = [];
+    let sent = 0;
+    let dropped = 0;
+
+    for (const item of items) {
+      if (isExpiredOutboxItem(item, nowMs)) {
+        dropped++;
+        console.error(
+          `[clip-outbox] BỎ item quá hạn 24h clip=${item.payload.clipId} outcome=${item.payload.outcome} attempt=${item.attempt} last_error=${item.last_error ?? "?"}`,
+        );
+        continue;
+      }
+      const res = await postClipCutResult({
+        backendUrl: config.backendUrl,
+        agentCode: config.agentCode,
+        agentSecret: config.agentSecret,
+        ...item.payload,
+      });
+      if (res.ok) {
+        sent++;
+        continue;
+      }
+      if (isPermanentClipResultStatus(res.status)) {
+        dropped++;
+        console.error(
+          `[clip-outbox] BỎ item clip=${item.payload.clipId}: http_${res.status} — backend từ chối vì nội dung request`,
+        );
+        continue;
+      }
+      keep.push({
+        ...item,
+        attempt: item.attempt + 1,
+        last_error: res.status === 0 ? "network" : `http_${res.status}`,
+      });
+    }
+
+    // Chỉ ghi lại file khi có thay đổi thật (gửi được hoặc bỏ được).
+    // Không có gì đổi thì đừng đụng ổ mỗi nhịp drain.
+    if (sent > 0 || dropped > 0) {
+      try {
+        await clipResultOutbox.rewrite(keep);
+      } catch (err) {
+        // Ghi lại hỏng = lần drain sau gửi trùng. Backend idempotent
+        // theo clip_id (UPDATE, không INSERT) nên gửi trùng vô hại.
+        console.error(
+          `[clip-outbox] ghi lại outbox hỏng: ${(err as Error).message}`,
+        );
+      }
+      console.log(
+        `[clip-outbox] drain: gửi ${sent}, bỏ ${dropped}, còn ${keep.length}`,
+      );
+    }
+  }
 
   // RECOVERY_SCAN_DAYS suy từ retention cache (nếu có). Retention là chính
   // sách nghiệp vụ (số ngày giữ segment); scan window phải ≥ retention để
@@ -590,10 +723,7 @@ async function main(): Promise<void> {
         extraGenerationParams: Record<string, unknown> = {},
       ) => {
         await cleanupTmp();
-        await postClipCutResult({
-          backendUrl: config.backendUrl,
-          agentCode: config.agentCode,
-          agentSecret: config.agentSecret,
+        await deliverClipCutResult({
           clipId: p.clip_id!,
           packingEventId: p.packing_event_id!,
           cameraId: p.camera_id!,
@@ -664,10 +794,7 @@ async function main(): Promise<void> {
       }
 
       // === STEP 2: Signal 'encoding' (cloud update progress_state) ===
-      await postClipCutResult({
-        backendUrl: config.backendUrl,
-        agentCode: config.agentCode,
-        agentSecret: config.agentSecret,
+      await deliverClipCutResult({
         clipId: p.clip_id,
         packingEventId: p.packing_event_id,
         cameraId: p.camera_id,
@@ -865,10 +992,7 @@ async function main(): Promise<void> {
         // .stale để boot recovery tự xử. Canonical CŨ vẫn còn ở
         // {pe_id}.mp4 — user có thể xem từ bucket qua signed URL.
         await markStale();
-        await postClipCutResult({
-          backendUrl: config.backendUrl,
-          agentCode: config.agentCode,
-          agentSecret: config.agentSecret,
+        await deliverClipCutResult({
           clipId: p.clip_id,
           packingEventId: p.packing_event_id,
           cameraId: p.camera_id,
@@ -927,10 +1051,7 @@ async function main(): Promise<void> {
         // marker cho boot recovery. Không call failCommand vì bucket
         // + DB đã ready. Report done + flag.
         await markStale();
-        await postClipCutResult({
-          backendUrl: config.backendUrl,
-          agentCode: config.agentCode,
-          agentSecret: config.agentSecret,
+        await deliverClipCutResult({
           clipId: p.clip_id,
           packingEventId: p.packing_event_id,
           cameraId: p.camera_id,
@@ -988,10 +1109,7 @@ async function main(): Promise<void> {
           `cut_elapsed=${cutResult.elapsedMs}ms upload_elapsed=${uploadElapsedMs}ms`,
       );
 
-      await postClipCutResult({
-        backendUrl: config.backendUrl,
-        agentCode: config.agentCode,
-        agentSecret: config.agentSecret,
+      await deliverClipCutResult({
         clipId: p.clip_id,
         packingEventId: p.packing_event_id,
         cameraId: p.camera_id,
@@ -1756,6 +1874,23 @@ async function main(): Promise<void> {
     }
   }, config.retryIntervalMs);
 
+  // Drain outbox clip-cut-result. Chạy ngay ở boot (callback trượt
+  // trước lần restart phải được gửi lại càng sớm càng tốt — mỗi phút
+  // trôi qua là một phút UI còn hiện "Đang cắt"), rồi lặp mỗi 60s.
+  //
+  // Nhịp 60s cố định, không theo retryIntervalMs của scan queue: scan
+  // là dữ liệu nghiệp vụ nóng (quét xong phải lên ngay), còn đây là
+  // callback đính chính trạng thái — 60s là đủ nhanh mà không thêm tải
+  // khi backend đang trục trặc.
+  void drainClipResultOutbox().catch((err) => {
+    console.error(`[clip-outbox] drain boot lỗi: ${(err as Error).message}`);
+  });
+  const clipOutboxTimer = setInterval(() => {
+    void drainClipResultOutbox().catch((err) => {
+      console.error(`[clip-outbox] drain lỗi: ${(err as Error).message}`);
+    });
+  }, 60_000);
+
   // v0.7.1: AWAIT graceful shutdown trước khi exit. Bug v0.7.0: swallow +
   // setTimeout(exit, 1500) → agent chết sau 1.5s, ffmpeg child mất parent
   // → OS reap ngay 0.01s (đo 2026-07-13), KHÔNG kịp nhận `q\n` để flush
@@ -1779,6 +1914,7 @@ async function main(): Promise<void> {
     clearInterval(discoveryTimer);
     clearInterval(pollTimer);
     clearInterval(cameraProbeTimer);
+    clearInterval(clipOutboxTimer);
     runtimeWatchdog?.stop();
     for (const s of sessions.values()) s.stop();
 
@@ -1790,6 +1926,11 @@ async function main(): Promise<void> {
       // HIGH-19 (B4): flush pending queue writes để không mất scan/segment
       // report chưa flush do coalesce timer.
       queue.flushNow(),
+      // Outbox clip-cut-result: flush write đang coalesce. KHÔNG drain
+      // (gửi mạng) ở đây — shutdown chỉ có 4500ms và ưu tiên tuyệt đối
+      // là để ffmpeg kịp flush moov (bài học v0.7.1). Item còn lại sẽ
+      // được drain ở boot lần sau.
+      clipResultOutbox.flushNow(),
       // Flush pending log events cuối. Không blocker, race với SHUTDOWN_TIMEOUT_MS.
       remoteLogger.dispose(),
     ]);
