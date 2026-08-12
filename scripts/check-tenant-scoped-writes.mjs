@@ -26,6 +26,32 @@ const ROOT = path.resolve(fileURLToPath(import.meta.url), "..", "..");
  */
 const rules = [
   {
+    file: "src/lib/watch/cleanup.ts",
+    label:
+      "12/08/2026: cleanupExpiredClips phải nhận organizationId và lọc theo nó (fetch + update)",
+    must: [
+      // Hàm phải nhận options có organizationId — caller buộc nói rõ phạm vi.
+      /export async function cleanupExpiredClips\(\s*options: CleanupOptions/,
+      // Fetch có nhánh lọc org.
+      /fetchQuery = fetchQuery\.eq\("organization_id", orgId\)/,
+      // Update cũng lọc org (defense in depth).
+      /updateQuery = updateQuery\.eq\("organization_id", orgId\)/,
+    ],
+  },
+  {
+    file: "src/app/api/admin/cleanup-expired-clips/route.ts",
+    label:
+      "12/08/2026: session admin CHỈ được dọn clip trong org của mình; toàn hệ chỉ qua cron secret",
+    must: [
+      // Phải đọc organization_id của người bấm.
+      /\.from\("user_profiles"\)\s*\.select\("role, organization_id"\)/,
+      // Không xác định được org → chặn, KHÔNG rơi về toàn hệ.
+      /authMode === "admin_session" && !callerOrgId[\s\S]{0,200}?status: 403/,
+      // Truyền org vào helper khi là session admin.
+      /cleanupExpiredClips\(\s*authMode === "admin_session" \? \{ organizationId/,
+    ],
+  },
+  {
     file: "src/app/api/station-devices/[id]/route.ts",
     label: "HIGH-8: DELETE station_device phải verify ownership + assignment scope org",
     must: [
