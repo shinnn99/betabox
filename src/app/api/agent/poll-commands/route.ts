@@ -6,6 +6,7 @@ import {
 } from "@/lib/warehouse/agent-auth";
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
+import { reapGate } from "@/lib/agent-commands/reap-gate";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -122,7 +123,15 @@ export async function POST(req: Request) {
 
   // Reap stale 'taken' jobs cho chính agent này trước khi claim.
   // Timeout thực thi nằm trong RPC (CASE hardcoded theo type).
-  await admin.rpc("reap_stale_agent_commands", { p_agent_id: agent.id });
+  //
+  // 2026-08-12: chặn nhịp bằng reapGate. Trước đây chạy MỖI lượt poll
+  // (~20 lần/phút, đo thật) để canh một ngưỡng 2 phút — dư 50 lần, mà
+  // mỗi lượt là một round-trip PostgREST ghi tính vào egress Database.
+  // Gate đếm theo thời gian (15s) chứ không theo số lượt poll, nên
+  // quyết định giãn nhịp poll sau này không kéo theo hệ luỵ ở đây.
+  if (reapGate.tryAcquire(agent.id)) {
+    await admin.rpc("reap_stale_agent_commands", { p_agent_id: agent.id });
+  }
 
   // 3b-2: đọc encoding_busy từ body (fallback false) để quyết cách
   // claim. Body cũng dùng cho agent_state parsing bên dưới → parse
