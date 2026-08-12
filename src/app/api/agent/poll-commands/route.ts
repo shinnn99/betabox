@@ -6,7 +6,6 @@ import {
 } from "@/lib/warehouse/agent-auth";
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
-import { reapGate } from "@/lib/agent-commands/reap-gate";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,12 +16,15 @@ export const dynamic = "force-dynamic";
  * Danh tính agent LUÔN lấy từ HMAC (warehouse_agents.code → id). Agent
  * KHÔNG được tự khai agent_id trong body. Body hiện chỉ là "{}".
  *
- * Piggy-back reaper: mỗi request tự chạy reap_stale_agent_commands cho
- * agent này trước khi claim. Đây là chỗ có LỖ đã biết: nếu agent chết
- * im lặng và ngừng poll, job 'taken' của nó không được ai kéo về
- * 'pending'. Với PING vô hại; khi thêm job có side-effect thật cần
- * chuyển sang reaper toàn cục (pg_cron) — xem migration
- * 20260701092259_agent_commands.sql.
+ * Reaper: route này KHÔNG còn tự reap (bỏ 2026-08-12). Việc đó do một
+ * pg_cron job ở tầng DB đảm nhận, chạy `reap_stale_agent_commands(null)`
+ * mỗi phút cho TOÀN hệ. Chi tiết ở chỗ bỏ, phía dưới trước `claim`.
+ *
+ * Đổi này bịt luôn cái LỖ mà bản cũ tự ghi nhận: piggy-back reaper chỉ
+ * dọn cho agent ĐANG poll, nên agent chết im lặng thì job 'taken' của nó
+ * nằm lại vĩnh viễn. Reaper toàn cục không cần agent còn sống — đúng
+ * hướng mà comment cũ đã đề ra ("khi thêm job có side-effect thật cần
+ * chuyển sang reaper toàn cục (pg_cron)"), nay đã có.
  */
 const CLAIM_LIMIT = 20;
 
@@ -121,17 +123,28 @@ export async function POST(req: Request) {
   }
   recordAgentSigVersion(agent.id, verdict.version);
 
-  // Reap stale 'taken' jobs cho chính agent này trước khi claim.
-  // Timeout thực thi nằm trong RPC (CASE hardcoded theo type).
+  // ===================================================================
+  // KHÔNG reap ở đây (bỏ 2026-08-12) — PHỤ THUỘC VÔ HÌNH, ĐỌC TRƯỚC KHI
+  // ĐỘNG VÀO pg_cron.
   //
-  // 2026-08-12: chặn nhịp bằng reapGate. Trước đây chạy MỖI lượt poll
-  // (~20 lần/phút, đo thật) để canh một ngưỡng 2 phút — dư 50 lần, mà
-  // mỗi lượt là một round-trip PostgREST ghi tính vào egress Database.
-  // Gate đếm theo thời gian (15s) chứ không theo số lượt poll, nên
-  // quyết định giãn nhịp poll sau này không kéo theo hệ luỵ ở đây.
-  if (reapGate.tryAcquire(agent.id)) {
-    await admin.rpc("reap_stale_agent_commands", { p_agent_id: agent.id });
-  }
+  // Trước đây mỗi lượt poll gọi `reap_stale_agent_commands(p_agent_id)`.
+  // Việc đó giờ do một **pg_cron job ở tầng DB** làm: chạy
+  // `reap_stale_agent_commands(null)` — quét TOÀN hệ — mỗi phút.
+  //
+  // Vì sao bỏ: reaper toàn cục đã dọn hết phần việc này, nên lượt gọi ở
+  // đây là thừa hoàn toàn. Mà nó không thừa kiểu vô hại — mỗi lượt là
+  // một round-trip PostgREST ghi, tính vào egress Database. Đo bằng
+  // pg_stat_statements: 1.959 lượt, đúng bằng số lượt `claim`.
+  //
+  // NẾU AI TẮT/XOÁ pg_cron JOB ĐÓ thì lệnh 'taken' quá hạn sẽ KHÔNG BAO
+  // GIỜ được kéo về 'pending' nữa — agent kẹt lệnh vĩnh viễn, không có
+  // thông báo lỗi nào cả. Tắt job thì phải khôi phục lời gọi reap ở đây
+  // (kèm cửa chặn nhịp, xem commit gỡ bỏ để lấy lại nguyên bản).
+  //
+  // Giá đã chấp nhận khi bỏ: lệnh kẹt được cứu chậm hơn tối đa 60 giây
+  // (phải chờ nhịp kế của job). Ngưỡng visibility là 2 phút nên tổng
+  // thời gian tệ nhất ~3 phút, chấp nhận được cho start/stop recording.
+  // ===================================================================
 
   // 3b-2: đọc encoding_busy từ body (fallback false) để quyết cách
   // claim. Body cũng dùng cho agent_state parsing bên dưới → parse
