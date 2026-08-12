@@ -200,6 +200,45 @@ export async function POST(req: Request) {
     }
   }
 
+  // Lớp 2 (2026-08-11): reconcile clip khi lệnh cắt báo failed.
+  //
+  // Agent báo kết quả cắt qua HAI đường độc lập: `/clip-cut-result`
+  // (đổi row order_proof_clips) và endpoint này (đóng agent_commands).
+  // Sự cố SPXVN068642901568: đường thứ nhất trúng deployment Vercel cũ
+  // đã disable → 451, đường thứ hai tới nơi. Kết quả: command failed
+  // nhưng clip kẹt 'pending' → UI "Đang cắt" vĩnh viễn.
+  //
+  // Ở đây ta đã cầm trong tay đủ dữ kiện (payload.clip_id + error) nên
+  // đóng luôn row clip. Guard `.eq("status","pending")`: nếu callback
+  // clip đã tới trước và ghi lỗi thật (chi tiết hơn) thì không đè.
+  if (updated.type === "cut_clip" && body.status === "failed") {
+    const payload = updated.payload as { clip_id?: unknown } | null;
+    const clipId = typeof payload?.clip_id === "string" ? payload.clip_id : null;
+    if (clipId) {
+      const { data: reconciled, error: clipErr } = await admin
+        .from("order_proof_clips")
+        .update({
+          status: "failed",
+          error_message: (body.error_message ?? "cut_failed").slice(0, 2000),
+          progress_state: null,
+        })
+        .eq("id", clipId)
+        .eq("organization_id", updated.organization_id)
+        .eq("status", "pending")
+        .select("id")
+        .maybeSingle();
+      if (clipErr) {
+        console.error(
+          `[command-result] cut_clip reconcile failed cmd=${body.command_id} clip=${clipId} code=${clipErr.code ?? "?"} message=${clipErr.message}`,
+        );
+      } else if (reconciled) {
+        console.warn(
+          `[command-result] clip ${clipId} đóng bằng reconcile từ command-result — callback /clip-cut-result không tới cloud (cmd=${body.command_id})`,
+        );
+      }
+    }
+  }
+
   // Lát 2 SaaS refactor: nhánh test_camera_connection ghi kết quả
   // vào cameras.last_test_result + last_tested_at. Route web POST
   // /api/cameras/[id]/test-connection giờ enqueue command này thay vì

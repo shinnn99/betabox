@@ -12,6 +12,10 @@ import {
 } from "@/lib/watch/agent-liveness";
 import { createProofClipSignedUrlByPackingEvent } from "@/lib/watch/proof-clip-signed-url";
 import { evaluateProofClipGate } from "@/lib/order-proof/proof-clip-gate";
+import {
+  reconcileStalePendingClips,
+  STALE_PENDING_ERROR_MESSAGE,
+} from "@/lib/order-proof/stale-pending";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -152,6 +156,35 @@ export async function POST(_req: Request, ctx: RouteContext) {
     .order("created_at", { ascending: false });
 
   const clips = rows ?? [];
+
+  // Lớp 3 (2026-08-11): row pending mồ côi → đóng thành failed TRƯỚC khi
+  // phân nhánh, để nhánh `pendingRow` phía dưới không trả preparing_cut
+  // vĩnh viễn. Điều kiện stale nằm trong helper (già hơn ngưỡng VÀ không
+  // còn cut_clip pending/taken) — agent còn sống KHÔNG đủ để kết luận
+  // job cắt cụ thể còn chạy.
+  const staleMarked = await reconcileStalePendingClips(
+    admin,
+    pe.organization_id,
+    clips
+      .filter((c) => c.status === "pending")
+      .map((c) => ({
+        id: c.id,
+        packingEventId: packingEventId,
+        createdAt: c.created_at,
+      })),
+  );
+  if (staleMarked.size > 0) {
+    // Đồng bộ bản trong RAM với DB vừa ghi — nếu không, phân nhánh
+    // dưới vẫn đọc 'pending' cũ và trả preparing_cut thêm một tick.
+    for (const c of clips) {
+      if (staleMarked.has(c.id)) {
+        c.status = "failed";
+        c.error_message = STALE_PENDING_ERROR_MESSAGE;
+        c.progress_state = null;
+      }
+    }
+  }
+
   const readyRow = clips.find((c) => c.status === "ready") ?? null;
   const pendingRow = clips.find((c) => c.status === "pending") ?? null;
   const latestFailedRow = clips.find((c) => c.status === "failed") ?? null;

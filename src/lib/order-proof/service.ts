@@ -3,6 +3,11 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { clipPathIsSafe } from "./clip-paths";
 import { readAgentLiveness } from "@/lib/watch/agent-liveness";
 import { BUCKET_TTL_HOURS } from "@/lib/watch/config";
+import {
+  reconcileStalePendingClips,
+  STALE_PENDING_ERROR_MESSAGE,
+  type PendingClipCandidate,
+} from "./stale-pending";
 
 /**
  * Order-proof service — read-side only sau khi dọn luồng cũ 2026-07-07.
@@ -109,6 +114,10 @@ async function attachClipsToEvents(
     .order("created_at", { ascending: false });
 
   const clipByEvent = new Map<string, ScanClipSummary>();
+  // Ứng viên cho lớp 3 stale-pending. Gom trong chính vòng lặp này vì
+  // `created_at` không nằm trong ScanClipSummary (không cần cho UI) —
+  // gom riêng rẻ hơn là nới type public chỉ để phục vụ một phép so tuổi.
+  const pendingCandidates: PendingClipCandidate[] = [];
   for (const c of (clipsData ?? []) as Array<{
     id: string;
     packing_event_id: string;
@@ -118,10 +127,18 @@ async function attachClipsToEvents(
     clip_size_bytes: number | null;
     error_message: string | null;
     generation_params: Record<string, unknown> | null;
+    created_at: string;
     bucket_path: string | null;
     bucket_uploaded_at: string | null;
   }>) {
     if (clipByEvent.has(c.packing_event_id)) continue;
+    if (c.status === "pending") {
+      pendingCandidates.push({
+        id: c.id,
+        packingEventId: c.packing_event_id,
+        createdAt: c.created_at,
+      });
+    }
     const params = c.generation_params ?? {};
     const targetDur = Number(params.target_duration_seconds);
     const cutDur = Number(params.cut_duration_seconds);
@@ -153,6 +170,29 @@ async function attachClipsToEvents(
       bucket_path: c.bucket_path,
       bucket_uploaded_at: c.bucket_uploaded_at,
     });
+  }
+
+  // Lớp 3 (2026-08-11): dọn row pending mồ côi cho ĐÚNG các event đang
+  // hiển thị. Đặt ở đây vì đây là phễu chung của cả list lẫn tra theo
+  // mã vận đơn — vá riêng /watch thì ô trạng thái ngoài list vẫn "Đang
+  // cắt" cho tới khi user mở modal.
+  //
+  // Chi phí: 1 query agent_commands + tối đa 1 update, và CHỈ khi trang
+  // hiện tại có row pending quá tuổi (đa số lần load là 0 → 0 query).
+  const stalePending = await reconcileStalePendingClips(
+    admin,
+    organizationId,
+    pendingCandidates,
+  );
+  if (stalePending.size > 0) {
+    for (const [peId, c] of clipByEvent) {
+      if (!stalePending.has(c.id)) continue;
+      clipByEvent.set(peId, {
+        ...c,
+        status: "failed",
+        error_message: STALE_PENDING_ERROR_MESSAGE,
+      });
+    }
   }
 
   // 1 lookup agent liveness cho toàn list (per-org). Cùng HÀM với /watch —
