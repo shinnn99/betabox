@@ -6,6 +6,11 @@ import {
 } from "@/lib/warehouse/agent-auth";
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
+import {
+  chunk,
+  planRecordingFileWrites,
+  type ExistingRecordingFile,
+} from "@/lib/warehouse/recording-files-batch";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -193,59 +198,54 @@ export async function POST(req: Request) {
   }
   const allowedCameras = new Set((cams ?? []).map((c) => c.id));
 
-  const inserted: number[] = [];
-  const skipped: string[] = [];
-  const collisions: string[] = [];
-
-  for (const f of parsed.files) {
-    if (!allowedCameras.has(f.camera_id)) {
-      skipped.push(f.file_path);
-      continue;
-    }
-
-    // Ca collision: nếu file_path đã tồn tại và đã có ended_at, KHÔNG
-    // ghi đè — segment cũ đã đóng, ghi đè sẽ mất data. Trả về danh
-    // sách collisions để agent log warn đỏ.
-    const { data: existing } = await admin
+  // Gộp lô (2026-08-12). Trước đây vòng lặp từng file: 1 SELECT +
+  // 1 upsert mỗi file → lô 50 file = 100 round-trip PostgREST cho MỘT
+  // request. Đo bằng pg_stat_statements: cặp query của bảng này chiếm
+  // 64,5% tổng số lượt gọi của cả project. Giờ: 1 SELECT + 1 upsert
+  // mỗi 100 phần tử.
+  //
+  // Luật collision KHÔNG đổi — chỉ chuyển từ hỏi-từng-dòng sang
+  // hỏi-một-lượt rồi quyết trong JS (planRecordingFileWrites).
+  const distinctPaths = [...new Set(parsed.files.map((f) => f.file_path))];
+  const existing: ExistingRecordingFile[] = [];
+  for (const paths of chunk(distinctPaths)) {
+    const { data, error: exErr } = await admin
       .from("camera_recording_files")
-      .select("id, ended_at")
+      .select("camera_id, file_path, ended_at")
       .eq("organization_id", agent.organization_id)
-      .eq("camera_id", f.camera_id)
-      .eq("file_path", f.file_path)
-      .maybeSingle();
-
-    if (existing && existing.ended_at !== null && f.ended_at === null) {
-      // Row cũ đã đóng, agent lại gửi row mới ended_at=null → conflict
-      // ngữ nghĩa. Không ghi.
-      collisions.push(f.file_path);
-      continue;
-    }
-
-    const row = {
-      organization_id: agent.organization_id,
-      camera_id: f.camera_id,
-      recording_session_id: f.session_id,
-      file_path: f.file_path,
-      file_name: f.file_name,
-      started_at: f.started_at,
-      ended_at: f.ended_at,
-      duration_seconds: f.duration_seconds,
-      file_size_bytes: f.file_size_bytes,
-      status: "ready",
-      source: "agent",
-    };
-
-    const { error: upErr } = await admin
-      .from("camera_recording_files")
-      .upsert(row, { onConflict: "organization_id,camera_id,file_path" });
-
-    if (upErr) {
+      .in("file_path", paths);
+    if (exErr) {
       return NextResponse.json(
-        { error: "upsert_failed", message: upErr.message, file_path: f.file_path },
+        { error: "lookup_failed", message: exErr.message },
         { status: 500 },
       );
     }
-    inserted.push(0);
+    existing.push(...((data ?? []) as ExistingRecordingFile[]));
+  }
+
+  const plan = planRecordingFileWrites({
+    organizationId: agent.organization_id,
+    files: parsed.files,
+    allowedCameraIds: allowedCameras,
+    existing,
+  });
+  const skipped = plan.skippedOutOfOrg;
+  const collisions = plan.collisions;
+
+  // Lỗi giữa chừng → cả lô chưa ghi hết. Agent đẩy nguyên lô về hàng
+  // đợi khi thấy !ok (segment-index.ts flushQueue/reportBatch) nên
+  // không mất bản ghi nào; upsert là idempotent theo khoá UNIQUE nên
+  // gửi lại phần đã ghi cũng vô hại.
+  for (const rows of chunk(plan.rows)) {
+    const { error: upErr } = await admin
+      .from("camera_recording_files")
+      .upsert(rows, { onConflict: "organization_id,camera_id,file_path" });
+    if (upErr) {
+      return NextResponse.json(
+        { error: "upsert_failed", message: upErr.message, batch_size: rows.length },
+        { status: 500 },
+      );
+    }
   }
 
   await admin
@@ -255,7 +255,7 @@ export async function POST(req: Request) {
 
   return NextResponse.json({
     ok: true,
-    upserted: inserted.length,
+    upserted: plan.rows.length,
     skipped_out_of_org: skipped.length,
     collisions,
   });
