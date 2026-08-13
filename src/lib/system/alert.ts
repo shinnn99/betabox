@@ -116,6 +116,9 @@ const STATUS_LABEL: Record<string, string> = {
   warn: "🟡 Cảnh báo",
   unknown: "⚪ Không rõ",
   ok: "🟢 Bình thường",
+  // Không bao giờ xuất hiện trong danh sách GỬI (needsAlert chỉ lấy
+  // crit/warn) — có mặt ở đây để dòng tổng kết cuối tin đọc được.
+  skipped: "🌙 Ngoài giờ",
 };
 
 export function buildAlertPayload(
@@ -132,7 +135,12 @@ export function buildAlertPayload(
   }
   const okCount = allChecks.filter((c) => c.status === "ok").length;
   const unknownCount = allChecks.filter((c) => c.status === "unknown").length;
-  lines.push(`_Còn lại: ${okCount} mục bình thường, ${unknownCount} mục chưa đo được._`);
+  const skippedCount = allChecks.filter((c) => c.status === "skipped").length;
+  lines.push(
+    `_Còn lại: ${okCount} mục bình thường, ${unknownCount} mục chưa đo được` +
+      (skippedCount > 0 ? `, ${skippedCount} mục ngoài giờ vận hành` : "") +
+      `._`,
+  );
 
   return buildLarkCardPayload({
     title: hasCrit ? "[Betabox] Hạ tầng NGHIÊM TRỌNG" : "[Betabox] Cảnh báo hạ tầng",

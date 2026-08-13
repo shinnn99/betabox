@@ -30,25 +30,32 @@ for (const f of readdirSync(MIG_DIR)) {
   byVersion.set(version, arr);
 }
 
-// Whitelist: version + EXACT filename set. Cả version và filename phải
-// khớp — chỉ chấp nhận đúng cặp historic đã biết, không cho file thứ 3
-// cùng version lọt qua.
+// Whitelist RỖNG kể từ 13/08/2026 — mọi version trùng đều fail.
 //
-// Bằng chứng B0 report 2026-07-07 (docs/remediation-2026-07-b0.md):
-//   MCP query prod xác nhận cả 2 file đã chạy, schema_migrations có 1
-//   row với name của file B. Rename tạo drift âm khác — không thao tác
-//   lịch sử. Reconciliation nằm ở:
-//   supabase/migrations/20260707140000_reconcile_duplicate_20260704160000.sql
-const KNOWN_HISTORIC_DUPLICATE_SETS = [
-  {
-    version: "20260704160000",
-    files: new Set([
-      "20260704160000_drop_organizations_metadata_columns.sql",
-      "20260704160000_n1_indexes_for_dashboard_live_queries.sql",
-    ]),
-    reconcile: "20260707140000_reconcile_duplicate_20260704160000.sql",
-  },
-];
+// Trước đó whitelist có đúng một cặp historic (20260704160000, hai file
+// _drop_organizations_metadata_columns + _n1_indexes_for_dashboard_live_
+// queries). Cặp đó đã được gỡ hẳn, không còn ngoại lệ nào:
+//
+//   Vì sao phải gỡ: `supabase migration list --linked` ngày 13/08/2026 cho
+//   thấy remote chỉ có MỘT row cho version này, nên file thứ hai bị CLI
+//   xếp vào diện *pending* (dòng `{"local":"20260704160000","remote":""}`).
+//   Tức là mọi `supabase db push` về sau đều sẽ tái chạy một trong hai
+//   migration cũ — không ai muốn thế, kể cả khi SQL idempotent.
+//
+//   Vì sao gỡ được an toàn (đo trên prod 13/08/2026, không đọc ghi chú cũ):
+//     * Effect file A: 5 cột legal_name/tax_code/phone/email/address đều
+//       trả 42703 qua PostgREST → đã drop.
+//     * Effect file B: `supabase inspect db index-sizes --linked` liệt kê
+//       đủ idx_packing_events_org_business_date,
+//       idx_packing_events_org_scanned_at,
+//       idx_warehouse_scan_raw_events_org_received_at → đã tồn tại.
+//   Cả hai effect đã có trên prod nên xoá file khỏi repo KHÔNG đổi gì ở
+//   prod, và 20260707140000_reconcile_duplicate_20260704160000.sql vẫn
+//   dựng lại CẢ HAI effect một cách idempotent cho fresh clone.
+//
+// Từ giờ: version trùng = fail, không ngoại lệ. Đặt lại whitelist là mở
+// lại đúng cái cửa vừa đóng.
+const KNOWN_HISTORIC_DUPLICATE_SETS = [];
 
 function whitelistMatch(version, files) {
   const entry = KNOWN_HISTORIC_DUPLICATE_SETS.find((e) => e.version === version);

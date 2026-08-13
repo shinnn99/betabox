@@ -500,7 +500,16 @@ export async function updateCamera(
   if (input.rtsp_path !== undefined) update.rtsp_path = input.rtsp_path.trim();
   if (input.location !== undefined)
     update.location = input.location?.trim() || null;
-  if (input.status !== undefined) update.status = input.status;
+  if (input.status !== undefined) {
+    update.status = input.status;
+    // Tắt camera thì số đếm probe phải về 0. Agent chỉ probe camera đang
+    // trong desired-recording, nên camera vừa tắt sẽ giữ nguyên
+    // probe_consecutive_fails mãi mãi — hik_01 đứng ở 7452 (≈62 giờ lỗi
+    // quy đổi) suốt từ 05/08 tới 13/08/2026. Không gây sự cố (mọi mục kiểm
+    // đều lọc status='active') nhưng là số liệu chết, và số liệu chết thì
+    // sớm muộn có người đọc nó như số liệu sống.
+    if (input.status !== "active") update.probe_consecutive_fails = 0;
+  }
 
   if (input.password !== undefined) {
     if (input.password === null || input.password === "") {

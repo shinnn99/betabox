@@ -40,6 +40,26 @@
 -- CI guard: `scripts/check-migration-versions.mjs` whitelist EXACT cặp
 -- duplicate này. File thứ ba cùng version = fail. Duplicate version
 -- khác = fail.
+--
+-- ---------------------------------------------------------------------------
+-- CẬP NHẬT 13/08/2026 — duplicate đã được gỡ hẳn, file này thành nguồn duy nhất
+-- ---------------------------------------------------------------------------
+-- Phần "vì sao KHÔNG rename file lịch sử" ở trên vẫn đúng về lý do, nhưng
+-- kết luận đã đổi vì có thêm dữ kiện: `supabase migration list --linked`
+-- (13/08/2026) cho thấy remote chỉ có MỘT row cho 20260704160000, nên CLI
+-- xếp file còn lại vào diện *pending* và mọi `db push` về sau đều sẽ tái
+-- chạy nó. Nợ này chặn mọi migration mới, không thể để lâu hơn.
+--
+-- Xử lý: XOÁ `20260704160000_drop_organizations_metadata_columns.sql` khỏi
+-- repo (git giữ lịch sử), giữ lại file `_n1_indexes_...` — đúng cái tên mà
+-- B0 report ghi nhận trong schema_migrations, nên local khớp remote 1:1.
+--
+-- Điều kiện an toàn đã ĐO trên prod trước khi xoá, không suy từ ghi chú:
+--   * 5 cột metadata: PostgREST trả 42703 cho cả 5 → đã drop.
+--   * 3 index: `supabase inspect db index-sizes --linked` liệt kê đủ 3.
+-- Xoá file khỏi repo không đổi gì trên prod. Fresh clone vẫn đúng vì CHÍNH
+-- FILE NÀY dựng lại cả hai effect — đó là lý do nó tồn tại, và giờ là nơi
+-- duy nhất còn giữ effect "drop 5 cột".
 -- ============================================================================
 
 BEGIN;

@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   HelpCircle,
   Loader2,
+  Moon,
   RefreshCw,
   XCircle,
 } from "lucide-react";
@@ -30,7 +31,7 @@ import PlatformLayout from "@/components/platform/PlatformLayout";
  * không", thứ mà một trang toàn màu xanh không nói được.
  */
 
-type CheckStatus = "ok" | "warn" | "crit" | "unknown";
+type CheckStatus = "ok" | "warn" | "crit" | "unknown" | "skipped";
 
 interface SystemCheck {
   key: string;
@@ -80,6 +81,15 @@ const TONE: Record<CheckStatus, { box: string; chip: string; label: string; Icon
     chip: "bg-slate-100 text-slate-600 border-slate-200",
     label: "Chưa rõ",
     Icon: HelpCircle,
+  },
+  // Tông chàm nhạt, KHÔNG dùng lại tông xám của "Chưa rõ": hai ô này nói
+  // hai chuyện khác nhau (ngoài ca vs mất nguồn dữ liệu) và người trực
+  // phải phân biệt được từ xa mà không cần đọc chữ.
+  skipped: {
+    box: "border-indigo-100 bg-indigo-50/40",
+    chip: "bg-indigo-100 text-indigo-700 border-indigo-200",
+    label: "Ngoài giờ",
+    Icon: Moon,
   },
 };
 
@@ -155,7 +165,11 @@ export default function SystemStatusPage() {
               className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-xl border text-xs font-semibold ${worstTone.chip}`}
             >
               <worstTone.Icon className="h-3.5 w-3.5" />
-              {data.worst === "ok" ? "Mọi mục bình thường" : `Mức cao nhất: ${worstTone.label}`}
+              {data.worst === "ok"
+                ? "Mọi mục bình thường"
+                : data.worst === "skipped"
+                  ? "Ngoài giờ vận hành — không mục nào được kiểm"
+                  : `Mức cao nhất: ${worstTone.label}`}
             </span>
           )}
           {data && (

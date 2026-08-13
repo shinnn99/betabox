@@ -8,6 +8,8 @@ import {
   checkEgress,
   checkVpsResources,
   checkWarehouseDisk,
+  incidentUnknowns,
+  needsAlert,
   runSystemChecks,
   worstStatus,
   type SystemCheck,
@@ -62,7 +64,44 @@ function hasEq(ops: Op[], col: string, val?: unknown): boolean {
   );
 }
 
+function findIn(ops: Op[], col: string): unknown[] | null {
+  const op = ops.find((o) => o.method === "in" && o.args[0] === col);
+  return op ? (op.args[1] as unknown[]) : null;
+}
+
 const BOOM: Resolver = () => ({ data: null, error: { message: "connection reset" } });
+
+// ── Phạm vi theo dõi ───────────────────────────────────────────────────
+// Mọi mục kiểm bám agent/camera đều hỏi `organizations` + `warehouses`
+// trước. Mặc định của test: đúng MỘT org bật theo dõi, không kho nào khai
+// giờ vận hành → theo dõi 24/7 → giữ nguyên ngữ nghĩa "tuổi thô" của các
+// ca cũ, để ca mới về giờ vận hành không âm thầm sửa nghĩa ca cũ.
+
+const ORG = "org-1";
+
+interface ScopeOpts {
+  orgs?: Array<{ id: string; name: string }>;
+  warehouses?: Array<{ organization_id: string; name: string; operating_hours: unknown }>;
+}
+
+/** Bọc một resolver: tự trả lời 2 bảng phạm vi, còn lại giao cho `inner`. */
+function withScope(inner: Resolver, opts: ScopeOpts = {}): Resolver {
+  const orgs = opts.orgs ?? [{ id: ORG, name: "Kho A" }];
+  const warehouses = opts.warehouses ?? [];
+  return (table, ops) => {
+    if (table === "organizations") return { data: orgs, error: null };
+    if (table === "warehouses") return { data: warehouses, error: null };
+    return inner(table, ops);
+  };
+}
+
+/** Giờ vận hành kiểu Đại Kim: T2–T7, 09:30–16:00 giờ Bangkok. */
+const DAI_KIM_HOURS = {
+  timezone: "Asia/Bangkok",
+  start: "09:30",
+  end: "16:00",
+  days: [1, 2, 3, 4, 5, 6],
+};
 
 function hoursAgo(h: number): string {
   return new Date(NOW.getTime() - h * 3_600_000).toISOString();
@@ -72,10 +111,10 @@ function minutesAgo(m: number): string {
 }
 
 /** Chạy một mục kiểm qua runSystemChecks để có luôn lớp bọc safeCheck. */
-async function runOne(key: string, resolve: Resolver): Promise<SystemCheck> {
+async function runOne(key: string, resolve: Resolver, now: Date = NOW): Promise<SystemCheck> {
   const checks = await runSystemChecks({
     client: fakeDb(resolve) as never,
-    now: NOW,
+    now,
     os: { totalmem: () => 8 * 1024 ** 3, freemem: () => 4 * 1024 ** 3 },
     statfs: async () => ({ bsize: 4096, blocks: 1000, bavail: 500 }),
   });
@@ -152,8 +191,16 @@ test("cron: ca nguồn hỏng → unknown, KHÔNG ném", async () => {
 // 3. Heartbeat agent
 // ═══════════════════════════════════════════════════════════════════════
 
-function agentDb(rows: Array<{ code: string; last_seen_at: string | null }>): Resolver {
-  return (table) => (table === "warehouse_agents" ? { data: rows, error: null } : { data: [], error: null });
+function agentDb(
+  rows: Array<{ code: string; last_seen_at: string | null; organization_id?: string }>,
+  scope: ScopeOpts = {},
+): Resolver {
+  const withOrg = rows.map((r) => ({ organization_id: ORG, ...r }));
+  return withScope(
+    (table) =>
+      table === "warehouse_agents" ? { data: withOrg, error: null } : { data: [], error: null },
+    scope,
+  );
 }
 
 test("agent: ca ok — ping 5 phút trước", async () => {
@@ -202,14 +249,151 @@ test("agent: ca nguồn hỏng → unknown, KHÔNG ném", async () => {
   assert.equal(c.status, "unknown");
 });
 
+// ── Phạm vi production ────────────────────────────────────────────────
+
+test("agent: chỉ hỏi agent thuộc org bật theo dõi (agent demo bị loại)", async () => {
+  // Bằng chứng là câu .in(organization_id, …) — fakeDb không tự lọc, nên
+  // nếu mục kiểm quên lọc thì test này chết đúng chỗ.
+  let captured: unknown[] | null = null;
+  const resolve = withScope((table, ops) => {
+    if (table !== "warehouse_agents") return { data: [], error: null };
+    captured = findIn(ops, "organization_id");
+    return {
+      data: [{ code: "KHO-A", last_seen_at: minutesAgo(2), organization_id: ORG }],
+      error: null,
+    };
+  });
+  const c = await runOne(CHECK_KEYS.agentHeartbeat, resolve);
+  assert.equal(c.status, "ok");
+  assert.deepEqual(captured, [ORG]);
+});
+
+test("agent: không org nào bật theo dõi → unknown, và nói ra là cờ đang tắt", async () => {
+  const c = await runOne(CHECK_KEYS.agentHeartbeat, agentDb([], { orgs: [] }));
+  assert.equal(c.status, "unknown");
+  assert.match(c.message, /monitoring_enabled/);
+});
+
+// ── Giờ vận hành ──────────────────────────────────────────────────────
+// Bốn ca dưới đây là lý do tồn tại của cả tính năng: cùng một agent im
+// 19 giờ, kết luận đổi hoàn toàn theo việc lúc đó kho có đang chạy không.
+
+const WH_DAI_KIM = {
+  warehouses: [
+    { organization_id: ORG, name: "Kho Đại Kim", operating_hours: DAI_KIM_HOURS },
+  ],
+};
+
+/** 17:00 thứ Tư giờ Bangkok — kho đã đóng (khung tới 16:00). */
+const AFTER_HOURS = NOW;
+/** 09:35 thứ Hai — kho vừa mở, trước đó nghỉ cả Chủ nhật. */
+const MONDAY_0935 = new Date("2026-08-10T02:35:00Z");
+/** 10:15 thứ Hai. */
+const MONDAY_1015 = new Date("2026-08-10T03:15:00Z");
+/** 11:45 thứ Hai. */
+const MONDAY_1145 = new Date("2026-08-10T04:45:00Z");
+/** 17:37 thứ Bảy — segment cuối cùng trước khi kho nghỉ. */
+const SAT_1737 = new Date("2026-08-08T10:37:00Z").toISOString();
+
+test("agent: NGOÀI giờ vận hành → skipped, không crit, không cảnh báo", async () => {
+  const c = await runOne(
+    CHECK_KEYS.agentHeartbeat,
+    agentDb([{ code: "AGENT_KHO_DAI_KIM", last_seen_at: hoursAgo(19) }], WH_DAI_KIM),
+    AFTER_HOURS,
+  );
+  // Đây chính là tin Lark 20:00 mỗi tối mà bản cũ sẽ bắn.
+  assert.equal(c.status, "skipped");
+  assert.match(c.message, /ngoài giờ|Ngoài giờ/i);
+});
+
+test("agent: 09:35 thứ Hai sau khi nghỉ Chủ nhật → ok, KHÔNG crit vì tuổi thô 40 giờ", async () => {
+  // Ca này là lý do phải đo im-lặng-trong-giờ thay vì tuổi thô: chỉ cần
+  // "ngoài giờ thì bỏ qua" là ca này vẫn crit ngay phút mở cửa.
+  const c = await runOne(
+    CHECK_KEYS.agentHeartbeat,
+    agentDb([{ code: "AGENT_KHO_DAI_KIM", last_seen_at: SAT_1737 }], WH_DAI_KIM),
+    MONDAY_0935,
+  );
+  assert.equal(c.status, "ok");
+  // Vẫn phải hiện con số đồng hồ thật, không giấu.
+  assert.match(c.message, /đồng hồ thật/);
+});
+
+test("agent: 10:15 thứ Hai mà vẫn chưa lên → warn (45 phút trong giờ)", async () => {
+  const c = await runOne(
+    CHECK_KEYS.agentHeartbeat,
+    agentDb([{ code: "AGENT_KHO_DAI_KIM", last_seen_at: SAT_1737 }], WH_DAI_KIM),
+    MONDAY_1015,
+  );
+  assert.equal(c.status, "warn");
+});
+
+test("agent: 11:45 thứ Hai vẫn im → crit THẬT (135 phút trong giờ)", async () => {
+  // Nửa còn lại của ca trên: bịt báo động giả không được phép bịt luôn
+  // báo động thật.
+  const c = await runOne(
+    CHECK_KEYS.agentHeartbeat,
+    agentDb([{ code: "AGENT_KHO_DAI_KIM", last_seen_at: SAT_1737 }], WH_DAI_KIM),
+    MONDAY_1145,
+  );
+  assert.equal(c.status, "crit");
+  assert.match(c.message, /KHÔNG ghi hình/);
+});
+
+test("agent: kho ngoài giờ không che được kho khác đang lỗi trong giờ", async () => {
+  const c = await runOne(
+    CHECK_KEYS.agentHeartbeat,
+    agentDb(
+      [
+        { code: "KHO-NGOAI-GIO", last_seen_at: hoursAgo(19), organization_id: "org-2" },
+        { code: "KHO-24-7", last_seen_at: hoursAgo(3) },
+      ],
+      {
+        orgs: [
+          { id: ORG, name: "Kho 24/7" },
+          { id: "org-2", name: "Kho Đại Kim" },
+        ],
+        warehouses: [
+          { organization_id: "org-2", name: "Kho Đại Kim", operating_hours: DAI_KIM_HOURS },
+        ],
+      },
+    ),
+    AFTER_HOURS,
+  );
+  assert.equal(c.status, "crit");
+  assert.match(c.value, /KHO-24-7/);
+  assert.match(c.message, /1 agent khác đang ngoài giờ/);
+});
+
+test("agent: operating_hours sai định dạng → theo dõi 24/7 VÀ nói ra, không im lặng", async () => {
+  const c = await runOne(
+    CHECK_KEYS.agentHeartbeat,
+    agentDb([{ code: "KHO-A", last_seen_at: minutesAgo(2) }], {
+      warehouses: [
+        { organization_id: ORG, name: "Kho Lỗi", operating_hours: { timezone: "Asia/Bangkok" } },
+      ],
+    }),
+    AFTER_HOURS,
+  );
+  // Không rơi vào skipped: cấu hình hỏng phải ngả về theo dõi, không ngả
+  // về im lặng.
+  assert.equal(c.status, "ok");
+  assert.match(c.message, /operating_hours không đọc được/);
+  assert.match(c.message, /Kho Lỗi/);
+});
+
 // ═══════════════════════════════════════════════════════════════════════
 // 4. Camera probe
 // ═══════════════════════════════════════════════════════════════════════
 
 function cameraDb(
   rows: Array<{ camera_code: string; last_probe_at: string | null; probe_consecutive_fails: number }>,
+  scope: ScopeOpts = {},
 ): Resolver {
-  return (table) => (table === "cameras" ? { data: rows, error: null } : { data: [], error: null });
+  return withScope(
+    (table) => (table === "cameras" ? { data: rows, error: null } : { data: [], error: null }),
+    scope,
+  );
 }
 
 test("camera: ca ok — không camera nào lỗi", async () => {
@@ -249,6 +433,29 @@ test("camera: probe cũ (agent không còn probe) → unknown, KHÔNG đỏ vĩn
 test("camera: ca nguồn hỏng → unknown, KHÔNG ném", async () => {
   const c = await runOne(CHECK_KEYS.cameraProbe, BOOM);
   assert.equal(c.status, "unknown");
+});
+
+test("camera: ngoài giờ vận hành → skipped, KHÔNG trả 'ok, 0 camera lỗi'", async () => {
+  // Ngoài ca không ai probe, nên bảng rỗng. Trả ok là để một ô xanh chứng
+  // minh bằng chỗ trống.
+  const c = await runOne(CHECK_KEYS.cameraProbe, cameraDb([], WH_DAI_KIM), AFTER_HOURS);
+  assert.equal(c.status, "skipped");
+  assert.notEqual(c.status, "ok");
+});
+
+test("camera: trong giờ vận hành thì chỉ hỏi camera của org đang mở", async () => {
+  let captured: unknown[] | null = null;
+  const resolve = withScope(
+    (table, ops) => {
+      if (table !== "cameras") return { data: [], error: null };
+      captured = findIn(ops, "organization_id");
+      return { data: [], error: null };
+    },
+    WH_DAI_KIM,
+  );
+  const c = await runOne(CHECK_KEYS.cameraProbe, resolve, MONDAY_1015);
+  assert.equal(c.status, "ok");
+  assert.deepEqual(captured, [ORG]);
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -366,12 +573,22 @@ test("runSystemChecks: thiếu env Supabase → unknown, không ném", async () 
   assert.match(cron.message, /Supabase/);
 });
 
-test("worstStatus: crit > warn > unknown > ok", () => {
+test("worstStatus: crit > warn > unknown > ok > skipped", () => {
   const mk = (status: SystemCheck["status"]): SystemCheck => ({ key: "k", status, value: "", message: "" });
   assert.equal(worstStatus([mk("ok"), mk("warn"), mk("crit")]), "crit");
   assert.equal(worstStatus([mk("ok"), mk("warn"), mk("unknown")]), "warn");
   assert.equal(worstStatus([mk("ok"), mk("unknown")]), "unknown");
   assert.equal(worstStatus([mk("ok"), mk("ok")]), "ok");
+  // skipped KHÔNG được kéo mức tổng xuống, và cũng không được tự nhận là ok.
+  assert.equal(worstStatus([mk("ok"), mk("skipped")]), "ok");
+  assert.equal(worstStatus([mk("skipped"), mk("skipped")]), "skipped");
+  assert.equal(worstStatus([mk("skipped"), mk("crit")]), "crit");
+});
+
+test("skipped KHÔNG BAO GIỜ thành cảnh báo — cửa cuối trước khi gửi Lark", () => {
+  const mk = (status: SystemCheck["status"]): SystemCheck => ({ key: "k", status, value: "", message: "" });
+  assert.deepEqual(needsAlert([mk("skipped"), mk("ok")]), []);
+  assert.deepEqual(incidentUnknowns([mk("skipped")]), []);
 });
 
 // Gọi trực tiếp (không qua safeCheck) để chứng minh lớp bọc là thứ biến
