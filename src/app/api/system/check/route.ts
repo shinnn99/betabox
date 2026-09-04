@@ -39,7 +39,9 @@ export async function POST(request: NextRequest) {
     console.error("[system-check] không tạo được admin client:", errorMessage(err));
   }
 
-  const checks = await runSystemChecks({ client: admin ?? undefined, now });
+  // Chỉ lấy `checks`: đường cảnh báo cố ý KHÔNG đọc phần chi tiết theo kho
+  // mà runSystemChecks trả kèm — nó chỉ phục vụ trang hiển thị.
+  const { checks } = await runSystemChecks({ client: admin ?? undefined, now });
   const worst = worstStatus(checks);
 
   const base = process.env.NEXT_PUBLIC_APP_URL ?? null;
@@ -54,7 +56,10 @@ export async function POST(request: NextRequest) {
         admin,
         checks,
         now,
-        dashboardUrl: base ? `${base}/dashboard/system` : null,
+        // /platform/system, KHÔNG phải /dashboard/system: platform admin
+        // không có organization_id trong JWT nên middleware đá họ khỏi
+        // /dashboard/* — nút trong tin Lark sẽ dẫn vào chỗ không mở được.
+        dashboardUrl: base ? `${base}/platform/system` : null,
       });
     } catch (err) {
       // sendSystemAlert đã hứa không throw; bọc thêm ở đây để lời hứa đó

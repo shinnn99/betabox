@@ -1,12 +1,16 @@
 /**
  * Guard dung lượng clip TRƯỚC khi PUT lên bucket.
  *
- * Vì sao cần: trần file của Supabase project đo được 2026-08-07 bằng
- * cách PUT file tăng dần qua đúng đường signed-upload-url —
- *   50 MiB → 200 OK
- *   51 MiB → 413 EntityTooLarge
- * Trần đúng bằng 50 MiB (52.428.800 byte), và nó nằm ở tầng project chứ
- * không phải bucket (bucket `proof-clips-transient` set 500MB).
+ * Vì sao cần: Storage trả 413 EntityTooLarge khi file vượt trần, và
+ * trần đó nằm ở tầng PROJECT chứ không phải bucket. Bucket
+ * `proof-clips-transient` đang set 500 MB — migration tạo bucket ghi
+ * 100 MiB nhưng giá trị sống trong DB đã được đổi sau đó, nên đọc
+ * dashboard chứ đừng đọc migration. Bucket chưa bao giờ là chỗ chặn:
+ * phép đo 2026-08-07 (gói Free) cho 50 MiB → 200 OK, 51 MiB → 413
+ * trong khi bucket đã là 500 MB — chính nó chứng minh tầng project mới
+ * là tầng cắn. Từ 2026-08-13 project lên gói trả phí, global upload
+ * limit nâng 50 → 100 MiB — đo lại cùng phương pháp: 100 MiB → 200 OK,
+ * 101 MiB → 413.
  *
  * Trước guard này agent cứ PUT rồi mới biết, và khách chỉ nhận được
  * chuỗi HTTP thô ("upload_put_failed[http_4xx]: http_400 ...") không nói
@@ -17,10 +21,10 @@
  * camera thay đổi (đổi cam, đổi độ phân giải, cảnh động) thì mọi công
  * thức theo duration sai ngay.
  *
- * Ngưỡng mặc định = ĐÚNG trần đo được, không trừ biên. Bản đầu để
- * 49 MiB và E2E production chứng minh sai — xem chú thích ở config.ts.
- * Guard chỉ đổi 413 khó hiểu thành thông báo rõ; nó không phải chỗ tạo
- * headroom.
+ * Ngưỡng mặc định 90 MiB, dưới trần project 100 MiB — xem chú thích
+ * `MAX_PROOF_CLIP_UPLOAD_BYTES` ở config.ts để biết vì sao lần này đặt
+ * dưới trần là đúng còn hồi 49/50 MiB thì sai. Guard chỉ đổi 413 khó
+ * hiểu thành thông báo rõ; nó không phải chỗ tạo headroom.
  */
 
 export interface ClipSizeInput {
@@ -58,8 +62,10 @@ export function computeClipBitrateKbps(
 /**
  * @returns `null` khi clip được phép upload; object mô tả lý do khi vượt trần.
  *
- * So sánh dùng `>` (không phải `>=`): file đúng bằng trần vẫn upload được
- * — đã verify 50 MiB chẵn trả 200.
+ * So sánh dùng `>` (không phải `>=`): file đúng bằng ngưỡng vẫn upload
+ * được. Hồi guard = đúng trần project, điều này đã verify bằng phép đo
+ * (50 MiB chẵn trả 200). Nay guard nằm dưới trần project nên file đúng
+ * bằng guard chắc chắn qua được — giữ `>` để không chặn oan.
  */
 export function evaluateClipSize(input: ClipSizeInput): ClipSizeRejection | null {
   const { fileSizeBytes, durationSeconds, limitBytes } = input;

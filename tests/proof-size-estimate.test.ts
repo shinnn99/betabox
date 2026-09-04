@@ -17,13 +17,17 @@ import {
  * Cửa sổ clip + ước lượng dung lượng proof.
  *
  * Số dùng ở đây lấy từ dữ liệu thật kho Đại Kim (2026-08-07): camera
- * Dahua 01 ~256 KB/s trên 4441 segment, segment dài 60s, trần upload đo
- * được 50 MiB (guard mặc định 49 MiB, cảnh báo 47 MiB).
+ * Dahua 01 ~256 KB/s trên 4441 segment, segment dài 60s.
+ *
+ * Trần upload: 2026-08-13 project nâng global upload limit 50 → 100 MiB,
+ * guard mặc định về 90 MiB và cảnh báo về 80 MiB. Bitrate camera KHÔNG
+ * đổi — đó là lý do các con số byte trong test này giữ nguyên còn phân
+ * loại thì đổi.
  */
 
 const MIB = 1024 * 1024;
-const GUARD = 50 * MIB;
-const WARN = 49 * MIB;
+const GUARD = 90 * MIB;
+const WARN = 80 * MIB;
 const KBPS_256 = 256 * 1024; // byte/giây
 /** Hệ số keyframe + container, đo trên 9 clip thật (xem module). */
 const FACTOR = 1.05;
@@ -151,7 +155,7 @@ test("checkout 528s có segment phủ đủ → over_limit, cộng theo phần c
   assert.ok((est.estimated_bitrate_kbps ?? 0) > 1900);
 });
 
-test("capped 190s @p50: near_limit — sát trần thật, KHÔNG phải nhiễu", () => {
+test("capped 190s @p50: safe sau khi nới trần (trước 2026-08-13 là near_limit)", () => {
   const window = computeFinalizedClipWindow({
     scannedAt: SCAN,
     workEndedAt: iso(600),
@@ -169,12 +173,15 @@ test("capped 190s @p50: near_limit — sát trần thật, KHÔNG phải nhiễu
     correctionFactor: FACTOR,
   });
   assert.equal(est.estimate_method, "overlapping_segments");
-  // 190s × 256 KB/s × 1.05 ≈ 49,9 MiB — giữa warn 49 và guard 50.
-  // E2E 2026-08-07 đo clip thật 49,3 MiB, khớp bậc độ lớn. Đơn capped
-  // bình thường của Đại Kim ĐANG sát trần; amber ở đây là sự thật.
-  assert.equal(est.proof_size_risk, "near_limit");
+  // 190s × 256 KB/s × 1.05 ≈ 49,9 MiB. E2E 2026-08-07 đo clip thật
+  // 49,3 MiB, khớp bậc độ lớn — con số này KHÔNG đổi theo trần upload.
   const mib = (est.estimated_file_size_bytes ?? 0) / MIB;
   assert.ok(mib > 49 && mib < 50, `ước tính ${mib.toFixed(1)} MiB`);
+  // Đây là ca chốt chặn của lần nới trần 2026-08-13: cùng clip này,
+  // dưới guard 50/warn 49 cũ thì `near_limit` (cả bảng vàng), dưới
+  // guard 90/warn 80 mới thì `safe`. Đơn capped 3 phút bình thường
+  // không được coi là gần giới hạn nữa.
+  assert.equal(est.proof_size_risk, "safe");
 });
 
 test("đơn ngắn → safe", () => {
@@ -292,16 +299,27 @@ test("biên phân loại: safe < warn <= near_limit <= guard < over_limit", () =
   assert.equal(classify(GUARD + 1, GUARD, WARN), "over_limit");
 });
 
-test("mặc định: guard 50 MiB (đúng trần đo được), cảnh báo 49 MiB", () => {
-  // Guard = ĐÚNG trần, không trừ biên. Bản đầu để 49 MiB và E2E
-  // production 2026-08-07 chứng minh sai: clip capped thật 49,3 MiB
-  // upload OK nhưng đã bị guard 49 MiB chặn. Áp phân bố bitrate thật,
-  // guard 49 MiB từ chối 87,6% clip chạy được.
+test("mặc định: guard 90 MiB, cảnh báo 80 MiB (trần project 100 MiB)", () => {
+  // Bốn con số phải xếp đúng thứ tự, đổi một thì rà cả bốn:
+  //   80 warn  <  90 guard  <  100 project  <  500 bucket.
+  // Bucket 500 MB (giá trị THẬT trong DB, không phải 100 MiB như
+  // migration tạo bucket ghi) nên nó không phải tầng cắn.
+  // Guard đặt DƯỚI trần project là có chủ ý — clip 3 phút thật nặng
+  // 45–50 MiB nên biên 10 MiB không chặn oan clip nào, mà vẫn giữ
+  // agent là chỗ chặn đầu tiên (câu người đọc thay vì 413 thô).
+  // Khác với ca 49/50 MiB hồi 2026-08-07: khi đó clip nằm ngay tại
+  // ngưỡng nên biên an toàn = chặn oan 87,6% clip chạy được.
   const t = resolveProofSizeThresholds();
-  assert.equal(t.guardBytes, 50 * MIB);
-  assert.equal(t.warnBytes, 49 * MIB);
+  assert.equal(t.guardBytes, 90 * MIB);
+  assert.equal(t.warnBytes, 80 * MIB);
   assert.equal(t.warnNormalized, false);
   assert.ok(t.warnBytes < t.guardBytes);
+  // Nửa còn lại của tính nhất quán: guard phải nằm dưới trần project,
+  // nếu không guard mất tác dụng và 413 lại lọt ra ngoài.
+  assert.ok(
+    t.guardBytes < 100 * MIB,
+    `guard ${t.guardBytes} phải dưới trần project 100 MiB`,
+  );
 });
 
 test("hệ số hiệu chỉnh mặc định 1.05 và có mặt trong kết quả", () => {
@@ -309,7 +327,9 @@ test("hệ số hiệu chỉnh mặc định 1.05 và có mặt trong kết qu�
 });
 
 test("file ĐÚNG BẰNG trần vẫn được coi là trong giới hạn", () => {
-  // Phép đo: 50 MiB → 200 OK, 51 MiB → 413. So sánh phải là `>`.
+  // So sánh phải là `>`, không phải `>=`. Gốc từ phép đo trên gói Free:
+  // 50 MiB → 200 OK, 51 MiB → 413. Giờ guard nằm dưới trần project nên
+  // file đúng bằng guard lại càng upload được.
   const t = resolveProofSizeThresholds();
   assert.equal(classify(t.guardBytes, t.guardBytes, t.warnBytes), "near_limit");
   assert.equal(
@@ -362,7 +382,7 @@ test("guard quá nhỏ: warn không được rơi về 0 (mọi clip thành near
   }
 });
 
-test("ở ngưỡng mặc định, clip capped 190s @p50 nằm giữa warn và guard", () => {
+test("ở ngưỡng mặc định, clip capped 190s @p50 nằm an toàn dưới warn", () => {
   const window = computeFinalizedClipWindow({
     scannedAt: SCAN,
     workEndedAt: iso(600),
@@ -381,7 +401,13 @@ test("ở ngưỡng mặc định, clip capped 190s @p50 nằm giữa warn và g
   });
   // Dùng hệ số mặc định (không truyền correctionFactor) — đây là ca
   // kiểm cấu hình production thật, không phải số cố định của test.
-  assert.equal(est.proof_size_risk, "near_limit");
+  //
+  // Trước 2026-08-13 ca này là `near_limit` và đó là sự thật: đơn capped
+  // bình thường chạy ở ~99% trần 50 MiB. Sau khi nới trần lên 100 MiB,
+  // cùng clip ấy phải về `safe` — nếu ca này lại vàng thì hoặc bitrate
+  // camera đã tăng, hoặc ai đó hạ ngưỡng, chứ không phải chuyện bình
+  // thường.
+  assert.equal(est.proof_size_risk, "safe");
 });
 
 test("p95 bỏ qua file thiếu dữ liệu và nghiêng về phía nặng", () => {

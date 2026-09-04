@@ -110,20 +110,32 @@ const EnvSchema = z.object({
   /**
    * Trần dung lượng clip agent chịu PUT lên bucket.
    *
-   * Trần THẬT của Supabase project đo được 2026-08-07 bằng cách PUT file
-   * tăng dần qua đúng đường signed-upload-url: 50 MiB OK, 51 MiB trả
-   * 413 `EntityTooLarge`. Tức trần đúng bằng 50 MiB = 52.428.800 byte,
-   * và file ĐÚNG BẰNG 50 MiB vẫn upload được — so sánh phải là `>`.
+   * Bối cảnh cũ (2026-08-07): project ở gói Free, trần upload đo được
+   * bằng PUT tăng dần qua đúng đường signed-upload-url là 50 MiB
+   * (50 OK / 51 → 413 `EntityTooLarge`). Guard khi đó để ĐÚNG 50 MiB,
+   * không trừ biên — vì clip capped 190s thật nặng 49,3 MiB, sát mép,
+   * nên mọi biên an toàn đều thành chặn oan (guard 49 MiB từng từ chối
+   * 87,6% clip chạy được).
    *
-   * Mặc định = đúng trần đo được, KHÔNG trừ biên an toàn. Bản đầu để
-   * 49 MiB và E2E production 2026-08-07 chứng minh sai: clip capped
-   * 190s thật nặng 49,3 MiB, upload OK, nhưng guard 49 MiB đã chặn nó.
-   * Áp phân bố bitrate thật thì guard 49 MiB từ chối 87,6% clip capped
-   * chạy được, trong khi chỉ 7,0% thật sự vượt 50 MiB.
+   * Nay (2026-08-13) project đã lên gói trả phí và global upload limit
+   * nâng 50 → 100 MiB. Guard về 90 MiB.
    *
-   * Guard này chỉ để đổi một lỗi 413 khó hiểu thành thông báo rõ ràng.
-   * Nó KHÔNG phải chỗ tạo headroom — headroom phải đến từ bitrate
-   * camera. Hạ ngưỡng xuống dưới trần = chặn oan, không phải an toàn.
+   * Trần mới ĐÃ ĐO, không phải đọc ô cấu hình — cùng phương pháp PUT
+   * tăng dần qua signed-upload-url: 100 MiB → 200 OK, 101 MiB → 413
+   * `EntityTooLarge`. Tức trần là 104.857.600 byte (MB nhị phân, không
+   * phải 100.000.000). Lặp lại phép đo bằng
+   * `node scripts/probe-storage-upload-limit.mjs`.
+   *
+   * Vì sao lần này ĐƯỢC đặt dưới trần, trong khi lần trước thì không:
+   * lập luận "đừng trừ biên" là về khoảng cách giữa guard và kích thước
+   * clip thật, không phải về nguyên tắc. Clip 3 phút ở bitrate hiện tại
+   * nặng 45–50 MiB, cách 90 MiB một quãng xa — biên 10 MiB dưới trần
+   * project không loại bỏ clip hợp lệ nào, mà vẫn để guard này là chỗ
+   * chặn đầu tiên nên lỗi hiện ra dưới dạng câu người đọc chứ không
+   * phải 413 thô từ Storage.
+   *
+   * Giữ nguyên hai điều: quyết định theo byte thật từ stat(), và
+   * headroom thật sự đến từ bitrate camera chứ không từ con số này.
    *
    * Có env để kho có bitrate khác hoặc project đổi plan thì chỉnh được
    * mà không build lại agent.
@@ -132,7 +144,7 @@ const EnvSchema = z.object({
     .number()
     .int()
     .positive()
-    .default(50 * 1024 * 1024),
+    .default(90 * 1024 * 1024),
   // BURN_* env đã xoá 2026-07-05: đường clip chốt "video thuần" —
   // không burn (nướng vào file), không overlay (đè giao diện), không
   // vẽ mark gap. Thông tin đơn (mã vận đơn/kho/bàn/nhân viên/camera/

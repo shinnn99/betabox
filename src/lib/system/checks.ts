@@ -2,18 +2,14 @@ import "server-only";
 import os from "node:os";
 import { statfs } from "node:fs/promises";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { SYSTEM_JOB_CLEANUP_CLIPS, errorMessage } from "@/lib/system/job-log";
 import {
-  describeOperatingHours,
-  isWithinOperatingHours,
-  mergeOperatingHours,
-  operatingMsBetween,
-  parseOperatingHours,
-  type OperatingHours,
-} from "@/lib/system/business-hours";
+  SYSTEM_JOB_CLEANUP_CLIPS,
+  SYSTEM_JOB_CLOSE_ORPHAN_SEGMENTS,
+  errorMessage,
+} from "@/lib/system/job-log";
 
 /**
- * Sáu mục kiểm hạ tầng Betabox.
+ * Chín mục kiểm hạ tầng Betabox.
  *
  * Bối cảnh: tuần 08/2026 có 3 sự cố phát hiện muộn — egress Supabase tràn
  * 103%, cron dọn clip chết 5 ngày, agent kho im 19 giờ. Không cái nào có
@@ -30,13 +26,33 @@ import {
  *  3. KHÔNG đoán số. Mục nào chưa có nguồn dữ liệu thật thì trả "unknown"
  *     và nói thẳng là chưa có nguồn — không bịa ngưỡng để ô hiện màu
  *     xanh cho đẹp.
+ *
+ * ĐỒNG HỒ KHÔNG PHẢI LÀ MỐC — HOẠT ĐỘNG NGHIỆP VỤ MỚI LÀ (13/08/2026).
+ *
+ * Bản trước hỏi "bây giờ có phải giờ làm không" bằng một khung giờ khai
+ * trong `warehouses.operating_hours`. Hỏng ở hai chỗ: khung đó do người
+ * dựng hệ tự suy ra từ dữ liệu chứ không ai ở kho xác nhận, và mọi kho sau
+ * đều phải nhớ khai — quên là bị bắn cảnh báo mỗi đêm.
+ *
+ * Thay bằng câu hỏi đo được: "kho có tiếp tục ĐÓNG GÓI sau khi bằng chứng
+ * ngừng về không". `packing_events` là nguồn ĐỘC LẬP với agent — scan đến
+ * từ trình duyệt ở trạm đóng gói, agent không ghi bảng này (grep
+ * warehouse-agent/: 0 file). Nên:
+ *
+ *   * agent chết giữa ca  → kho vẫn quét đơn → lastScan chạy tiếp, lastSeen
+ *     đứng lại → hiệu số lớn dần → báo.
+ *   * kho đóng cửa bình thường → cả hai cùng dừng → hiệu số ≈ 0 → im lặng,
+ *     không cần biết mấy giờ.
+ *
+ * Và hiệu số đó KHÔNG phải "im bao lâu" — nó là LƯỢNG BẰNG CHỨNG ĐÃ MẤT,
+ * thứ duy nhất đáng gọi người dậy. Không múi giờ, không DST, không khai báo.
  */
 
 /**
- * "skipped" = mục này KHÔNG được đánh giá lần chạy này vì đang ngoài giờ
- * vận hành của kho. Khác hẳn "ok" (đã đo, mọi thứ tốt) và khác "unknown"
- * (đáng ra đo được mà không đo được). Ba trạng thái này mà gộp lại thì ô
- * xanh lúc 3 giờ sáng sẽ nói dối: nó không chứng minh gì cả.
+ * "skipped" = mục này KHÔNG được đánh giá lần chạy này vì kho không có
+ * hoạt động để đối chiếu. Khác hẳn "ok" (đã đo, mọi thứ tốt) và khác
+ * "unknown" (đáng ra đo được mà không đo được). Ba trạng thái này mà gộp
+ * lại thì ô xanh lúc 3 giờ sáng sẽ nói dối: nó không chứng minh gì cả.
  *
  * `skipped` KHÔNG BAO GIỜ sinh cảnh báo — xem needsAlert/incidentUnknowns.
  */
@@ -56,6 +72,53 @@ export type CheckStatus = "ok" | "warn" | "crit" | "unknown" | "skipped";
  */
 export type UnknownKind = "structural" | "incident";
 
+/**
+ * Một đối tượng cụ thể bên trong một mục kiểm: MỘT agent, MỘT camera.
+ *
+ * VÌ SAO CẦN: bản đầu gộp mọi agent về đúng một dòng tệ nhất và nối mọi mã
+ * camera vào một chuỗi `join(", ")`. Với một kho thì không lộ; ba kho cùng
+ * chết thì ô chỉ kể tên một kho, sửa xong kho đó ô vẫn đỏ mà không ai biết
+ * vì sao. Dữ liệu per-đối-tượng vốn đã được tính rồi — chỉ đang bị bóp lại
+ * trước khi trả về.
+ *
+ * ĐƯỜNG CẢNH BÁO KHÔNG ĐỌC TRƯỜNG NÀY. `sendSystemAlert` chỉ ăn
+ * `status`/`value`/`message`, nên thêm/bớt entity không bao giờ đổi nội dung
+ * tin Lark hay bộ chống-spam. Đây là ràng buộc cố ý: trang hiển thị được
+ * phép giàu lên, con cảnh báo thì không được lung lay.
+ */
+export interface CheckEntity {
+  kind: "agent" | "camera" | "org";
+  /** Khoá React + dedupe. Rơi về `code` nếu bảng chưa trả id. */
+  id: string;
+  /** Mã hiển thị: mã agent hoặc mã camera. */
+  code: string;
+  /** Tổ chức sở hữu — để gộp thành bảng theo kho và dựng link. */
+  orgId: string;
+  status: CheckStatus;
+  /** Một câu về riêng đối tượng này. */
+  detail: string;
+  /** Việc cần làm. Chỉ đặt ở đối tượng đang xấu. */
+  action?: string;
+  /**
+   * Nhóm phân loại nội bộ của mục kiểm — bảng theo kho đếm theo cột này.
+   * Camera: "ok" | "failing_long" | "failing_short" | "stale".
+   */
+  bucket?: string;
+  /** Con số của riêng đối tượng này (vd: số clip lỗi). Chỉ mục nào cần mới đặt. */
+  count?: number;
+  /**
+   * Tuổi của tín hiệu gần nhất từ đối tượng này (ms): heartbeat với agent,
+   * probe với camera.
+   *
+   * TÁCH KHỎI `status` có chủ đích. `status` trả lời "có mất bằng chứng
+   * không" — câu hỏi để cảnh báo. Trường này trả lời "cái này còn đang bật
+   * không" — câu hỏi để HIỂN THỊ. Ban đêm agent tắt: status "ok" (không mất
+   * gì) nhưng signalAgeMs 3 giờ (đang tắt). Gộp hai thứ lại thì ô đầu trang
+   * hoặc nói dối là "1/1 online", hoặc bắn báo động giả.
+   */
+  signalAgeMs?: number;
+}
+
 export interface SystemCheck {
   /** Khoá ổn định — chống spam và trang hiển thị đều bám vào chuỗi này. */
   key: string;
@@ -66,14 +129,20 @@ export interface SystemCheck {
   message: string;
   /** Chỉ có nghĩa khi status = "unknown". */
   unknownKind?: UnknownKind;
+  /** Chi tiết theo từng đối tượng. Chỉ mục agent/camera có. */
+  entities?: CheckEntity[];
 }
 
 export const CHECK_KEYS = {
   egress: "supabase_egress",
   cronCleanup: "cron_cleanup",
+  cronOrphanSegments: "cron_orphan_segments",
   agentHeartbeat: "agent_heartbeat",
   cameraProbe: "camera_probe",
+  recording: "recording_freshness",
+  clipFailures: "clip_failures",
   vps: "vps_resources",
+  storage: "storage_usage",
   warehouseDisk: "warehouse_disk",
 } as const;
 
@@ -96,16 +165,39 @@ export const CHECK_CONFIG = {
     critHours: 48,
   },
 
+  cronOrphanSegments: {
+    // Chạy 03:30 hàng ngày — cùng nhịp với cron dọn clip nên dùng cùng
+    // ngưỡng. Hậu quả nhẹ hơn (dữ liệu thống kê sai, không phải bucket
+    // phình) nhưng "lỡ hai nhịp" vẫn là hỏng chứ không phải trễ.
+    warnHours: 26,
+    critHours: 48,
+  },
+
   agentHeartbeat: {
-    // Agent ping ~30s/lần. 30 phút = lỡ ~60 nhịp: mất mạng thật, không
-    // phải jitter. 2 giờ = kho đã ngừng ghi hình cả tiếng.
-    //
-    // ĐƠN VỊ ĐÃ ĐỔI (13/08/2026): hai số này đo phần im lặng NẰM TRONG giờ
-    // vận hành của kho, không phải tuổi thô của last_seen_at. Kho Đại Kim
-    // tắt máy sau ca nên tuổi thô mỗi sáng là ~14 giờ — đo thô thì crit
-    // mỗi ngày. Xem src/lib/system/business-hours.ts.
+    /**
+     * ĐƠN VỊ: phút ĐÓNG GÓI trôi qua SAU KHI agent im — tức lượng bằng
+     * chứng đã mất — chứ không phải "im bao lâu". Xem evidenceLostMs().
+     *
+     * 30 phút đóng gói không có clip đã là mất mát thật với khách; 2 giờ
+     * là mất gần một buổi.
+     */
     warnMinutes: 30,
     critMinutes: 120,
+    /**
+     * Nuốt chênh lệch thứ tự lúc kho đóng cửa bình thường: agent tắt xong,
+     * nhân viên còn bấm nốt vài đơn cuối. Agent ping 30s/lần nên lệch thật
+     * chỉ cỡ phút; 15 phút là rộng rãi.
+     *
+     * Đánh đổi đã biết và đã chấp nhận: agent chết trong 15 phút cuối của
+     * ca sẽ không được báo. Đổi lại là không còn báo động giả mỗi tối.
+     */
+    graceMinutes: 15,
+    /**
+     * Mốc HIỂN THỊ (không phải cảnh báo): ping mới hơn ngần này thì coi là
+     * máy đang bật. Ping 30s/lần nên 5 phút = lỡ 10 nhịp. Chỉ dùng cho ô
+     * "Agent online" ở đầu trang — xem CheckEntity.signalAgeMs.
+     */
+    onlineWithinMinutes: 5,
   },
 
   cameraProbe: {
@@ -116,6 +208,45 @@ export const CHECK_CONFIG = {
     // Probe cũ hơn mốc này = agent không còn probe camera đó nữa, số
     // liệu đứng hình → không kết luận, để mục agent_heartbeat lo.
     staleProbeMinutes: 15,
+  },
+
+  recording: {
+    /**
+     * ĐƠN VỊ: phút ĐÓNG GÓI trôi qua sau segment cuối — lượng bằng chứng
+     * đã mất, không phải "segment cũ bao lâu".
+     *
+     * Segment dài 60 giây, do cloud quyết định — src/lib/camera/
+     * active-credentials.ts trả `segment_seconds: 60`. Hai ngưỡng dưới đây
+     * suy ra TỪ con số đó chứ không phải số tròn chọn cho đẹp: 10 phút =
+     * lỡ ~10 segment liên tiếp trong lúc kho vẫn làm việc. Đổi
+     * segment_seconds thì rà lại cả hai.
+     */
+    segmentSeconds: 60,
+    warnMinutes: 10,
+    critMinutes: 30,
+    /**
+     * Hẹp hơn grace của heartbeat (15 phút) có chủ đích: segment rơi mỗi
+     * 60 giây nên độ trễ tự nhiên giữa "quét đơn" và "file xuống đĩa" chỉ
+     * cỡ một segment, không cần rộng như đường heartbeat.
+     */
+    graceMinutes: 3,
+    /**
+     * Mỗi org một truy vấn `limit(1)` theo index — rẻ, nhưng là O(số org).
+     * Quá trần này thì dừng và trả unknown thay vì nã một loạt truy vấn
+     * trong route chạy nền.
+     */
+    maxOrgs: 20,
+  },
+
+  clipFailures: {
+    windowHours: 24,
+    // Một clip lỗi là một đơn hàng không có bằng chứng — đáng biết ngay,
+    // nhưng chưa phải dựng người dậy. Từ 5 trong 24 giờ thì không còn là
+    // ca lẻ nữa mà là hỏng hệ thống (encode, dung lượng, credentials).
+    warnCount: 1,
+    critCount: 5,
+    /** Trần số dòng kéo về. Chạm trần thì báo "≥ N", không đọc tiếp. */
+    fetchLimit: 200,
   },
 
   /**
@@ -131,9 +262,15 @@ export const CHECK_CONFIG = {
   alertOnUnknown: {
     [CHECK_KEYS.egress]: false,
     [CHECK_KEYS.warehouseDisk]: false,
+    // Dung lượng Storage: cùng lý do với egress — Supabase không công khai
+    // mẫu số hạn mức. Xem checkStorageUsage().
+    [CHECK_KEYS.storage]: false,
     [CHECK_KEYS.cronCleanup]: true,
+    [CHECK_KEYS.cronOrphanSegments]: true,
     [CHECK_KEYS.agentHeartbeat]: true,
     [CHECK_KEYS.cameraProbe]: true,
+    [CHECK_KEYS.recording]: true,
+    [CHECK_KEYS.clipFailures]: true,
     [CHECK_KEYS.vps]: true,
   } as Record<string, boolean>,
 
@@ -257,12 +394,22 @@ export function checkEgress(): SystemCheck {
 }
 
 // ============================================================================
-// 2. Cron dọn clip
+// 2. Cron nền (dọn clip, dọn segment mồ côi)
 // ============================================================================
 
 interface JobRow {
   ran_at: string;
   ok: boolean;
+}
+
+/** Câu chữ riêng của từng job — phần LOGIC dùng chung ở checkCronJob(). */
+interface CronJobCopy {
+  /** Tên job trong câu cảnh báo, VD "Cron dọn clip". */
+  label: string;
+  /** Tên systemd unit để người trực biết kiểm ở đâu. */
+  unit: string;
+  /** Hậu quả nếu job chết — nói cho người trực biết vì sao phải quan tâm. */
+  consequence: string;
 }
 
 /**
@@ -275,14 +422,28 @@ interface JobRow {
  * Vì sao cần câu (b): nếu chỉ đo tuổi dòng mới nhất, một cron chạy đều
  * nhưng lần nào cũng lỗi sẽ luôn xanh — đúng cái bẫy "có ghi log nhưng
  * log nói thất bại mà không ai đọc".
+ *
+ * Dùng chung cho mọi job nền: thân hàm này KHÔNG biết job nào, chỉ nhận
+ * job_name + câu chữ. Job nền thứ hai thêm vào chỉ cần một dòng cấu hình,
+ * không chép lại 70 dòng logic warn/crit — chép ra là chép luôn cả bug.
  */
-export async function checkCronCleanup(admin: Admin, now: Date): Promise<SystemCheck> {
-  const key = CHECK_KEYS.cronCleanup;
+export async function checkCronJob(
+  admin: Admin,
+  now: Date,
+  opts: {
+    key: string;
+    jobName: string;
+    warnHours: number;
+    critHours: number;
+    copy: CronJobCopy;
+  },
+): Promise<SystemCheck> {
+  const { key, jobName, warnHours, critHours, copy } = opts;
 
   const { data: lastOkRows, error: okErr } = await admin
     .from("system_jobs")
     .select("ran_at, ok")
-    .eq("job_name", SYSTEM_JOB_CLEANUP_CLIPS)
+    .eq("job_name", jobName)
     .eq("ok", true)
     .order("ran_at", { ascending: false })
     .limit(1)
@@ -292,7 +453,7 @@ export async function checkCronCleanup(admin: Admin, now: Date): Promise<SystemC
   const { data: lastRows, error: lastErr } = await admin
     .from("system_jobs")
     .select("ran_at, ok")
-    .eq("job_name", SYSTEM_JOB_CLEANUP_CLIPS)
+    .eq("job_name", jobName)
     .order("ran_at", { ascending: false })
     .limit(1)
     .abortSignal(queryTimeout());
@@ -308,7 +469,7 @@ export async function checkCronCleanup(admin: Admin, now: Date): Promise<SystemC
       value: "chưa từng chạy xong",
       message: last
         ? `Có ${formatAge(now.getTime() - new Date(last.ran_at).getTime())} trước một lần chạy nhưng THẤT BẠI, và chưa lần nào thành công.`
-        : "Chưa có lần chạy nào được ghi nhận. Kiểm tra systemd timer betabox-cleanup trên VPS.",
+        : `Chưa có lần chạy nào được ghi nhận. Kiểm tra systemd timer ${copy.unit} trên VPS.`,
     };
   }
 
@@ -316,20 +477,20 @@ export async function checkCronCleanup(admin: Admin, now: Date): Promise<SystemC
   const ageHours = ageMs / 3_600_000;
   const age = formatAge(ageMs);
 
-  if (ageHours > CHECK_CONFIG.cronCleanup.critHours) {
+  if (ageHours > critHours) {
     return {
       key,
       status: "crit",
       value: age,
-      message: `Cron dọn clip không chạy xong đã ${age} (quá ${CHECK_CONFIG.cronCleanup.critHours}h). Bucket đang phình, kiểm systemd timer.`,
+      message: `${copy.label} không chạy xong đã ${age} (quá ${critHours}h). ${copy.consequence}`,
     };
   }
-  if (ageHours > CHECK_CONFIG.cronCleanup.warnHours) {
+  if (ageHours > warnHours) {
     return {
       key,
       status: "warn",
       value: age,
-      message: `Cron dọn clip lỡ nhịp — lần chạy xong gần nhất ${age} trước (quá ${CHECK_CONFIG.cronCleanup.warnHours}h).`,
+      message: `${copy.label} lỡ nhịp — lần chạy xong gần nhất ${age} trước (quá ${warnHours}h).`,
     };
   }
   // Chạy đúng nhịp, nhưng lần gần nhất có thể vẫn lỗi.
@@ -345,8 +506,49 @@ export async function checkCronCleanup(admin: Admin, now: Date): Promise<SystemC
     key,
     status: "ok",
     value: age,
-    message: `Cron dọn clip chạy xong ${age} trước.`,
+    message: `${copy.label} chạy xong ${age} trước.`,
   };
+}
+
+export async function checkCronCleanup(admin: Admin, now: Date): Promise<SystemCheck> {
+  return checkCronJob(admin, now, {
+    key: CHECK_KEYS.cronCleanup,
+    jobName: SYSTEM_JOB_CLEANUP_CLIPS,
+    warnHours: CHECK_CONFIG.cronCleanup.warnHours,
+    critHours: CHECK_CONFIG.cronCleanup.critHours,
+    copy: {
+      label: "Cron dọn clip",
+      unit: "betabox-cleanup",
+      consequence: "Bucket đang phình, kiểm systemd timer.",
+    },
+  });
+}
+
+/**
+ * Job đóng row segment mồ côi (`ended_at` NULL quá cũ).
+ *
+ * Vì sao mục này đáng có cảnh báo riêng: job sinh ra sau sự cố 04/09/2026
+ * — một row mồ côi chặn cắt clip 4 đơn ở kho Đại Kim, âm ỉ từ 28/07 mà
+ * không ai biết. Nếu chính job dọn nó lại chết âm thầm thì ta lặp đúng
+ * kiểu sự cố đã sinh ra nó (cron dọn clip từng chết 5 ngày vì không có sổ
+ * nào để đọc).
+ */
+export async function checkCronOrphanSegments(
+  admin: Admin,
+  now: Date,
+): Promise<SystemCheck> {
+  return checkCronJob(admin, now, {
+    key: CHECK_KEYS.cronOrphanSegments,
+    jobName: SYSTEM_JOB_CLOSE_ORPHAN_SEGMENTS,
+    warnHours: CHECK_CONFIG.cronOrphanSegments.warnHours,
+    critHours: CHECK_CONFIG.cronOrphanSegments.critHours,
+    copy: {
+      label: "Cron dọn segment mồ côi",
+      unit: "betabox-orphan-segments",
+      consequence:
+        "Row segment mồ côi tích lại làm sai thống kê phủ sóng bằng chứng.",
+    },
+  });
 }
 
 // ============================================================================
@@ -361,17 +563,22 @@ interface OrgRow {
 interface WarehouseRow {
   organization_id: string;
   name: string | null;
-  operating_hours: unknown;
 }
 
 export interface MonitoringScope {
   /** Org có `monitoring_enabled = true`. Rỗng nghĩa là không kiểm gì. */
   orgIds: string[];
   orgNameById: Map<string, string>;
-  /** null = theo dõi 24/7 (chưa cấu hình giờ, hoặc cấu hình sai). */
-  hoursByOrg: Map<string, OperatingHours | null>;
-  /** Tên kho có `operating_hours` sai định dạng — để nói ra, không nuốt. */
-  invalidHoursWarehouses: string[];
+  /** Tên kho active của từng org — bảng theo kho hiện ra, không chỉ tên org. */
+  warehouseNamesByOrg: Map<string, string[]>;
+  /**
+   * Mốc đơn hàng được quét gần nhất của từng org. null = kho chưa đóng gói
+   * đơn nào bao giờ.
+   *
+   * Đây là ĐỒNG HỒ THẬT của cả module: mọi kết luận "kho lẽ ra phải đang
+   * ghi hình" đều đối chiếu với mốc này, không đối chiếu với giờ hệ thống.
+   */
+  lastScanByOrg: Map<string, string | null>;
 }
 
 /**
@@ -399,54 +606,76 @@ export async function loadMonitoringScope(admin: Admin): Promise<MonitoringScope
   const scope: MonitoringScope = {
     orgIds,
     orgNameById,
-    hoursByOrg: new Map(),
-    invalidHoursWarehouses: [],
+    warehouseNamesByOrg: new Map(),
+    lastScanByOrg: new Map(),
   };
   if (orgIds.length === 0) return scope;
 
   const { data: whData, error: whErr } = await admin
     .from("warehouses")
-    .select("organization_id, name, operating_hours")
+    .select("organization_id, name")
     .eq("status", "active")
     .in("organization_id", orgIds)
     .abortSignal(queryTimeout());
   if (whErr) throw new Error(whErr.message);
 
-  const perOrg = new Map<string, Array<OperatingHours | null>>();
   for (const w of (whData as WarehouseRow[] | null) ?? []) {
-    const parsed = parseOperatingHours(w.operating_hours);
-    // Phân biệt "chưa cấu hình" (null trong DB — bình thường) với "cấu hình
-    // SAI" (có giá trị mà đọc không ra). Cả hai đều về 24/7, nhưng ca thứ
-    // hai phải hiện ra chữ, nếu không thì một dấu phẩy thừa trong JSON sẽ
-    // âm thầm biến thành "kho này theo dõi 24/7" mà không ai biết.
-    if (w.operating_hours != null && parsed === null) {
-      scope.invalidHoursWarehouses.push(w.name ?? w.organization_id);
-    }
-    const list = perOrg.get(w.organization_id) ?? [];
-    list.push(parsed);
-    perOrg.set(w.organization_id, list);
+    const names = scope.warehouseNamesByOrg.get(w.organization_id) ?? [];
+    if (w.name) names.push(w.name);
+    scope.warehouseNamesByOrg.set(w.organization_id, names);
   }
 
-  for (const orgId of orgIds) {
-    const list = perOrg.get(orgId);
-    // Org không có kho active nào → không có giờ → 24/7.
-    scope.hoursByOrg.set(orgId, list ? mergeOperatingHours(list) : null);
-  }
+  // Mốc hoạt động: mỗi org một truy vấn `order by scanned_at desc limit 1`.
+  // Index lookup, trả đúng một dòng. Không gộp thành một truy vấn lớn: gộp
+  // thì phải kéo mọi đơn trong cửa sổ về rồi tự nhóm, mà câu hỏi chỉ cần
+  // một mốc cho mỗi kho.
+  const scans = await Promise.all(
+    orgIds.map(async (orgId) => {
+      const { data, error } = await admin
+        .from("packing_events")
+        .select("scanned_at")
+        .eq("organization_id", orgId)
+        .order("scanned_at", { ascending: false })
+        .limit(1)
+        .abortSignal(queryTimeout());
+      if (error) throw new Error(error.message);
+      return {
+        orgId,
+        at: (data as Array<{ scanned_at: string | null }> | null)?.[0]?.scanned_at ?? null,
+      };
+    }),
+  );
+  for (const s of scans) scope.lastScanByOrg.set(s.orgId, s.at);
+
   return scope;
 }
 
-/** Org đang trong giờ vận hành (hoặc theo dõi 24/7) tại thời điểm `now`. */
-function orgsInWindow(scope: MonitoringScope, now: Date): string[] {
-  return scope.orgIds.filter((id) => {
-    const hours = scope.hoursByOrg.get(id) ?? null;
-    return hours === null || isWithinOperatingHours(now, hours);
-  });
-}
-
-/** Câu đuôi nói rõ có kho nào đang bị theo dõi 24/7 vì cấu hình hỏng. */
-function invalidHoursNote(scope: MonitoringScope): string {
-  if (scope.invalidHoursWarehouses.length === 0) return "";
-  return ` (Cảnh báo cấu hình: operating_hours không đọc được ở kho ${scope.invalidHoursWarehouses.join(", ")} — đang theo dõi 24/7.)`;
+/**
+ * Bao nhiêu thời gian LÀM VIỆC trôi qua sau khi một tín hiệu ngừng về.
+ *
+ * `signalAt` là mốc cuối của thứ ta đang canh (heartbeat agent, segment ghi
+ * hình). `lastScan` là mốc đơn hàng cuối được quét. Hiệu số dương nghĩa là
+ * kho VẪN đóng gói sau khi tín hiệu tắt — tức là bằng chứng đã mất đúng
+ * ngần đó thời gian.
+ *
+ * Trả null khi không kết luận được: kho chưa quét đơn nào bao giờ, hoặc
+ * tín hiệu chưa từng có. Null KHÔNG phải 0 — 0 nghĩa là "đã đối chiếu, không
+ * mất gì", null nghĩa là "không có gì để đối chiếu".
+ *
+ * `graceMs` nuốt chênh lệch thứ tự lúc kho đóng cửa bình thường: agent tắt
+ * xong, nhân viên vẫn bấm nốt một đơn. Đánh đổi đã biết: agent chết trong
+ * `graceMs` cuối cùng của ca sẽ không được báo.
+ */
+export function evidenceLostMs(
+  signalAt: string | null,
+  lastScan: string | null,
+  graceMs: number,
+): number | null {
+  if (!signalAt || !lastScan) return null;
+  const signal = new Date(signalAt).getTime();
+  const scan = new Date(lastScan).getTime();
+  if (!Number.isFinite(signal) || !Number.isFinite(scan)) return null;
+  return Math.max(0, scan - signal - graceMs);
 }
 
 // ============================================================================
@@ -454,26 +683,61 @@ function invalidHoursNote(scope: MonitoringScope): string {
 // ============================================================================
 
 interface AgentRow {
+  id?: string | null;
   code: string | null;
   last_seen_at: string | null;
   organization_id: string;
 }
 
+function agentEntity(
+  row: AgentRow,
+  status: CheckStatus,
+  detail: string,
+  extra: { action?: string; signalAgeMs?: number | null } = {},
+): CheckEntity {
+  const code = row.code ?? "?";
+  return {
+    kind: "agent",
+    id: row.id ?? code,
+    code,
+    orgId: row.organization_id,
+    status,
+    detail,
+    ...(extra.action ? { action: extra.action } : {}),
+    ...(extra.signalAgeMs == null ? {} : { signalAgeMs: extra.signalAgeMs }),
+  };
+}
+
 /**
- * Agent nào im lâu nhất quyết định trạng thái mục này — một kho mù là
- * một kho mất bằng chứng, không được để trung bình cộng che đi.
+ * Agent nào để mất nhiều bằng chứng nhất quyết định trạng thái mục này —
+ * một kho mù là một kho mất bằng chứng, không được để trung bình cộng che.
  *
  * Chỉ xét agent `status = 'active'` thuộc org đang bật theo dõi: agent đã
  * tắt có chủ đích, và agent demo, không phải sự cố.
  *
- * "Im bao lâu" đo bằng phần im lặng NẰM TRONG giờ vận hành của kho
- * (operatingMsBetween), không phải tuổi thô của last_seen_at. Lý do đầy đủ
- * ở đầu src/lib/system/business-hours.ts — tóm tắt: kho tắt máy ban đêm,
- * đo thô thì 9 giờ sáng thứ Hai nào cũng crit.
+ * ĐO CÁI GÌ: không phải "im bao lâu" mà là "kho vẫn đóng gói bao lâu SAU
+ * KHI agent im" — `evidenceLostMs(last_seen_at, lastScan)`. Xem ghi chú dài
+ * ở đầu file. Hệ quả trực tiếp:
+ *
+ *   * Kho đóng cửa: heartbeat và scan cùng dừng → hiệu số 0 → im lặng, và
+ *     im lặng ĐÚNG mà không cần ai khai giờ làm.
+ *   * Agent chết giữa ca: scan chạy tiếp → hiệu số lớn dần → báo.
+ *   * `now` không tham gia vào kết luận. Đây là điểm khác lớn nhất so với
+ *     bản khung-giờ: hai mốc trong DB tự nói chuyện với nhau.
+ *
+ * `entities` trả về TỪNG agent (kể cả agent khoẻ) để trang dựng bảng theo
+ * kho. Kết luận gộp ở `status`/`message` là thứ đi vào tin Lark.
+ *
+ * `preloaded`: scope do runSystemChecks nạp sẵn dùng chung với mục camera.
+ * Bỏ trống thì hàm tự nạp (test gọi thẳng, và để hàm đứng một mình được).
  */
-export async function checkAgentHeartbeat(admin: Admin, now: Date): Promise<SystemCheck> {
+export async function checkAgentHeartbeat(
+  admin: Admin,
+  now: Date,
+  preloaded?: MonitoringScope,
+): Promise<SystemCheck> {
   const key = CHECK_KEYS.agentHeartbeat;
-  const scope = await loadMonitoringScope(admin);
+  const scope = preloaded ?? (await loadMonitoringScope(admin));
 
   if (scope.orgIds.length === 0) {
     return {
@@ -489,7 +753,7 @@ export async function checkAgentHeartbeat(admin: Admin, now: Date): Promise<Syst
 
   const { data, error } = await admin
     .from("warehouse_agents")
-    .select("code, last_seen_at, organization_id")
+    .select("id, code, last_seen_at, organization_id")
     .eq("status", "active")
     .in("organization_id", scope.orgIds)
     .abortSignal(queryTimeout());
@@ -504,114 +768,121 @@ export async function checkAgentHeartbeat(admin: Admin, now: Date): Promise<Syst
       unknownKind: "structural",
       value: "không có agent",
       message: "Không có agent nào đang active trong phạm vi theo dõi để kiểm.",
+      entities: [],
     };
   }
 
-  const inWindow: Array<{ agent: AgentRow; hours: OperatingHours | null }> = [];
-  const outside: AgentRow[] = [];
-  for (const agent of agents) {
-    const hours = scope.hoursByOrg.get(agent.organization_id) ?? null;
-    if (hours && !isWithinOperatingHours(now, hours)) {
-      outside.push(agent);
-      continue;
+  const graceMs = CHECK_CONFIG.agentHeartbeat.graceMinutes * 60_000;
+  const warnMs = CHECK_CONFIG.agentHeartbeat.warnMinutes * 60_000;
+  const critMs = CHECK_CONFIG.agentHeartbeat.critMinutes * 60_000;
+
+  const evaluated = agents.map((agent) => {
+    const lastScan = scope.lastScanByOrg.get(agent.organization_id) ?? null;
+    const lostMs = evidenceLostMs(agent.last_seen_at, lastScan, graceMs);
+    const wallMs = agent.last_seen_at
+      ? Math.max(0, now.getTime() - new Date(agent.last_seen_at).getTime())
+      : null;
+    return { agent, lastScan, lostMs, wallMs };
+  });
+
+  // Chi tiết từng agent, dựng MỘT LẦN và dùng cho mọi nhánh kết luận.
+  const entities: CheckEntity[] = evaluated.map(({ agent, lastScan, lostMs, wallMs }) => {
+    if (!agent.last_seen_at) {
+      // Chưa từng ping. Chỉ là sự cố nếu kho ĐÃ đóng gói đơn nào đó — kho
+      // vừa tạo, chưa chạy, thì đây là việc onboard chứ không phải báo động.
+      return lastScan
+        ? agentEntity(agent, "crit", "Chưa từng gửi heartbeat, trong khi kho đã có đơn được đóng gói.", {
+            action: "Máy kho đã cài agent chưa, secret có đúng không.",
+          })
+        : agentEntity(
+            agent,
+            "unknown",
+            "Chưa từng gửi heartbeat, và kho cũng chưa đóng gói đơn nào — chưa kết luận được.",
+            { action: "Kho mới thì cài agent và chạy thử một đơn." },
+          );
     }
-    inWindow.push({ agent, hours });
-  }
+    const silence = wallMs === null ? "" : ` Lần ping cuối ${formatAge(wallMs)} trước.`;
+    const age = { signalAgeMs: wallMs };
+    if (lostMs === null) {
+      // Có ping nhưng kho chưa quét đơn nào bao giờ → không có gì đối chiếu.
+      return agentEntity(agent, "unknown", `Kho chưa đóng gói đơn nào nên không đối chiếu được.${silence}`, {
+        ...age,
+        action: "Chạy thử một đơn để hệ có mốc hoạt động mà so.",
+      });
+    }
+    if (lostMs > critMs) {
+      return agentEntity(agent, "crit", `Kho vẫn đóng gói ${formatAge(lostMs)} sau khi agent im.${silence}`, {
+        ...age,
+        action: "Bằng chứng của khoảng đó đã mất — gọi kiểm máy kho ngay.",
+      });
+    }
+    if (lostMs > warnMs) {
+      return agentEntity(agent, "warn", `Kho vẫn đóng gói ${formatAge(lostMs)} sau khi agent im.${silence}`, {
+        ...age,
+        action: `Theo dõi thêm; quá ${CHECK_CONFIG.agentHeartbeat.critMinutes} phút thì gọi kiểm máy kho.`,
+      });
+    }
+    // lostMs === 0 ở ca kho đóng cửa bình thường: heartbeat và scan cùng
+    // dừng. Câu chữ phải nói rõ là ĐÃ đối chiếu, không phải bỏ qua.
+    return agentEntity(
+      agent,
+      "ok",
+      lostMs === 0
+        ? `Không có đơn nào bị đóng gói sau lần ping cuối.${silence}`
+        : `Chỉ ${formatAge(lostMs)} đóng gói sau lần ping cuối, dưới ngưỡng.${silence}`,
+      age,
+    );
+  });
 
-  if (inWindow.length === 0) {
-    // Mọi kho đang ngoài ca. KHÔNG kết luận, KHÔNG cảnh báo — và cũng
-    // không nói dối là "ok": lúc này hệ không chứng minh được điều gì.
-    const windows = [
-      ...new Set(
-        outside.map((a) => {
-          const h = scope.hoursByOrg.get(a.organization_id);
-          return h ? describeOperatingHours(h) : "";
-        }),
-      ),
-    ].filter(Boolean);
-    return {
-      key,
-      status: "skipped",
-      value: `${outside.length} kho ngoài giờ`,
-      message:
-        `Ngoài giờ vận hành của tất cả ${outside.length} agent đang theo dõi ` +
-        `(${windows.join("; ")}) — không kiểm, không cảnh báo.` +
-        invalidHoursNote(scope),
-    };
-  }
+  const crit = entities.filter((e) => e.status === "crit");
+  const warn = entities.filter((e) => e.status === "warn");
+  const unknown = entities.filter((e) => e.status === "unknown");
+  const worstLost = Math.max(0, ...evaluated.map((e) => e.lostMs ?? 0));
 
-  const neverSeen = inWindow.filter((x) => !x.agent.last_seen_at);
-  if (neverSeen.length > 0) {
-    const names = neverSeen.map((x) => x.agent.code ?? "?").join(", ");
-    return {
-      key,
-      status: "crit",
-      value: `${neverSeen.length}/${inWindow.length} chưa từng kết nối`,
-      message:
-        `Agent chưa từng gửi heartbeat: ${names}. Đã tạo trong hệ nhưng chưa cài xong hoặc sai secret.` +
-        invalidHoursNote(scope),
-    };
-  }
-
-  const seen = inWindow
-    .map((x) => {
-      const lastSeen = new Date(x.agent.last_seen_at as string);
-      const wallMs = Math.max(0, now.getTime() - lastSeen.getTime());
-      return {
-        code: x.agent.code ?? "?",
-        // Không có giờ vận hành → theo dõi 24/7 → im-trong-giờ = tuổi thô.
-        silentMs: x.hours ? operatingMsBetween(lastSeen, now, x.hours) : wallMs,
-        wallMs,
-      };
-    })
-    .sort((a, b) => b.silentMs - a.silentMs);
-
-  const worst = seen[0];
-  const silentAge = formatAge(worst.silentMs);
-  const mins = worst.silentMs / 60_000;
-  // Người trực cần thấy CẢ HAI con số: 45 phút trong giờ mà 15 tiếng đồng
-  // hồ thật là ca "kho mở cửa muộn rồi chết", đọc một số dễ chẩn nhầm.
-  const wallNote =
-    worst.wallMs - worst.silentMs > 60_000
-      ? ` (đồng hồ thật ${formatAge(worst.wallMs)}, phần ngoài giờ không tính)`
-      : "";
-  const skippedNote =
-    outside.length > 0 ? ` ${outside.length} agent khác đang ngoài giờ, không tính.` : "";
-
-  if (mins > CHECK_CONFIG.agentHeartbeat.critMinutes) {
+  if (crit.length > 0) {
     return {
       key,
       status: "crit",
-      value: `${worst.code}: ${silentAge}`,
+      value: `${crit.length}/${agents.length} agent mất bằng chứng`,
       message:
-        `Agent "${worst.code}" im ${silentAge} trong giờ vận hành${wallNote}. ` +
-        `Kho này đang KHÔNG ghi hình — gọi kiểm máy ngay.${skippedNote}` +
-        invalidHoursNote(scope),
+        `Kho vẫn đóng gói đơn sau khi agent im, mất tới ${formatAge(worstLost)} bằng chứng: ` +
+        `${crit.map((e) => e.code).join(", ")}. Gọi kiểm máy kho ngay.`,
+      entities,
     };
   }
-  if (mins > CHECK_CONFIG.agentHeartbeat.warnMinutes) {
+  if (warn.length > 0) {
     return {
       key,
       status: "warn",
-      value: `${worst.code}: ${silentAge}`,
+      value: `${warn.length}/${agents.length} agent lỡ nhịp`,
       message:
-        `Agent "${worst.code}" im ${silentAge} trong giờ vận hành${wallNote} ` +
-        `(ngưỡng ${CHECK_CONFIG.agentHeartbeat.warnMinutes} phút).${skippedNote}` +
-        invalidHoursNote(scope),
+        `Kho đóng gói ${formatAge(worstLost)} sau khi agent im (ngưỡng ` +
+        `${CHECK_CONFIG.agentHeartbeat.warnMinutes} phút): ${warn.map((e) => e.code).join(", ")}.`,
+      entities,
+    };
+  }
+  if (unknown.length === agents.length) {
+    return {
+      key,
+      status: "unknown",
+      // Không phải hạ tầng hỏng: đúng là chưa có hoạt động nào để đối chiếu.
+      unknownKind: "structural",
+      value: `${agents.length} agent chưa có mốc đối chiếu`,
+      message:
+        "Chưa kho nào đóng gói đơn để đối chiếu với heartbeat — không kết luận được. " +
+        "Kho mới thì chạy thử một đơn.",
+      entities,
     };
   }
   return {
     key,
     status: "ok",
-    value: `${inWindow.length} agent, cũ nhất ${silentAge}`,
-    // wallNote có mặt cả ở nhánh xanh, cố ý: sáng thứ Hai ô này ghi "im
-    // lâu nhất 5 phút" trong khi máy kho vừa tắt 40 tiếng. Con số 5 phút
-    // là con số ĐÚNG để kết luận, nhưng giấu con số 40 tiếng đi thì người
-    // đọc sẽ tưởng kho chạy suốt đêm.
+    value: `${agents.length - unknown.length}/${agents.length} agent bám hoạt động`,
     message:
-      `Tất cả ${inWindow.length} agent trong giờ vận hành còn kết nối, ` +
-      `agent im lâu nhất ${silentAge}${wallNote}.${skippedNote}` +
-      invalidHoursNote(scope),
+      `Không kho nào đóng gói đơn sau khi agent im quá ngưỡng ` +
+      `(tệ nhất ${formatAge(worstLost)}).` +
+      (unknown.length > 0 ? ` ${unknown.length} agent chưa có mốc đối chiếu.` : ""),
+    entities,
   };
 }
 
@@ -620,9 +891,45 @@ export async function checkAgentHeartbeat(admin: Admin, now: Date): Promise<Syst
 // ============================================================================
 
 interface CameraRow {
+  id?: string | null;
   camera_code: string | null;
+  organization_id: string;
+  last_probe_ok: boolean | null;
   last_probe_at: string | null;
   probe_consecutive_fails: number | null;
+}
+
+/** Nhóm phân loại camera — bảng theo kho đếm theo đúng bốn nhóm này. */
+export const CAMERA_BUCKET = {
+  ok: "ok",
+  failingLong: "failing_long",
+  failingShort: "failing_short",
+  stale: "stale",
+  /** Camera thuộc kho đang ngoài ca — có tồn tại, nhưng KHÔNG được đo lượt này. */
+  skipped: "skipped",
+} as const;
+
+function cameraEntity(
+  row: CameraRow,
+  status: CheckStatus,
+  bucket: string,
+  detail: string,
+  extra: { action?: string; signalAgeMs?: number } = {},
+): CheckEntity {
+  const code = row.camera_code ?? "?";
+  return {
+    kind: "camera",
+    id: row.id ?? code,
+    code,
+    orgId: row.organization_id,
+    status,
+    detail,
+    bucket,
+    ...(extra.action ? { action: extra.action } : {}),
+    ...(extra.signalAgeMs == null || !Number.isFinite(extra.signalAgeMs)
+      ? {}
+      : { signalAgeMs: extra.signalAgeMs }),
+  };
 }
 
 /**
@@ -641,9 +948,13 @@ interface CameraRow {
  * "số liệu cũ", và nếu agent chết thì mục agent_heartbeat mới là mục nói
  * đúng bản chất.
  */
-export async function checkCameraProbe(admin: Admin, now: Date): Promise<SystemCheck> {
+export async function checkCameraProbe(
+  admin: Admin,
+  now: Date,
+  preloaded?: MonitoringScope,
+): Promise<SystemCheck> {
   const key = CHECK_KEYS.cameraProbe;
-  const scope = await loadMonitoringScope(admin);
+  const scope = preloaded ?? (await loadMonitoringScope(admin));
 
   if (scope.orgIds.length === 0) {
     return {
@@ -655,28 +966,25 @@ export async function checkCameraProbe(admin: Admin, now: Date): Promise<SystemC
     };
   }
 
-  // Ngoài giờ, agent không probe camera nào cả. Không lọc thì mục này trả
-  // "0 camera lỗi" lúc 3 giờ sáng — ô xanh chứng minh bằng chỗ trống, đúng
-  // kiểu xanh-giả mà file này có riêng một ràng buộc để cấm.
-  const activeOrgIds = orgsInWindow(scope, now);
-  if (activeOrgIds.length === 0) {
-    return {
-      key,
-      status: "skipped",
-      value: "ngoài giờ vận hành",
-      message:
-        "Mọi kho đang ngoài giờ vận hành nên agent không probe camera — " +
-        "không có số liệu mới để kết luận, không cảnh báo." +
-        invalidHoursNote(scope),
-    };
-  }
-
+  // Không còn cửa lọc theo giờ ở mục này, và không cần: agent chỉ probe
+  // camera đang trong diện ghi hình, nên kho nghỉ thì `last_probe_at` tự cũ
+  // đi và camera rơi vào nhóm "số liệu cũ" — im lặng đúng, bằng chính dữ
+  // liệu, không bằng đồng hồ. Đó cũng là lý do độ tươi của probe được xét
+  // TRƯỚC `last_probe_ok`: bản trước xét ok trước nên ban đêm mọi camera
+  // hiện xanh dựa trên một lần probe thành công từ chiều hôm trước.
+  //
+  // Lấy cả camera đang khoẻ (bỏ `.eq("last_probe_ok", false)` của bản đầu):
+  // không có mẫu số thì ô chỉ nói được "1 camera lỗi", người đọc không biết
+  // là 1/2 hay 1/40 — hai tình huống khác hẳn nhau về mức độ.
+  //
+  // Chi phí: một dòng/camera active trong phạm vi theo dõi, 6 cột. Ở quy mô
+  // hiện tại là vài chục dòng. Nếu vượt vài trăm camera thì đổi sang đếm
+  // bằng RPC/aggregate — ràng buộc "truy vấn nhẹ" ở đầu file vẫn là luật.
   const { data, error } = await admin
     .from("cameras")
-    .select("camera_code, last_probe_at, probe_consecutive_fails")
+    .select("id, camera_code, organization_id, last_probe_ok, last_probe_at, probe_consecutive_fails")
     .eq("status", "active")
-    .eq("last_probe_ok", false)
-    .in("organization_id", activeOrgIds)
+    .in("organization_id", scope.orgIds)
     .abortSignal(queryTimeout());
   if (error) throw new Error(error.message);
 
@@ -684,66 +992,481 @@ export async function checkCameraProbe(admin: Admin, now: Date): Promise<SystemC
   if (rows.length === 0) {
     return {
       key,
-      status: "ok",
-      value: "0 camera lỗi",
-      message: "Không có camera active nào đang ở trạng thái probe lỗi.",
+      status: "unknown",
+      // Truy vấn chạy tốt, hệ đúng là không có camera nào — giống nhánh
+      // "không có agent". Trả ok ở đây là để ô xanh chứng minh bằng chỗ trống.
+      unknownKind: "structural",
+      value: "không có camera",
+      message: "Không có camera nào đang active trong phạm vi theo dõi để kiểm.",
+      entities: [],
     };
   }
 
   const staleMs = CHECK_CONFIG.cameraProbe.staleProbeMinutes * 60_000;
   const failingMs = CHECK_CONFIG.cameraProbe.failingMinutes * 60_000;
   const perFailMs = CHECK_CONFIG.cameraProbe.probeIntervalSeconds * 1_000;
+  const failingHours = CHECK_CONFIG.cameraProbe.failingMinutes / 60;
 
   const stale: string[] = [];
   const failingLong: string[] = [];
   const failingShort: string[] = [];
+  const entities: CheckEntity[] = [];
 
   for (const r of rows) {
     const code = r.camera_code ?? "?";
     const probeAge = r.last_probe_at
       ? now.getTime() - new Date(r.last_probe_at).getTime()
       : Number.POSITIVE_INFINITY;
+
+    // ĐỘ TƯƠI TRƯỚC, kết quả sau. Probe cũ nghĩa là agent không còn probe
+    // camera này — số liệu đứng hình, ok hay fail đều không kết luận được.
     if (probeAge > staleMs) {
       stale.push(code);
+      entities.push(
+        cameraEntity(
+          r,
+          // "skipped" chứ KHÔNG "unknown": đây là trạng thái không-đo-lượt-này,
+          // không phải một câu hỏi chưa có đáp án. Để "unknown" thì mỗi đêm
+          // kho nghỉ, MỌI camera sẽ đẻ ra một dòng trong danh sách sự cố —
+          // đúng loại nhiễu vừa bỏ khung giờ để tránh, chỉ đổi chỗ.
+          "skipped",
+          CAMERA_BUCKET.stale,
+          r.last_probe_at
+            ? `Probe cũ hơn ${CHECK_CONFIG.cameraProbe.staleProbeMinutes} phút (lần cuối ${formatAge(probeAge)} trước) — agent không còn probe camera này.`
+            : "Chưa từng được probe lần nào.",
+          {
+            action:
+              "Bình thường khi kho nghỉ. Nếu kho đang chạy thì kiểm camera còn trong diện ghi hình không.",
+            signalAgeMs: probeAge,
+          },
+        ),
+      );
+      continue;
+    }
+    if (r.last_probe_ok !== false) {
+      entities.push(
+        cameraEntity(r, "ok", CAMERA_BUCKET.ok, "Probe RTSP bình thường.", {
+          signalAgeMs: probeAge,
+        }),
+      );
       continue;
     }
     const failingFor = (r.probe_consecutive_fails ?? 0) * perFailMs;
-    if (failingFor >= failingMs) failingLong.push(code);
-    else failingShort.push(code);
+    if (failingFor >= failingMs) {
+      failingLong.push(code);
+      entities.push(
+        cameraEntity(
+          r,
+          "warn",
+          CAMERA_BUCKET.failingLong,
+          `Không phản hồi RTSP ${formatAge(failingFor)} liên tục.`,
+          {
+            action: "Kiểm nguồn/mạng của camera, hoặc IP đã đổi mà chưa cập nhật.",
+            signalAgeMs: probeAge,
+          },
+        ),
+      );
+    } else {
+      failingShort.push(code);
+      entities.push(
+        cameraEntity(
+          r,
+          // Dưới ngưỡng thì KHÔNG phải sự cố — camera chớp tắt vài nhịp là
+          // chuyện thường. Vẫn hiện trong bảng theo kho để thấy sớm.
+          "ok",
+          CAMERA_BUCKET.failingShort,
+          `Đang lỗi ${formatAge(failingFor)}, chưa quá ngưỡng ${failingHours} giờ.`,
+          { signalAgeMs: probeAge },
+        ),
+      );
+    }
   }
+
+  const staleNote =
+    stale.length > 0
+      ? ` (Thêm ${stale.length} camera có số liệu probe cũ — bình thường khi kho nghỉ.)`
+      : "";
 
   if (failingLong.length > 0) {
     return {
       key,
       status: "warn",
-      value: `${failingLong.length} camera lỗi ≥ ${CHECK_CONFIG.cameraProbe.failingMinutes / 60} giờ`,
+      value: `${failingLong.length}/${rows.length} camera lỗi ≥ ${failingHours} giờ`,
       message:
-        `Camera không phản hồi RTSP quá ${CHECK_CONFIG.cameraProbe.failingMinutes / 60} giờ: ${failingLong.join(", ")}.` +
-        (stale.length > 0 ? ` (Thêm ${stale.length} camera có số liệu probe cũ, không tính.)` : ""),
+        `Camera không phản hồi RTSP quá ${failingHours} giờ: ${failingLong.join(", ")}.` +
+        staleNote,
+      entities,
     };
   }
   if (failingShort.length > 0) {
     return {
       key,
       status: "ok",
-      value: `${failingShort.length} camera vừa lỗi`,
-      message: `Có ${failingShort.length} camera đang lỗi nhưng chưa quá ${CHECK_CONFIG.cameraProbe.failingMinutes / 60} giờ: ${failingShort.join(", ")}.`,
+      value: `${failingShort.length}/${rows.length} camera vừa lỗi`,
+      message:
+        `Có ${failingShort.length} camera đang lỗi nhưng chưa quá ${failingHours} giờ: ${failingShort.join(", ")}.` +
+        staleNote,
+      entities,
+    };
+  }
+  if (stale.length === rows.length) {
+    return {
+      key,
+      // MỌI camera đều số liệu cũ = không kho nào đang ghi hình. Đây là ca
+      // "kho nghỉ", và nó tự đúng mà không cần biết mấy giờ.
+      status: "skipped",
+      value: `${stale.length}/${rows.length} camera không được probe`,
+      message:
+        `Không camera nào được probe trong ${CHECK_CONFIG.cameraProbe.staleProbeMinutes} phút qua — ` +
+        "kho đang nghỉ hoặc không camera nào trong diện ghi hình. Không kết luận, không cảnh báo.",
+      entities,
+    };
+  }
+  if (stale.length > 0) {
+    return {
+      key,
+      status: "unknown",
+      // Một phần đứng yên chứ không phải hỏng: agent còn probe nhóm khác.
+      // Nếu agent chết thật thì agent_heartbeat mới là mục nói đúng bản
+      // chất — không nhân đôi cùng một sự cố.
+      unknownKind: "structural",
+      value: `${stale.length}/${rows.length} camera số liệu cũ`,
+      message: `Có ${stale.length} camera không được probe quá ${CHECK_CONFIG.cameraProbe.staleProbeMinutes} phút (agent không còn probe nhóm này) — không kết luận được: ${stale.join(", ")}.`,
+      entities,
     };
   }
   return {
     key,
-    status: "unknown",
-    // Đứng yên chứ không phải hỏng: agent còn sống, chỉ là không probe
-    // nhóm camera này nữa. Nếu agent chết thật thì agent_heartbeat mới là
-    // mục nói đúng bản chất — không nhân đôi cùng một sự cố.
-    unknownKind: "structural",
-    value: `${stale.length} camera số liệu cũ`,
-    message: `Có ${stale.length} camera đang ở trạng thái lỗi nhưng probe cũ hơn ${CHECK_CONFIG.cameraProbe.staleProbeMinutes} phút (agent không còn probe) — không kết luận được: ${stale.join(", ")}.`,
+    status: "ok",
+    value: `${rows.length}/${rows.length} camera bình thường`,
+    message: `Không có camera active nào đang ở trạng thái probe lỗi (${rows.length} camera đang được probe).`,
+    entities,
   };
 }
 
 // ============================================================================
-// 5. Disk + RAM của VPS
+// 5. Ghi hình còn tươi không
+// ============================================================================
+
+function orgEntity(
+  orgId: string,
+  code: string,
+  status: CheckStatus,
+  detail: string,
+  extra: { action?: string; count?: number } = {},
+): CheckEntity {
+  return {
+    kind: "org",
+    id: orgId,
+    code,
+    orgId,
+    status,
+    detail,
+    ...(extra.action ? { action: extra.action } : {}),
+    ...(extra.count === undefined ? {} : { count: extra.count }),
+  };
+}
+
+/**
+ * "Kho đóng gói đơn bao lâu SAU KHI segment cuối rơi xuống đĩa."
+ *
+ * VÌ SAO CẦN, dù đã có heartbeat agent và probe camera: hai mục kia đo
+ * đường TÍN HIỆU (agent còn nói chuyện không, camera còn trả RTSP không),
+ * mục này đo KẾT QUẢ (có file nào rơi xuống đĩa không). Agent sống + camera
+ * trả RTSP mà ffmpeg treo thì hai mục kia vẫn xanh — và đó đúng là hình
+ * dạng của sự cố watchdog runtime đã phải vá ở agent v0.7.0.
+ *
+ * ĐỐI CHIẾU VỚI SCAN, không với đồng hồ: "segment gần nhất 14 tiếng trước"
+ * là con số đúng nhưng kết luận sai lúc 3 giờ sáng. Hỏi đúng câu là "có đơn
+ * nào được đóng gói mà không có clip không" — và câu đó tự im lặng khi kho
+ * nghỉ, tự lên tiếng khi kho chạy, không cần ai khai giờ làm.
+ *
+ * Mỗi org một truy vấn `order by ended_at desc limit 1` — index lookup, trả
+ * đúng một dòng. Không gộp một truy vấn lớn có chủ đích: gộp thì phải kéo
+ * mọi segment trong cửa sổ về rồi tự nhóm, và ở kho nhiều camera đó là hàng
+ * nghìn dòng cho một câu hỏi có đáp án một dòng.
+ */
+export async function checkRecordingFreshness(
+  admin: Admin,
+  now: Date,
+  preloaded?: MonitoringScope,
+): Promise<SystemCheck> {
+  const key = CHECK_KEYS.recording;
+  const scope = preloaded ?? (await loadMonitoringScope(admin));
+
+  if (scope.orgIds.length === 0) {
+    return {
+      key,
+      status: "unknown",
+      unknownKind: "structural",
+      value: "không có tổ chức nào theo dõi",
+      message: "Không tổ chức nào bật monitoring_enabled — không có kho nào để kiểm ghi hình.",
+      entities: [],
+    };
+  }
+
+  if (scope.orgIds.length > CHECK_CONFIG.recording.maxOrgs) {
+    return {
+      key,
+      status: "unknown",
+      // Không phải hạ tầng hỏng: cách đo hiện tại không co giãn tới quy mô
+      // này. Nói thẳng để lần sau đổi sang aggregate, không âm thầm bỏ kiểm.
+      unknownKind: "structural",
+      value: `${scope.orgIds.length} kho, quá trần đo`,
+      message:
+        `Có ${scope.orgIds.length} tổ chức theo dõi, vượt trần ${CHECK_CONFIG.recording.maxOrgs} ` +
+        "của cách đo hiện tại (mỗi org một truy vấn). Cần đổi sang aggregate trước khi mục này đo lại được.",
+      entities: [],
+    };
+  }
+
+  const graceMs = CHECK_CONFIG.recording.graceMinutes * 60_000;
+  const warnMs = CHECK_CONFIG.recording.warnMinutes * 60_000;
+  const critMs = CHECK_CONFIG.recording.critMinutes * 60_000;
+
+  const rows = await Promise.all(
+    scope.orgIds.map(async (orgId) => {
+      const { data, error } = await admin
+        .from("camera_recording_files")
+        .select("ended_at")
+        .eq("organization_id", orgId)
+        .order("ended_at", { ascending: false })
+        .limit(1)
+        .abortSignal(queryTimeout());
+      if (error) throw new Error(error.message);
+      const endedAt = (data as Array<{ ended_at: string | null }> | null)?.[0]?.ended_at ?? null;
+      return { orgId, endedAt };
+    }),
+  );
+
+  const entities: CheckEntity[] = rows.map((r) => {
+    const orgName = scope.orgNameById.get(r.orgId) ?? r.orgId;
+    const lastScan = scope.lastScanByOrg.get(r.orgId) ?? null;
+    const lostMs = evidenceLostMs(r.endedAt, lastScan, graceMs);
+    const segNote = r.endedAt
+      ? ` Segment cuối ${formatAge(Math.max(0, now.getTime() - new Date(r.endedAt).getTime()))} trước.`
+      : "";
+
+    if (!r.endedAt) {
+      return lastScan
+        ? orgEntity(
+            r.orgId,
+            "Ghi hình",
+            "crit",
+            "Chưa có segment nào, trong khi kho đã đóng gói đơn.",
+            { action: "Kiểm agent đã bật ghi hình cho camera nào chưa." },
+          )
+        : orgEntity(
+            r.orgId,
+            "Ghi hình",
+            "unknown",
+            "Chưa có segment nào, và kho cũng chưa đóng gói đơn nào.",
+            { action: "Kho mới thì chạy thử một đơn." },
+          );
+    }
+    if (lostMs === null) {
+      return orgEntity(
+        r.orgId,
+        "Ghi hình",
+        "unknown",
+        `Kho chưa đóng gói đơn nào nên không đối chiếu được.${segNote}`,
+      );
+    }
+    if (lostMs > critMs) {
+      return orgEntity(
+        r.orgId,
+        "Ghi hình",
+        "crit",
+        `Kho đóng gói ${formatAge(lostMs)} sau segment cuối.${segNote}`,
+        { action: `Kho "${orgName}" không rơi file xuống đĩa — kiểm ffmpeg trên máy kho.` },
+      );
+    }
+    if (lostMs > warnMs) {
+      return orgEntity(
+        r.orgId,
+        "Ghi hình",
+        "warn",
+        `Kho đóng gói ${formatAge(lostMs)} sau segment cuối.${segNote}`,
+        {
+          action: `Ngưỡng ${CHECK_CONFIG.recording.warnMinutes} phút — theo dõi, quá ${CHECK_CONFIG.recording.critMinutes} phút thì gọi kiểm máy.`,
+        },
+      );
+    }
+    return orgEntity(
+      r.orgId,
+      "Ghi hình",
+      "ok",
+      lostMs === 0
+        ? `Không đơn nào bị đóng gói sau segment cuối.${segNote}`
+        : `Chỉ ${formatAge(lostMs)} đóng gói sau segment cuối, dưới ngưỡng.${segNote}`,
+    );
+  });
+
+  const crit = entities.filter((e) => e.status === "crit");
+  const warn = entities.filter((e) => e.status === "warn");
+  const unknown = entities.filter((e) => e.status === "unknown");
+  const names = (list: CheckEntity[]) =>
+    list.map((e) => scope.orgNameById.get(e.orgId) ?? e.orgId).join(", ");
+
+  if (crit.length > 0) {
+    return {
+      key,
+      status: "crit",
+      value: `${crit.length}/${rows.length} kho ngừng ghi`,
+      message:
+        `Kho đóng gói đơn quá ${CHECK_CONFIG.recording.critMinutes} phút mà không có segment mới: ${names(crit)}. ` +
+        "Agent có thể vẫn sống — kiểm ffmpeg, không chỉ kiểm mạng.",
+      entities,
+    };
+  }
+  if (warn.length > 0) {
+    return {
+      key,
+      status: "warn",
+      value: `${warn.length}/${rows.length} kho lỡ nhịp`,
+      message: `Kho đóng gói đơn quá ${CHECK_CONFIG.recording.warnMinutes} phút mà không có segment mới: ${names(warn)}.`,
+      entities,
+    };
+  }
+  if (unknown.length === rows.length) {
+    return {
+      key,
+      status: "unknown",
+      unknownKind: "structural",
+      value: `${rows.length} kho chưa có mốc đối chiếu`,
+      message: "Chưa kho nào đóng gói đơn để đối chiếu với ghi hình — không kết luận được.",
+      entities,
+    };
+  }
+  return {
+    key,
+    status: "ok",
+    value: `${rows.length - unknown.length}/${rows.length} kho bám hoạt động`,
+    message:
+      "Không kho nào đóng gói đơn quá ngưỡng mà thiếu segment." +
+      (unknown.length > 0 ? ` ${unknown.length} kho chưa có mốc đối chiếu.` : ""),
+    entities,
+  };
+}
+
+// ============================================================================
+// 6. Clip đơn hàng sinh lỗi
+// ============================================================================
+
+interface ClipRow {
+  organization_id: string;
+  error_message: string | null;
+}
+
+/**
+ * Đếm clip `status = 'failed'` trong 24 giờ gần nhất, theo từng kho.
+ *
+ * Đây là mục duy nhất đo thứ KHÁCH nhìn thấy: một clip lỗi là một đơn hàng
+ * không có bằng chứng. Mọi mục khác đo hạ tầng và chỉ suy ra hậu quả.
+ *
+ * KHÔNG lọc theo giờ vận hành: clip sinh lỗi lúc 2 giờ sáng vẫn là một đơn
+ * hàng hỏng vào sáng hôm sau. Khác hẳn heartbeat/probe — hai thứ đó chỉ có
+ * nghĩa trong lúc kho đang chạy.
+ */
+export async function checkClipFailures(
+  admin: Admin,
+  now: Date,
+  preloaded?: MonitoringScope,
+): Promise<SystemCheck> {
+  const key = CHECK_KEYS.clipFailures;
+  const scope = preloaded ?? (await loadMonitoringScope(admin));
+
+  if (scope.orgIds.length === 0) {
+    return {
+      key,
+      status: "unknown",
+      unknownKind: "structural",
+      value: "không có tổ chức nào theo dõi",
+      message: "Không tổ chức nào bật monitoring_enabled — không có clip nào để kiểm.",
+      entities: [],
+    };
+  }
+
+  const windowHours = CHECK_CONFIG.clipFailures.windowHours;
+  const since = new Date(now.getTime() - windowHours * 3_600_000).toISOString();
+  const { data, error } = await admin
+    .from("order_proof_clips")
+    .select("organization_id, error_message")
+    .eq("status", "failed")
+    .gte("created_at", since)
+    .in("organization_id", scope.orgIds)
+    .limit(CHECK_CONFIG.clipFailures.fetchLimit)
+    .abortSignal(queryTimeout());
+  if (error) throw new Error(error.message);
+
+  const rows = (data as ClipRow[] | null) ?? [];
+  const capped = rows.length >= CHECK_CONFIG.clipFailures.fetchLimit;
+
+  const byOrg = new Map<string, ClipRow[]>();
+  for (const r of rows) {
+    const list = byOrg.get(r.organization_id) ?? [];
+    list.push(r);
+    byOrg.set(r.organization_id, list);
+  }
+
+  // Entity cho MỌI org, kể cả org 0 lỗi: bảng theo kho cần ô "0 clip" hiện
+  // ra chứ không phải ô trống — trống thì đọc thành "chưa đo".
+  const entities: CheckEntity[] = scope.orgIds.map((orgId) => {
+    const list = byOrg.get(orgId) ?? [];
+    const n = list.length;
+    if (n === 0) {
+      return orgEntity(orgId, "Clip đơn hàng", "ok", `0 clip lỗi trong ${windowHours} giờ.`, {
+        count: 0,
+      });
+    }
+    // Lý do đầu tiên đủ để phân biệt "hỏng hàng loạt cùng một nguyên nhân"
+    // với "vài ca lẻ" mà không phải mở log.
+    const reason = list.find((r) => r.error_message)?.error_message;
+    const detail =
+      `${n} clip lỗi trong ${windowHours} giờ` + (reason ? ` — lý do đầu: ${reason}` : ".");
+    const status: CheckStatus = n >= CHECK_CONFIG.clipFailures.critCount ? "crit" : "warn";
+    return orgEntity(orgId, "Clip đơn hàng", status, detail, {
+      count: n,
+      action: "Xem cột error_message của order_proof_clips; nếu cùng một lý do thì là lỗi hệ thống, không phải ca lẻ.",
+    });
+  });
+
+  const crit = entities.filter((e) => e.status === "crit");
+  const warn = entities.filter((e) => e.status === "warn");
+  const total = rows.length;
+  const totalLabel = capped ? `≥ ${total}` : `${total}`;
+
+  if (crit.length > 0) {
+    const names = crit.map((e) => scope.orgNameById.get(e.orgId) ?? e.orgId).join(", ");
+    return {
+      key,
+      status: "crit",
+      value: `${totalLabel} clip lỗi / ${windowHours}h`,
+      message: `Kho có từ ${CHECK_CONFIG.clipFailures.critCount} clip lỗi trở lên trong ${windowHours} giờ: ${names}. Đây là hỏng hệ thống, không phải ca lẻ.`,
+      entities,
+    };
+  }
+  if (warn.length > 0) {
+    const names = warn.map((e) => scope.orgNameById.get(e.orgId) ?? e.orgId).join(", ");
+    return {
+      key,
+      status: "warn",
+      value: `${totalLabel} clip lỗi / ${windowHours}h`,
+      message: `Có clip sinh lỗi trong ${windowHours} giờ ở kho: ${names}. Mỗi clip lỗi là một đơn hàng không có bằng chứng.`,
+      entities,
+    };
+  }
+  return {
+    key,
+    status: "ok",
+    value: `0 clip lỗi / ${windowHours}h`,
+    message: `Không clip đơn hàng nào sinh lỗi trong ${windowHours} giờ qua.`,
+    entities,
+  };
+}
+
+// ============================================================================
+// 7. Disk + RAM của VPS
 // ============================================================================
 
 export interface OsLike {
@@ -808,7 +1531,36 @@ export async function checkVpsResources(deps: {
 }
 
 // ============================================================================
-// 6. Disk máy kho
+// 8. Dung lượng Storage
+// ============================================================================
+
+/**
+ * CHƯA CÓ NGUỒN SỐ LIỆU — cùng một bức tường với egress, và cũng là kết
+ * luận từ kiểm chứng chứ không phải bỏ sót.
+ *
+ * Tử số về nguyên tắc đếm được (cộng `metadata->>'size'` của storage.objects),
+ * nhưng đó là quét toàn bucket trong một route chạy nền mỗi 15 phút — vi
+ * phạm thẳng ràng buộc "truy vấn nhẹ" ở đầu file. MẪU SỐ thì không có API
+ * nào trả: hạn mức lưu trữ của gói chỉ tồn tại ở trang billing.
+ *
+ * Một ô ghi "1.2 TB" mà không có "trên bao nhiêu" thì không trả lời được
+ * câu duy nhất người trực cần hỏi — sắp đầy chưa. Để trống và nói thẳng.
+ */
+export function checkStorageUsage(): SystemCheck {
+  return {
+    key: CHECK_KEYS.storage,
+    status: "unknown",
+    unknownKind: "structural",
+    value: "chưa đo được",
+    message:
+      "Chưa có nguồn dữ liệu: Supabase không công khai API trả dung lượng Storage so với hạn mức. " +
+      "Đếm tay bằng cách quét storage.objects thì vi phạm ràng buộc truy vấn nhẹ của route chạy nền, " +
+      "và vẫn thiếu mẫu số. Vẫn phải xem tay ở dashboard Supabase.",
+  };
+}
+
+// ============================================================================
+// 9. Disk máy kho
 // ============================================================================
 
 /**
@@ -849,12 +1601,27 @@ export interface RunChecksDeps {
   path?: string;
 }
 
+export interface SystemSnapshot {
+  /** Sáu mục kiểm, thứ tự cố định. Đây là thứ đường cảnh báo Lark ăn. */
+  checks: SystemCheck[];
+  /**
+   * Phạm vi theo dõi đã nạp. null = không nạp được (thiếu env, DB hỏng) —
+   * lúc đó các mục dùng DB đã tự rơi vào unknown và bảng theo kho rỗng.
+   */
+  scope: MonitoringScope | null;
+}
+
 /**
- * Chạy song song, mỗi mục tự bọc lỗi. Thứ tự trả về CỐ ĐỊNH theo đề bài
- * (egress → cron → agent → camera → VPS → disk kho) để trang hiển thị và
- * tin cảnh báo luôn đọc cùng một thứ tự.
+ * Chạy song song, mỗi mục tự bọc lỗi. Thứ tự trả về CỐ ĐỊNH (egress → cron
+ * → agent → camera → ghi hình → clip → VPS → storage → disk kho) để trang
+ * hiển thị và tin cảnh báo luôn đọc cùng một thứ tự.
+ *
+ * Phạm vi theo dõi nạp MỘT LẦN ở đây rồi truyền xuống cả hai mục agent và
+ * camera. Bản đầu để mỗi mục tự nạp — 4 truy vấn cho 2 câu hỏi giống nhau,
+ * và hai mục có thể thấy hai phiên bản scope khác nhau nếu ai đó bật/tắt
+ * monitoring_enabled đúng lúc đang chạy.
  */
-export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemCheck[]> {
+export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemSnapshot> {
   const now = deps.now ?? new Date();
   // createAdminClient() có thể throw khi thiếu env — bọc để cả loạt
   // không chết theo, hai mục dùng DB sẽ tự trả unknown.
@@ -864,6 +1631,18 @@ export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemC
     admin = deps.client ?? createAdminClient();
   } catch (err) {
     adminErr = errorMessage(err);
+  }
+
+  // Nạp hụt thì KHÔNG chặn cả loạt: để `undefined` đi tiếp, từng mục sẽ tự
+  // nạp lại, tự ném, và safeCheck biến thành unknown-incident — đúng đường
+  // cũ, đúng tin cảnh báo cũ.
+  let scope: MonitoringScope | null = null;
+  if (admin) {
+    try {
+      scope = await loadMonitoringScope(admin);
+    } catch (err) {
+      console.warn("[system-check] không nạp được phạm vi theo dõi:", errorMessage(err));
+    }
   }
 
   const needAdmin = (key: string, fn: (a: Admin) => Promise<SystemCheck>) =>
@@ -882,16 +1661,35 @@ export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemC
       return fn(admin);
     });
 
-  const [cron, agent, camera, vps] = await Promise.all([
+  const [cron, cronOrphan, agent, camera, recording, clips, vps] = await Promise.all([
     needAdmin(CHECK_KEYS.cronCleanup, (a) => checkCronCleanup(a, now)),
-    needAdmin(CHECK_KEYS.agentHeartbeat, (a) => checkAgentHeartbeat(a, now)),
-    needAdmin(CHECK_KEYS.cameraProbe, (a) => checkCameraProbe(a, now)),
+    needAdmin(CHECK_KEYS.cronOrphanSegments, (a) => checkCronOrphanSegments(a, now)),
+    needAdmin(CHECK_KEYS.agentHeartbeat, (a) => checkAgentHeartbeat(a, now, scope ?? undefined)),
+    needAdmin(CHECK_KEYS.cameraProbe, (a) => checkCameraProbe(a, now, scope ?? undefined)),
+    needAdmin(CHECK_KEYS.recording, (a) =>
+      checkRecordingFreshness(a, now, scope ?? undefined),
+    ),
+    needAdmin(CHECK_KEYS.clipFailures, (a) => checkClipFailures(a, now, scope ?? undefined)),
     safeCheck(CHECK_KEYS.vps, () =>
       checkVpsResources({ now, os: deps.os, statfs: deps.statfs, path: deps.path }),
     ),
   ]);
 
-  return [checkEgress(), cron, agent, camera, vps, checkWarehouseDisk()];
+  return {
+    checks: [
+      checkEgress(),
+      cron,
+      cronOrphan,
+      agent,
+      camera,
+      recording,
+      clips,
+      vps,
+      checkStorageUsage(),
+      checkWarehouseDisk(),
+    ],
+    scope,
+  };
 }
 
 /** Mục cần báo động vì đo được và đang xấu. */
@@ -943,10 +1741,14 @@ export function buildDataSourceAlert(incidents: SystemCheck[]): SystemCheck | nu
  * `skipped` đứng CUỐI và chỉ thắng khi KHÔNG mục nào khác nói được gì —
  * lúc đó cả trang đang ngoài giờ, và nói "ok" là nói dối.
  */
-export function worstStatus(checks: SystemCheck[]): CheckStatus {
-  if (checks.some((c) => c.status === "crit")) return "crit";
-  if (checks.some((c) => c.status === "warn")) return "warn";
-  if (checks.some((c) => c.status === "unknown")) return "unknown";
-  if (checks.some((c) => c.status === "ok")) return "ok";
+export function worstOfStatuses(statuses: CheckStatus[]): CheckStatus {
+  if (statuses.includes("crit")) return "crit";
+  if (statuses.includes("warn")) return "warn";
+  if (statuses.includes("unknown")) return "unknown";
+  if (statuses.includes("ok")) return "ok";
   return "skipped";
+}
+
+export function worstStatus(checks: SystemCheck[]): CheckStatus {
+  return worstOfStatuses(checks.map((c) => c.status));
 }

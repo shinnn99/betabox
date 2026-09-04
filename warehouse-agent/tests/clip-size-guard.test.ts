@@ -11,7 +11,6 @@ import {
  * Số dùng trong test KHÔNG bịa: bitrate lấy từ 4441 segment thật của
  * camera `Dahua 01` (kho Đại Kim, 14 ngày tới 2026-08-07):
  *   min 244 KB/s · p50 256 KB/s · p95 260 KB/s · max 265 KB/s
- * Trần upload lấy từ phép đo PUT thật: 50 MiB OK, 51 MiB → 413.
  *
  * Verify HAI NỬA:
  *   - nửa dương-đúng: clip vượt trần → BỊ chặn, kèm đủ số chẩn đoán.
@@ -20,14 +19,20 @@ import {
 
 const MIB = 1024 * 1024;
 /**
- * Mặc định config.maxProofClipUploadBytes = ĐÚNG trần đo được.
+ * Mặc định config.maxProofClipUploadBytes.
  *
- * Bản đầu để 49 MiB. E2E production 2026-08-07 bác bỏ: clip capped 190s
- * thật nặng 49,3 MiB và upload OK — guard 49 MiB đã chặn oan. Áp phân
- * bố bitrate thật, 49 MiB từ chối 87,6% clip chạy được trong khi chỉ
- * 7,0% thật sự vượt 50 MiB.
+ * 2026-08-07 (gói Free): trần project đo bằng PUT thật là 50 MiB
+ * (50 OK / 51 → 413) và guard để ĐÚNG 50 MiB. Bản đầu để 49 MiB, E2E
+ * production bác bỏ — clip capped 190s thật nặng 49,3 MiB upload OK
+ * nhưng bị chặn oan; áp phân bố bitrate thật thì 49 MiB từ chối 87,6%
+ * clip chạy được trong khi chỉ 7,0% thật sự vượt.
+ *
+ * 2026-08-13 (gói trả phí): project nâng lên 100 MiB (đo lại cùng cách:
+ * 100 MiB → 200 OK, 101 MiB → 413), guard về 90 MiB.
+ * Bitrate camera KHÔNG đổi, nên mọi ca dưới đây giữ nguyên byte thật —
+ * chỉ khoảng cách tới trần là đổi.
  */
-const LIMIT = 50 * MIB;
+const LIMIT = 90 * MIB;
 
 /** Bytes của clip `seconds` giây ở `kbPerSec` KB/s. */
 function clipBytes(seconds: number, kbPerSec: number): number {
@@ -53,11 +58,20 @@ test("ca E2E THẬT 2026-08-07: clip 194s nặng 49,3 MiB → PHẢI cho upload"
   );
 });
 
-test("ca 190s/capped ở bitrate MAX 265KB/s → vẫn dưới trần 50MiB", () => {
+test("ca 190s/capped ở bitrate MAX 265KB/s → còn headroom rõ, không sát mép", () => {
+  // Đây là ca chốt chặn của lần nới trần 2026-08-13. Dưới trần 50 MiB
+  // cũ, clip capped tệ nhất nặng ~49,2 MiB — lọt, nhưng chỉ dư ~0,8 MiB,
+  // nên bitrate nhích lên một chút là 413. Trần mới phải cho dư nhiều
+  // hơn thế hẳn, nếu không thì việc nới trần chẳng giải quyết gì.
   const size = clipBytes(190, 265);
+  assert.equal(
+    evaluateClipSize({ fileSizeBytes: size, durationSeconds: 190, limitBytes: LIMIT }),
+    null,
+  );
+  const headroomMib = (LIMIT - size) / MIB;
   assert.ok(
-    size < LIMIT,
-    `clip capped tệ nhất phải vẫn upload được: ${size} vs ${LIMIT}`,
+    headroomMib > 30,
+    `clip capped tệ nhất phải còn dư nhiều, thực tế ${headroomMib.toFixed(1)} MiB`,
   );
 });
 
@@ -80,7 +94,7 @@ test("ca 518s/checkout → BỊ chặn, kèm size/duration/bitrate", () => {
   );
 });
 
-test("biên: đúng bằng trần → CHO upload (đã verify 50MiB chẵn trả 200)", () => {
+test("biên: đúng bằng ngưỡng → CHO upload (so sánh `>`, không `>=`)", () => {
   assert.equal(
     evaluateClipSize({ fileSizeBytes: LIMIT, durationSeconds: 190, limitBytes: LIMIT }),
     null,

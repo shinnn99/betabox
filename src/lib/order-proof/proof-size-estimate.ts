@@ -3,8 +3,8 @@
  *
  * Vì sao cần: agent chỉ biết clip vượt trần upload SAU khi render xong,
  * và người vận hành chỉ biết khi khách bấm xem video rồi thấy lỗi. Đơn
- * đóng bằng ra ca có thể dài 500s+ → clip ~130 MB, chắc chắn vượt trần
- * 50 MiB của project.
+ * đóng bằng ra ca có thể dài 500s+ → clip ~130 MB, vẫn vượt trần upload
+ * kể cả sau khi project nâng lên 100 MiB (2026-08-13).
  *
  * Đây CHỈ là visibility. Không cắt ngắn, không transcode, không đổi
  * `work_duration_seconds`. Nó không chặn gì cả, nên ngưỡng cảnh báo
@@ -33,15 +33,22 @@ const MIB = 1024 * 1024;
 /**
  * Trần upload — phải cùng ngữ nghĩa với `MAX_PROOF_CLIP_UPLOAD_BYTES`
  * của agent (warehouse-agent/src/config.ts). Cùng tên env, cùng mặc
- * định. Đây là lý do UI KHÔNG được tự viết 49 MiB: nó chỉ hiển thị
+ * định. Đây là lý do UI KHÔNG được tự viết con số: nó chỉ hiển thị
  * `upload_guard_bytes` mà API trả về.
+ *
+ * Mặc định 90 MiB (2026-08-13), dưới trần project 100 MiB. Trước đó là
+ * 50 MiB = đúng trần gói Free.
+ *
+ * Đây là hai máy khác nhau đọc cùng một tên env: đổi bên này mà quên
+ * bên kia thì bảng cảnh báo nói một đằng, agent chặn một nẻo — mà không
+ * ai thấy vì cả hai đều "có số".
  *
  * Về lâu dài agent nên khai báo trần thật của nó qua heartbeat để cloud
  * không phải đoán; chưa mở scope đó ở đây.
  */
 export function getProofUploadGuardBytes(): number {
   const raw = Number(process.env.MAX_PROOF_CLIP_UPLOAD_BYTES);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 50 * MIB;
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 90 * MIB;
 }
 
 /**
@@ -73,17 +80,23 @@ export function getProofSizeEstimateFactor(): number {
  * Ngưỡng CẢNH BÁO (amber), thấp hơn trần upload. Không chặn gì — chỉ
  * để người vận hành thấy đơn đang tiến sát giới hạn.
  *
- * Mặc định 49 MiB, ngay dưới trần 50 MiB.
+ * Mặc định 80 MiB, dưới guard 90 MiB.
  *
- * LƯU Ý khi đọc badge ở Đại Kim: với bitrate hiện tại, clip capped 190s
- * thật nặng khoảng 49,4 MiB (đo 2026-08-07), nên phần lớn sẽ hiện
- * `near_limit`. Đó là SỰ THẬT chứ không phải nhiễu — kho đang chạy ở
- * ~99% trần upload và 7% clip capped thật sự vượt. Đừng nâng ngưỡng này
- * lên để cho bảng đỡ vàng: cách sửa đúng là hạ bitrate camera.
+ * Lịch sử để không đọc nhầm ý: hồi trần project là 50 MiB, ngưỡng này
+ * để 49 MiB và gần như MỌI đơn capped 190s ở Đại Kim đều hiện
+ * `near_limit` (clip thật ~49,4 MiB, đo 2026-08-07). Khi đó amber là
+ * SỰ THẬT — kho chạy ở ~99% trần upload — và ghi chú cũ cấm nâng ngưỡng
+ * để "cho bảng đỡ vàng".
+ *
+ * Lần này bảng hết vàng vì lý do KHÁC: trần thật đã nới 50 → 100 MiB,
+ * clip 3 phút 45–50 MiB không còn ở gần giới hạn nào cả. Ngưỡng đi theo
+ * trần mới chứ không phải nới ra để giấu tín hiệu. Nếu sau này amber
+ * quay lại ở ngưỡng 80 MiB thì nó lại là sự thật, và cách sửa vẫn là hạ
+ * bitrate camera — không phải nâng tiếp con số này.
  */
 export function getProofSizeWarnBytes(): number {
   const raw = Number(process.env.PROOF_CLIP_WARN_BYTES);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 49 * MIB;
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 80 * MIB;
 }
 
 export interface ProofSizeThresholds {

@@ -1,0 +1,21 @@
+# /etc/systemd/system/betabox-orphan-segments.timer
+#
+# Mỗi ngày 03:30. Đặt sau betabox-cleanup (03:00) 30 phút để hai job
+# không chồng lên nhau.
+#
+# Vì sao chỉ 1 lần/ngày mà không dày hơn: row mồ côi chỉ sinh ra khi
+# agent chết giữa segment — hiếm. Và resolver ĐÃ bỏ qua row mồ côi rồi,
+# nên job này không nằm trên đường cắt clip; nó chỉ dọn dữ liệu cho các
+# thống kê đọc bảng camera_recording_files. Chậm một ngày không hại ai.
+#
+# Persistent=true: VPS tắt/bật lại thì chạy bù một lần ngay.
+
+[Unit]
+Description=Đóng row segment mồ côi mỗi ngày
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

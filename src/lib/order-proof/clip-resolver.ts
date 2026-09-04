@@ -4,6 +4,7 @@ import {
   computeFinalizedClipWindow,
   MAX_CLIP_DURATION_SECONDS,
 } from "@/lib/order-proof/clip-window";
+import { evaluateOpenSegments } from "@/lib/order-proof/open-segment-verdict";
 
 // Resolves the clip window for one packing_event ("scan A") according
 // to warehouse business rules:
@@ -100,9 +101,15 @@ const FALLBACK_DEFAULT_POST = 60;
  *   trần này + trần dung lượng (MAX_PROOF_CLIP_UPLOAD_BYTES)
  *                      → kỹ thuật: proof pipeline chịu được tới đâu.
  *
- * Ràng buộc thực tế chặt hơn con số 600s: trần upload của project là
- * 50 MiB, camera ~256 KB/s → clip vượt ~195s là fail upload. Nên trần
- * 600s hiện KHÔNG phải chỗ chặn thật; agent chặn trước.
+ * Trần 600s này hiện KHÔNG phải chỗ chặn thật. Chỗ chặn thật là
+ * `max_order_seconds` = 180s ở tầng nghiệp vụ.
+ *
+ * Trần dung lượng từng chặt hơn cả hai: hồi trần upload project là
+ * 50 MiB, camera ~256 KB/s thì clip vượt ~195s đã fail upload — tức
+ * gần như chạm ngay 180s. Từ 2026-08-13 project nâng lên 100 MiB và
+ * guard agent để 90 MiB, tương ứng ~350s ở cùng bitrate, nên tầng dung
+ * lượng đã lùi lại phía sau tầng nghiệp vụ. Nâng `max_order_seconds`
+ * vẫn là quyết định riêng, không phải hệ quả tự động của việc nới trần.
  *
  * Pre-roll `video_pre_seconds` nằm TRƯỚC scanned_at nên tổng độ dài file
  * mp4 có thể lớn hơn MAX một chút (VD 10 phút 10s với pre 10s).
@@ -592,15 +599,25 @@ export async function resolveClipBounds(opts: {
     };
   }
 
-  // 7) If any overlapping segment is still open AND its started_at <=
-  // clipEnd, we don't yet have data flushed to cover the tail. Tell
-  // the caller to retry — don't cut a corrupt clip.
-  const hasOpenInRange = overlap.some(
-    (f) =>
-      f.ended_at === null &&
-      new Date(f.started_at).getTime() <= clipEnd.getTime(),
-  );
-  if (hasOpenInRange) {
+  // 7) Segment ĐANG GHI phủ cửa sổ → đuôi video chưa flush, cắt bây giờ
+  // ra clip hỏng. Bảo caller thử lại.
+  //
+  // Phân biệt "đang ghi" với "row mồ côi" nằm ở open-segment-verdict.ts.
+  // Luật cũ chỉ hỏi `started_at <= clipEnd` nên MỘT row mồ côi (agent
+  // chết giữa segment, không kịp ghi ended_at) chặn vĩnh viễn mọi đơn
+  // sau nó — đã cắn thật 92 đơn kho Đại Kim, xem file đó.
+  const openVerdict = evaluateOpenSegments(overlap, clipEnd);
+  if (openVerdict.staleOpen.length > 0) {
+    // KHÔNG im lặng: row mồ côi là dấu hiệu agent từng chết giữa chừng
+    // và boot recovery chưa vá được. Im lặng bỏ qua thì lần sau lại mất
+    // nhiều ngày mới phát hiện.
+    console.warn(
+      `[clip-resolver] camera=${cameraId} bỏ qua ${openVerdict.staleOpen.length} ` +
+        `row segment mồ côi (ended_at NULL, quá cũ để còn đang ghi): ` +
+        openVerdict.staleOpen.map((f) => f.started_at).join(", "),
+    );
+  }
+  if (openVerdict.blocking) {
     return {
       ok: false,
       reason: "segment_still_open",

@@ -326,7 +326,7 @@ test("kịch bản Supabase sập: chạy thật loạt kiểm → đúng MỘT 
       return q;
     },
   };
-  const checks = await runSystemChecks({
+  const { checks } = await runSystemChecks({
     client: dead as never,
     now: NOW,
     os: { totalmem: () => 8, freemem: () => 4 },
@@ -338,7 +338,11 @@ test("kịch bản Supabase sập: chạy thật loạt kiểm → đúng MỘT 
   assert.equal(candidates.length, 1);
   assert.equal(candidates[0].key, "data_sources");
   assert.equal(candidates[0].status, "crit");
-  assert.match(candidates[0].value, /4 mục/, "4 mục đo được đều mất nguồn; egress + disk kho không tính");
+  assert.match(
+    candidates[0].value,
+    /7 mục/,
+    "7 mục đo được đều mất nguồn (cron dọn clip, cron segment mồ côi, agent, camera, ghi hình, clip, vps); egress + storage + disk kho vốn đã không đo được nên không tính",
+  );
 });
 
 // ═══════════════════════════════════════════════════════════════════════

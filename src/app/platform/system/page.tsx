@@ -1,37 +1,52 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   Activity,
   AlertTriangle,
+  ArrowRight,
+  Bell,
+  Building2,
+  Camera,
   CheckCircle2,
+  ChevronRight,
+  Database,
+  Gauge,
+  HardDrive,
   HelpCircle,
   Loader2,
   Moon,
+  Network,
   RefreshCw,
+  Search,
+  Timer,
   XCircle,
 } from "lucide-react";
 import PlatformLayout from "@/components/platform/PlatformLayout";
 
 /**
- * Trang tình trạng hạ tầng — 6 ô.
+ * Trang tình trạng hạ tầng.
  *
  * VÌ SAO Ở /platform CHỨ KHÔNG /dashboard/system (đề bài ghi /dashboard):
  * middleware chặn đúng người cần xem. src/lib/supabase/proxy.ts:108-149 —
  * platform admin vào /dashboard/* mà không có organization_id trong JWT và
- * không có cookie impersonate thì bị redirect thẳng về /platform. Platform
- * admin KHÔNG có org claim, nên /dashboard/system sẽ không bao giờ mở được
- * cho đúng đối tượng của nó, trong khi admin của khách thuê lại tải được
- * khung trang (API vẫn chặn, nhưng để họ thấy menu là sai chỗ ngay từ đầu).
- * Đặt ở /platform thì cả menu lẫn trang lẫn API cùng một tầng quyền.
+ * không có cookie impersonate thì bị redirect thẳng về /platform.
  *
- * Trang này CHỦ ĐỘNG là phụ: nó không thay được cảnh báo Lark. Ai mở được
- * trang này nghĩa là đã biết có chuyện. Vì vậy dòng "lần chạy nền gần nhất"
- * ở cuối trang quan trọng ngang 6 ô — nó trả lời "con cảnh báo còn sống
- * không", thứ mà một trang toàn màu xanh không nói được.
+ * BỐ CỤC theo đúng thứ tự câu hỏi của người trực:
+ *   1. Dòng kết luận + sáu ô số  → "có phải làm gì không"
+ *   2. Cần chú ý                 → "việc gì, ở đâu, làm sao"
+ *   3. Kho đang vận hành         → "nhiều kho thì kho nào ra sao"
+ *   4. Hạ tầng + Chưa giám sát   → "còn gì chưa được canh"
+ *
+ * MỘT LUẬT CỨNG CHO CẢ FILE: không con số nào ở đây được sinh ra tại chỗ.
+ * Mọi thứ hiện lên đều đến từ /api/system/status, và mọi thứ ở đó đều đếm
+ * từ dữ liệu thật. Ô "12/14" trông đẹp hơn "1/1" rất nhiều — đó chính là
+ * lý do phải cấm, vì người trực vẫn tin con số đẹp đó và tin nhầm.
  */
 
 type CheckStatus = "ok" | "warn" | "crit" | "unknown" | "skipped";
+type IssueStatus = "crit" | "warn" | "unknown";
 
 interface SystemCheck {
   key: string;
@@ -41,53 +56,133 @@ interface SystemCheck {
   unknownKind?: "structural" | "incident";
 }
 
+interface HeroStat {
+  key: string;
+  label: string;
+  /** null = không đo được lượt này — hiện "—", TUYỆT ĐỐI không hiện 0. */
+  value: number | null;
+  total: number | null;
+  hint: string;
+  tone: CheckStatus;
+}
+
+interface SystemIssue {
+  id: string;
+  checkKey: string;
+  status: IssueStatus;
+  where: string;
+  what: string;
+  symptom: string;
+  action: string;
+  href: string | null;
+}
+
+interface OrgHealth {
+  orgId: string;
+  orgName: string;
+  warehouseNames: string[];
+  /** Mốc đơn hàng cuối được quét — đồng hồ thật của kho. */
+  lastScanAt: string | null;
+  status: CheckStatus;
+  agents: Array<{ id: string; code: string; status: CheckStatus; detail: string }>;
+  cameras: { total: number; failingLong: number; failingShort: number; stale: number };
+  recording: { status: CheckStatus; detail: string } | null;
+  clipFailures: { status: CheckStatus; count: number; detail: string } | null;
+}
+
+interface InfraTile {
+  key: string;
+  label: string;
+  status: CheckStatus;
+  value: string;
+  detail: string;
+}
+
 interface StatusResponse {
   checked_at: string;
   worst: CheckStatus;
   checks: SystemCheck[];
+  hero: HeroStat[];
+  issues: SystemIssue[];
+  orgs: OrgHealth[];
+  infra: InfraTile[];
+  unavailable: SystemCheck[];
   last_background_run: string | null;
 }
 
 const LABELS: Record<string, string> = {
   supabase_egress: "Egress Supabase",
   cron_cleanup: "Cron dọn clip",
+  cron_orphan_segments: "Cron dọn segment mồ côi",
   agent_heartbeat: "Kết nối agent kho",
   camera_probe: "Camera",
+  recording_freshness: "Ghi hình",
+  clip_failures: "Clip đơn hàng",
   vps_resources: "Ổ đĩa + RAM VPS",
+  storage_usage: "Dung lượng Storage",
   warehouse_disk: "Ổ đĩa máy kho",
 };
 
-const TONE: Record<CheckStatus, { box: string; chip: string; label: string; Icon: typeof CheckCircle2 }> = {
+const HERO_ICON: Record<string, typeof Building2> = {
+  warehouses: Building2,
+  agents: Network,
+  cameras: Camera,
+  incidents: AlertTriangle,
+  warnings: Bell,
+  blindspots: HelpCircle,
+};
+
+const INFRA_ICON: Record<string, typeof Gauge> = {
+  self_check: Activity,
+  supabase: Database,
+  cron_cleanup: Timer,
+  vps_resources: HardDrive,
+};
+
+const TONE: Record<
+  CheckStatus,
+  { chip: string; dot: string; soft: string; text: string; label: string; Icon: typeof CheckCircle2 }
+> = {
   ok: {
-    box: "border-emerald-100 bg-emerald-50/40",
     chip: "bg-emerald-100 text-emerald-700 border-emerald-200",
+    dot: "bg-emerald-500",
+    soft: "bg-emerald-50 text-emerald-600",
+    text: "text-emerald-600",
     label: "Bình thường",
     Icon: CheckCircle2,
   },
   warn: {
-    box: "border-amber-200 bg-amber-50/60",
     chip: "bg-amber-100 text-amber-800 border-amber-200",
+    dot: "bg-amber-500",
+    soft: "bg-amber-50 text-amber-600",
+    text: "text-amber-600",
     label: "Cảnh báo",
     Icon: AlertTriangle,
   },
   crit: {
-    box: "border-red-200 bg-red-50/70",
     chip: "bg-red-100 text-red-700 border-red-200",
+    dot: "bg-red-500",
+    soft: "bg-red-50 text-red-600",
+    text: "text-red-600",
     label: "Nghiêm trọng",
     Icon: XCircle,
   },
   unknown: {
-    box: "border-slate-200 bg-slate-50/60",
     chip: "bg-slate-100 text-slate-600 border-slate-200",
+    dot: "bg-slate-400",
+    soft: "bg-slate-100 text-slate-500",
+    text: "text-slate-500",
     label: "Chưa rõ",
     Icon: HelpCircle,
   },
-  // Tông chàm nhạt, KHÔNG dùng lại tông xám của "Chưa rõ": hai ô này nói
-  // hai chuyện khác nhau (ngoài ca vs mất nguồn dữ liệu) và người trực
-  // phải phân biệt được từ xa mà không cần đọc chữ.
+  // Tông chàm nhạt, KHÔNG dùng lại tông xám của "Chưa rõ": hai trạng thái
+  // này nói hai chuyện khác nhau (ngoài ca vs mất nguồn dữ liệu) và người
+  // trực phải phân biệt được từ xa mà không cần đọc chữ.
   skipped: {
-    box: "border-indigo-100 bg-indigo-50/40",
     chip: "bg-indigo-100 text-indigo-700 border-indigo-200",
+    dot: "bg-indigo-400",
+    soft: "bg-indigo-50 text-indigo-600",
+    text: "text-indigo-600",
     label: "Ngoài giờ",
     Icon: Moon,
   },
@@ -113,11 +208,100 @@ function ago(iso: string | null, now: number): string {
   return `${Math.floor(hours / 24)} ngày trước`;
 }
 
+function percent(value: number | null, total: number | null): string | null {
+  // Không đo được thì KHÔNG có phần trăm. Bản trước hiện "0%" màu xanh cho
+  // một kho đang đóng cửa — con số đó vừa sai vừa trấn an nhầm.
+  if (value === null || total === null || total <= 0) return null;
+  return `${Math.round((value / total) * 1000) / 10}%`;
+}
+
+// ── Ô số tổng ─────────────────────────────────────────────────────────
+
+function HeroCard({ stat }: { stat: HeroStat }) {
+  const tone = TONE[stat.tone];
+  const Icon = HERO_ICON[stat.key] ?? Activity;
+  const pct = percent(stat.value, stat.total);
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-start gap-3">
+        <span className={`h-10 w-10 rounded-xl grid place-items-center shrink-0 ${tone.soft}`}>
+          <Icon className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-xs text-slate-500">{stat.label}</p>
+          <p className="mt-0.5 text-slate-800">
+            <span className={`text-2xl font-semibold ${stat.value === null ? "text-slate-300" : ""}`}>
+              {stat.value === null ? "—" : stat.value}
+            </span>
+            {stat.total !== null && (
+              <span className="text-sm text-slate-400"> / {stat.total}</span>
+            )}
+          </p>
+        </div>
+      </div>
+      <p className={`mt-2 text-xs ${tone.text}`}>
+        {pct && <span className="font-medium">{pct} · </span>}
+        {stat.hint}
+      </p>
+    </div>
+  );
+}
+
+// ── Ô camera trong bảng kho ───────────────────────────────────────────
+
+function CameraCell({ c }: { c: OrgHealth["cameras"] }) {
+  if (c.total === 0) return <span className="text-xs text-slate-400">chưa khai camera</span>;
+  const bad: string[] = [];
+  if (c.failingLong > 0) bad.push(`${c.failingLong} lỗi kéo dài`);
+  if (c.failingShort > 0) bad.push(`${c.failingShort} vừa lỗi`);
+  if (c.stale > 0) bad.push(`${c.stale} số liệu cũ`);
+  const ok = c.total - c.failingLong - c.failingShort - c.stale;
+  return (
+    <div className="text-xs">
+      <div className="flex items-center gap-1.5">
+        <span className={`h-1.5 w-1.5 rounded-full ${bad.length ? "bg-amber-500" : "bg-emerald-500"}`} />
+        <span className="text-slate-700">
+          {ok} / {c.total} hoạt động
+        </span>
+      </div>
+      <div className={`mt-0.5 ${bad.length ? "text-amber-700" : "text-slate-400"}`}>
+        {bad.length > 0 ? bad.join(" · ") : "không có camera lỗi"}
+      </div>
+    </div>
+  );
+}
+
+/** Ô hai dòng dùng chung cho cột Recording và Clip lỗi. */
+function StatusCell({
+  status,
+  head,
+  sub,
+}: {
+  status: CheckStatus | null;
+  head: string;
+  sub: string;
+}) {
+  if (status === null) {
+    return <span className="text-xs text-slate-400">không kết luận</span>;
+  }
+  return (
+    <div className="text-xs">
+      <div className="flex items-center gap-1.5">
+        <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${TONE[status].dot}`} />
+        <span className="text-slate-700">{head}</span>
+      </div>
+      <div className="mt-0.5 text-slate-400 line-clamp-2">{sub}</div>
+    </div>
+  );
+}
+
 export default function SystemStatusPage() {
   const [data, setData] = useState<StatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [now, setNow] = useState(() => Date.now());
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | CheckStatus>("all");
 
   // KHÔNG setLoading(true) ở đầu hàm: lượt đầu do effect gọi, mà state
   // `loading` đã khởi tạo true rồi — bật lại đồng bộ trong thân effect là
@@ -150,51 +334,30 @@ export default function SystemStatusPage() {
     void load();
   }, [load]);
 
-  const worstTone = data ? TONE[data.worst] : TONE.unknown;
+  const orgs = useMemo(() => {
+    const all = data?.orgs ?? [];
+    const q = query.trim().toLowerCase();
+    return all.filter((o) => {
+      if (statusFilter !== "all" && o.status !== statusFilter) return false;
+      if (!q) return true;
+      return (
+        o.orgName.toLowerCase().includes(q) ||
+        o.warehouseNames.some((n) => n.toLowerCase().includes(q)) ||
+        o.agents.some((a) => a.code.toLowerCase().includes(q))
+      );
+    });
+  }, [data, query, statusFilter]);
+
+  const critCount = data?.issues.filter((i) => i.status === "crit").length ?? 0;
+  const attention = data?.issues ?? [];
 
   return (
     <PlatformLayout
       pageTitle="Tình trạng hệ thống"
-      pageSubtitle="Sáu mục kiểm hạ tầng. Cảnh báo thật gửi qua Lark — trang này để xem lại."
+      pageSubtitle="Cảnh báo thật gửi qua Lark — trang này để xem lại và tra chi tiết."
       pageIcon={Activity}
     >
-      <div className="p-4 sm:p-6 space-y-4">
-        <div className="flex flex-wrap items-center gap-3">
-          {data && (
-            <span
-              className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-xl border text-xs font-semibold ${worstTone.chip}`}
-            >
-              <worstTone.Icon className="h-3.5 w-3.5" />
-              {data.worst === "ok"
-                ? "Mọi mục bình thường"
-                : data.worst === "skipped"
-                  ? "Ngoài giờ vận hành — không mục nào được kiểm"
-                  : `Mức cao nhất: ${worstTone.label}`}
-            </span>
-          )}
-          {data && (
-            <span className="text-xs text-slate-500">
-              Kiểm lúc {formatVn(data.checked_at)}
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              setLoading(true);
-              void load();
-            }}
-            disabled={loading}
-            className="h-9 px-4 rounded-xl border border-slate-200 bg-white text-slate-600 text-sm font-medium inline-flex items-center gap-2 hover:bg-slate-50 disabled:opacity-60 ml-auto"
-          >
-            {loading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
-            Kiểm lại
-          </button>
-        </div>
-
+      <div className="p-4 sm:p-6 space-y-5">
         {error && (
           <div className="p-3 rounded-xl bg-red-50 text-red-600 text-sm border border-red-100">
             {error}
@@ -205,57 +368,400 @@ export default function SystemStatusPage() {
           <div className="p-10 flex items-center justify-center text-slate-500">
             <Loader2 className="h-5 w-5 animate-spin" />
           </div>
-        ) : (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {(data?.checks ?? []).map((c) => {
-              const tone = TONE[c.status];
-              return (
-                <div
-                  key={c.key}
-                  className={`rounded-2xl border p-4 shadow-sm ${tone.box}`}
+        ) : data ? (
+          <>
+            {/* ── Dòng kết luận ─────────────────────────────────────── */}
+            <div
+              className={`rounded-2xl border p-5 flex flex-wrap items-center gap-4 ${
+                attention.length === 0
+                  ? "border-emerald-100 bg-emerald-50/50"
+                  : critCount > 0
+                    ? "border-red-200 bg-red-50/60"
+                    : "border-amber-200 bg-amber-50/50"
+              }`}
+            >
+              <span
+                className={`h-11 w-11 rounded-full grid place-items-center shrink-0 text-white ${
+                  attention.length === 0
+                    ? "bg-emerald-500"
+                    : critCount > 0
+                      ? "bg-red-500"
+                      : "bg-amber-500"
+                }`}
+              >
+                {(() => {
+                  const Icon = TONE[data.worst].Icon;
+                  return <Icon className="h-6 w-6" />;
+                })()}
+              </span>
+              <div className="min-w-0">
+                <p className="text-base font-semibold text-slate-800">
+                  {attention.length === 0
+                    ? data.worst === "skipped"
+                      ? "Mọi kho đang ngoài giờ vận hành"
+                      : "Hệ thống hoạt động bình thường"
+                    : critCount > 0
+                      ? `${critCount} sự cố đang mở`
+                      : `${attention.length} mục cần chú ý`}
+                </p>
+                <p className="text-sm text-slate-600">
+                  {attention.length === 0
+                    ? data.worst === "skipped"
+                      ? "Không mục nào được kiểm lượt này — trang không chứng minh được điều gì."
+                      : "Mọi mục đo được đều bình thường. Phần chưa đo được liệt kê ở cuối trang."
+                    : "Mỗi dòng bên dưới là một đối tượng cụ thể và một việc phải làm."}
+                </p>
+              </div>
+              <div className="ml-auto flex items-center gap-3">
+                <span className="text-xs text-slate-500 hidden sm:inline">
+                  Kiểm lúc {formatVn(data.checked_at)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoading(true);
+                    void load();
+                  }}
+                  disabled={loading}
+                  className="h-9 px-4 rounded-xl border border-slate-200 bg-white text-slate-600 text-sm font-medium inline-flex items-center gap-2 hover:bg-slate-50 disabled:opacity-60"
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <span className="text-sm font-semibold text-slate-800">
-                      {LABELS[c.key] ?? c.key}
-                    </span>
-                    <span
-                      className={`inline-flex items-center gap-1 h-6 px-2 rounded-lg border text-[11px] font-semibold shrink-0 ${tone.chip}`}
-                    >
-                      <tone.Icon className="h-3 w-3" />
-                      {tone.label}
-                    </span>
-                  </div>
-                  <div className="mt-2 text-lg font-semibold text-slate-800 break-words">
-                    {c.value}
-                  </div>
-                  <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
-                    {c.message}
-                  </p>
-                  {c.status === "unknown" && c.unknownKind === "structural" && (
-                    // Nói thẳng để không ai nhầm ô xám này với sự cố — và
-                    // cũng để không ai tưởng nó đang được theo dõi.
-                    <p className="mt-2 text-[11px] text-slate-400">
-                      Mục này chưa có nguồn dữ liệu, không gửi cảnh báo.
-                    </p>
+                  {loading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
                   )}
-                </div>
-              );
-            })}
-          </div>
-        )}
+                  Kiểm lại
+                </button>
+              </div>
+            </div>
 
-        {data && (
-          <div className="text-xs text-slate-500 pt-1">
-            Lần tự kiểm nền gần nhất:{" "}
-            <span className="font-medium text-slate-700">
-              {formatVn(data.last_background_run)}
-            </span>{" "}
-            {ago(data.last_background_run, now)}
-            {" · "}
-            systemd timer chạy mỗi 15 phút. Mốc này cũ hơn nhiều thì chính con
-            cảnh báo đã chết, không phải hệ đang yên.
-          </div>
-        )}
+            {/* ── Sáu ô số ──────────────────────────────────────────── */}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+              {data.hero.map((s) => (
+                <HeroCard key={s.key} stat={s} />
+              ))}
+            </div>
+
+            {/* ── Cần chú ý ─────────────────────────────────────────── */}
+            <section className="space-y-2">
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold text-slate-800">Cần chú ý</h2>
+                <span
+                  className={`h-6 px-2 rounded-lg text-[11px] font-semibold inline-flex items-center border ${
+                    attention.length === 0 ? TONE.ok.chip : TONE[data.worst].chip
+                  }`}
+                >
+                  {attention.length === 0 ? "không có việc" : `${attention.length} mục`}
+                </span>
+              </div>
+              {attention.length === 0 ? (
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
+                  Không có sự cố nào đang mở.
+                </div>
+              ) : (
+                <ul className="space-y-2">
+                  {attention.map((i) => {
+                    const tone = TONE[i.status];
+                    return (
+                      <li
+                        key={i.id}
+                        className={`rounded-2xl border p-4 flex flex-wrap items-start gap-3 ${
+                          i.status === "crit"
+                            ? "border-red-200 bg-red-50/50"
+                            : i.status === "warn"
+                              ? "border-amber-200 bg-amber-50/40"
+                              : "border-slate-200 bg-white"
+                        }`}
+                      >
+                        <span className={`h-9 w-9 rounded-xl grid place-items-center shrink-0 ${tone.soft}`}>
+                          <tone.Icon className="h-5 w-5" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="text-sm font-semibold text-slate-800">
+                              {i.where} — {i.what}
+                            </span>
+                            <span className="text-[11px] text-slate-400">
+                              {LABELS[i.checkKey] ?? i.checkKey}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs leading-relaxed text-slate-600">{i.symptom}</p>
+                          {/* Việc cần làm tách riêng khỏi triệu chứng: gộp cả
+                              hai vào một câu thì người trực phải tự suy ra
+                              bước tiếp theo. */}
+                          <p className="mt-1 text-xs leading-relaxed text-slate-800">
+                            <span className="text-slate-400">Cần làm: </span>
+                            {i.action}
+                          </p>
+                        </div>
+                        {i.href && (
+                          <Link
+                            href={i.href}
+                            className="h-8 px-3 rounded-lg border border-slate-200 bg-white text-slate-600 text-xs font-medium inline-flex items-center gap-1 hover:bg-slate-50 shrink-0"
+                          >
+                            Xem chi tiết
+                            <ChevronRight className="h-3.5 w-3.5" />
+                          </Link>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
+            {/* ── Kho đang vận hành ─────────────────────────────────── */}
+            <section className="rounded-2xl border border-slate-200 bg-white">
+              <div className="p-4 flex flex-wrap items-center gap-3 border-b border-slate-100">
+                <h2 className="text-base font-semibold text-slate-800">Kho đang vận hành</h2>
+                <span className="h-6 px-2 rounded-lg bg-slate-100 text-slate-600 text-[11px] font-semibold inline-flex items-center">
+                  {data.orgs.length} kho
+                </span>
+                <div className="ml-auto flex flex-wrap items-center gap-2">
+                  <div className="relative">
+                    <Search className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Tìm kho, mã agent…"
+                      className="h-9 pl-9 pr-3 w-56 rounded-xl border border-slate-200 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    />
+                  </div>
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value as "all" | CheckStatus)}
+                    className="h-9 px-3 rounded-xl border border-slate-200 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  >
+                    <option value="all">Tất cả trạng thái</option>
+                    <option value="crit">Nghiêm trọng</option>
+                    <option value="warn">Cảnh báo</option>
+                    <option value="unknown">Chưa rõ</option>
+                    <option value="ok">Bình thường</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm min-w-[62rem]">
+                  <thead>
+                    <tr className="text-left text-xs text-slate-500 border-b border-slate-100">
+                      <th className="font-medium px-4 py-2.5">Kho</th>
+                      <th className="font-medium px-4 py-2.5">Trạng thái</th>
+                      <th className="font-medium px-4 py-2.5">Agent</th>
+                      <th className="font-medium px-4 py-2.5">Camera</th>
+                      <th className="font-medium px-4 py-2.5">Ghi hình</th>
+                      <th className="font-medium px-4 py-2.5">Clip lỗi</th>
+                      <th className="font-medium px-4 py-2.5">Đơn cuối</th>
+                      <th className="font-medium px-4 py-2.5" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orgs.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-500">
+                          {data.orgs.length === 0
+                            ? "Không tổ chức nào đang bật theo dõi, hoặc không đọc được danh sách."
+                            : "Không kho nào khớp bộ lọc."}
+                        </td>
+                      </tr>
+                    ) : (
+                      orgs.map((o) => {
+                        const tone = TONE[o.status];
+                        return (
+                          <tr
+                            key={o.orgId}
+                            className="border-b border-slate-50 last:border-0 align-top"
+                          >
+                            <td className="px-4 py-3">
+                              <div className="font-medium text-slate-800">{o.orgName}</div>
+                              {o.warehouseNames.length > 0 && (
+                                <div className="text-xs text-slate-500 mt-0.5">
+                                  {o.warehouseNames.join(", ")}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span
+                                className={`inline-flex items-center gap-1 h-6 px-2 rounded-lg border text-[11px] font-semibold ${tone.chip}`}
+                              >
+                                <tone.Icon className="h-3 w-3" />
+                                {tone.label}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              {o.agents.length === 0 ? (
+                                <span className="text-xs text-slate-400">chưa cài agent</span>
+                              ) : (
+                                <ul className="space-y-1">
+                                  {o.agents.map((a) => (
+                                    <li key={a.id} className="text-xs">
+                                      <div className="flex items-center gap-1.5">
+                                        <span
+                                          className={`h-1.5 w-1.5 rounded-full shrink-0 ${TONE[a.status].dot}`}
+                                        />
+                                        <span className="font-mono text-slate-700 break-all">
+                                          {a.code}
+                                        </span>
+                                      </div>
+                                      <div className="mt-0.5 text-slate-400">{a.detail}</div>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </td>
+                            <td className="px-4 py-3">
+                              <CameraCell c={o.cameras} />
+                            </td>
+                            <td className="px-4 py-3">
+                              <StatusCell
+                                status={o.recording?.status ?? null}
+                                head={
+                                  o.recording?.status === "ok"
+                                    ? "Bám hoạt động"
+                                    : o.recording?.status === "unknown"
+                                      ? "Chưa có mốc"
+                                      : "Lỡ nhịp"
+                                }
+                                sub={o.recording?.detail ?? ""}
+                              />
+                            </td>
+                            <td className="px-4 py-3">
+                              <StatusCell
+                                status={o.clipFailures?.status ?? null}
+                                head={`${o.clipFailures?.count ?? 0} clip`}
+                                sub={o.clipFailures?.detail ?? ""}
+                              />
+                            </td>
+                            {/*
+                              Thay cột "Giờ vận hành" của bản trước. Đây là
+                              mốc để đọc mọi ô còn lại: agent im 3 tiếng mà
+                              đơn cuối cũng 3 tiếng trước = kho đã nghỉ; đơn
+                              cuối 5 phút trước = kho đang chạy, agent đang chết.
+                            */}
+                            <td className="px-4 py-3 text-xs">
+                              {o.lastScanAt ? (
+                                <>
+                                  <div className="text-slate-700">{ago(o.lastScanAt, now)}</div>
+                                  <div className="mt-0.5 text-slate-400">
+                                    {formatVn(o.lastScanAt)}
+                                  </div>
+                                </>
+                              ) : (
+                                <span className="text-slate-400">chưa đóng gói đơn nào</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3">
+                              <Link
+                                href={`/platform/orgs/${o.orgId}`}
+                                className="h-8 px-3 rounded-lg border border-slate-200 text-slate-600 text-xs font-medium inline-flex items-center gap-1 hover:bg-slate-50 whitespace-nowrap"
+                              >
+                                Xem chi tiết
+                                <ChevronRight className="h-3.5 w-3.5" />
+                              </Link>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {data.orgs.length > 0 && (
+                <div className="px-4 py-3 text-xs text-slate-500 border-t border-slate-100">
+                  Hiển thị {orgs.length} trong {data.orgs.length} kho đang bật theo dõi. Mọi kết
+                  luận đối chiếu với cột &ldquo;Đơn cuối&rdquo; — hệ không dùng khung giờ khai
+                  báo, kho nghỉ thì tự im.
+                </div>
+              )}
+            </section>
+
+            {/* ── Hạ tầng + Chưa giám sát được ──────────────────────── */}
+            <div className="grid gap-4 xl:grid-cols-3">
+              <section className="xl:col-span-2 rounded-2xl border border-slate-200 bg-white p-4">
+                <h2 className="text-base font-semibold text-slate-800">Hạ tầng Betabox</h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Không thuộc kho nào. Mọi số ở đây đo trong chính lượt kiểm này — hệ chưa ghi lịch
+                  sử uptime nên không có ô phần trăm nào.
+                </p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {data.infra.map((t) => {
+                    const tone = TONE[t.status];
+                    const Icon = INFRA_ICON[t.key] ?? Gauge;
+                    return (
+                      <div
+                        key={t.key}
+                        className={`rounded-xl border p-3 ${
+                          t.status === "ok" || t.status === "skipped"
+                            ? "border-slate-200 bg-white"
+                            : t.status === "warn"
+                              ? "border-amber-200 bg-amber-50/60"
+                              : t.status === "crit"
+                                ? "border-red-200 bg-red-50/60"
+                                : "border-slate-200 bg-slate-50"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Icon className={`h-4 w-4 ${tone.text}`} />
+                          <span className="text-sm font-semibold text-slate-800">{t.label}</span>
+                        </div>
+                        <div className={`mt-1.5 text-xs font-medium ${tone.text}`}>{tone.label}</div>
+                        <div className="text-sm text-slate-700">{t.value}</div>
+                        <p className="mt-1 text-[11px] leading-relaxed text-slate-500 line-clamp-3">
+                          {t.detail}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {/*
+                Phần CHƯA theo dõi được. Vẫn phải có mặt: một trang toàn xanh
+                mà giấu luôn phần chưa canh sẽ bị đọc thành "đã phủ hết", và
+                đó chính là cách sự cố egress 103% xảy ra lần đầu. Nhưng nó
+                là DANH SÁCH ở góc, không phải card to giữa lưới chính.
+              */}
+              <section className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base font-semibold text-slate-800">Chưa giám sát được</h2>
+                  <span className="h-6 px-2 rounded-lg bg-slate-100 text-slate-600 text-[11px] font-semibold inline-flex items-center">
+                    {data.unavailable.length} mục
+                  </span>
+                </div>
+                <ul className="mt-3 divide-y divide-slate-50">
+                  {data.unavailable.map((c) => (
+                    <li key={c.key} className="py-3 flex items-start gap-3">
+                      <span className="h-8 w-8 rounded-lg bg-slate-100 text-slate-400 grid place-items-center shrink-0">
+                        <HelpCircle className="h-4 w-4" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-slate-700">
+                          {LABELS[c.key] ?? c.key}
+                        </p>
+                        <p className="text-xs text-slate-400">{c.value}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 pt-3 border-t border-slate-100 text-[11px] leading-relaxed text-slate-500">
+                  Không mục nào trong số này gửi cảnh báo — phải xem tay ở dashboard Supabase. Chúng
+                  ở đây để không ai đọc một trang toàn xanh thành &ldquo;đã phủ hết&rdquo;.
+                </p>
+              </section>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1 text-xs text-slate-500 pt-1">
+              <ArrowRight className="h-3.5 w-3.5 text-slate-300" />
+              Lần tự kiểm nền gần nhất:{" "}
+              <span className="font-medium text-slate-700">
+                {formatVn(data.last_background_run)}
+              </span>{" "}
+              {ago(data.last_background_run, now)} · systemd timer chạy mỗi 15 phút. Mốc này cũ hơn
+              nhiều thì chính con cảnh báo đã chết, không phải hệ đang yên.
+            </div>
+          </>
+        ) : null}
       </div>
     </PlatformLayout>
   );

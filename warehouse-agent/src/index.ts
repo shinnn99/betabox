@@ -283,8 +283,15 @@ async function main(): Promise<void> {
   // restart kế tiếp. Điều này OK vì scan window chỉ dùng khi boot.
   const cachedRetention = await readRetentionCache();
   const recoveryScanDays = computeRecoveryScanDays(cachedRetention);
+  // Trần upload in ra ở boot để verify được TỪ XA agent đang chạy số
+  // nào. Nó đến từ env (.env máy kho) hoặc default trong binary, nên
+  // nhìn binary hay nhìn .env đều không kết luận được — chỉ dòng log này
+  // nói đúng cái agent thật sự đang dùng. Cần khi đổi trần (50 → 90 MiB,
+  // 2026-08-13): không có dòng này thì "đã áp chưa" chỉ đoán được.
   console.log(
-    `[boot] retention=${cachedRetention === null ? "unset" : `${cachedRetention}d`} recovery_scan=${recoveryScanDays}d`,
+    `[boot] retention=${cachedRetention === null ? "unset" : `${cachedRetention}d`} ` +
+      `recovery_scan=${recoveryScanDays}d ` +
+      `upload_limit=${(config.maxProofClipUploadBytes / (1024 * 1024)).toFixed(0)}MiB`,
   );
 
   const segmentIndex = new SegmentIndex({
@@ -859,9 +866,11 @@ async function main(): Promise<void> {
       );
 
       // === STEP 4b: Size guard TRƯỚC khi xin signed URL ===
-      // Trần project đo được 2026-08-07: 50 MiB OK, 51 MiB → 413
-      // EntityTooLarge. Trước đây agent cứ PUT rồi mới biết, khách nhận
-      // "Cắt clip thất bại" kèm chuỗi HTTP thô không nói được gì.
+      // Storage trả 413 EntityTooLarge khi vượt trần project (đo
+      // 2026-08-07 trên gói Free: 50 MiB OK / 51 MiB fail; từ
+      // 2026-08-13 trần nâng lên 100 MiB, guard để 90 MiB). Trước đây
+      // agent cứ PUT rồi mới biết, khách nhận "Cắt clip thất bại" kèm
+      // chuỗi HTTP thô không nói được gì.
       //
       // Guard dựa trên stat() file THẬT (cutResult.fileSizeBytes), không
       // suy từ duration — bitrate camera đổi là công thức theo duration

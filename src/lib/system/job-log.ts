@@ -18,6 +18,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 /** job_name cố định — cảnh báo giai đoạn 2 query đúng chuỗi này. */
 export const SYSTEM_JOB_CLEANUP_CLIPS = "cleanup-clips";
+/** Job đóng row segment mồ côi (ended_at NULL quá cũ). */
+export const SYSTEM_JOB_CLOSE_ORPHAN_SEGMENTS = "close-orphan-segments";
 
 export interface SystemJobEntry {
   jobName: string;
