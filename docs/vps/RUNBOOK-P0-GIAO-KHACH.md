@@ -165,6 +165,48 @@ không phải chỉ lần bấm tay ở bước 3.
 
 Chạy đủ 8, ghi PASS/FAIL từng bài. Không suy từ bài này sang bài khác.
 
+### THỨ TỰ CHẠY — đọc trước khi bắt đầu
+
+Ba bài đè lên nhau nếu chạy sai thứ tự. Cả ba đều làm bài bị đè **PASS giả**
+hoặc không bao giờ kết luận được.
+
+**1. T2 (reboot) phải chạy TRƯỚC T5 (dead-man).**
+`betabox-syscheck.timer` có `Persistent=true` và đã `enable`, nên reboot sẽ bật
+lại timer → syscheck chạy → ping healthchecks.io → **đồng hồ dead-man reset**.
+Tắt timer rồi reboot thì T5 không bao giờ nổ.
+
+**2. T5 phải chạy CUỐI CÙNG, sau khi T3–T8 xong hết.**
+Trong lúc T5 đang đếm, timer đang tắt — không có lần chạy nào để sinh alert cho
+T3/T4/T7. Mà nếu kích tay bằng `systemctl start betabox-syscheck.service` thì
+`ExecStartPost` ping healthchecks.io và **reset dead-man**.
+
+> Nếu buộc phải chạy syscheck trong lúc T5 đang đếm, dùng `curl` thẳng vào
+> route — nó không đi qua `ExecStartPost` nên không ping dead-man:
+> ```bash
+> source /etc/betabox-cron.env
+> curl -sS -X POST -H "Authorization: Bearer $CRON_SECRET" \
+>   https://betabox.betacom.agency/api/system/check | head -c 2000
+> ```
+> Vẫn nên tránh: dễ quên mình đang ở chế độ nào.
+
+**3. T5 không cần ngồi canh.** Khởi động rồi đi làm việc khác, kiểm hộp thư sau
+1 giờ 15 phút. Đây là bài duy nhất chỉ tốn thời gian chờ.
+
+Thứ tự đề nghị cho một buổi:
+
+| Khi | Bài | Ghi chú |
+|---|---|---|
+| Đầu buổi | Bước 1–4 | Không test gì khác nếu bước 4 chưa PASS |
+| +20 phút | **T1** | Timer tự sinh record |
+| Ngay sau | **T2** | Reboot, xác nhận timer tự trở lại |
+| Kho đang đóng hàng | **T3 → T6 → T7 → T8** | Chuỗi liền, cần có người quét đơn |
+| Xen giữa | **T4** | Hạ tạm `failingMinutes`, nhớ trả lại |
+| Cuối buổi | **T5** | Khởi động rồi đi; kiểm sau 1h15 |
+| Sau T5 nổ | Bật lại timer | Xác nhận hệ về normal |
+
+Lý do T3 → T6 → T7 đi liền: T3 phá ghi hình, T6 khôi phục, T7 đọc tin hồi phục
+sinh ra từ chính lần khôi phục đó. Tách ra thì T7 không có gì để đọc.
+
 ### T1 — Timer tự sinh record liên tục
 
 Chờ 45 phút sau bước 4, đếm lại:
@@ -205,7 +247,23 @@ Rồi **phải có người quét vài đơn** ở kho — mục `recording_fres
 đóng gói bao lâu SAU segment cuối", không đo "segment cũ bao lâu". Không có
 scan mới thì không có gì để đối chiếu và hệ im lặng **đúng**.
 
-Đợi tới khi phút-đóng-gói-sau-segment-cuối vượt 10 (warn) rồi 20 (crit).
+Công thức: `scanned_at − ended_at − 3 phút (grace) > ngưỡng`. Nên:
+
+| Muốn thấy | Chờ sau khi dừng agent, rồi mới quét đơn |
+|---|---|
+| warn (10 phút) | **> 13 phút** — dùng 15 cho chắc |
+| crit (20 phút) | **> 23 phút** — dùng 25 cho chắc |
+
+Vì phép so là giữa hai mốc TRONG DB, không so với đồng hồ hiện tại, nên cứ chờ
+đủ rồi quét — không cần quét liên tục suốt khoảng đó.
+
+Kiểm mốc thật trước khi kết luận:
+
+```sql
+select
+  (select max(ended_at) from camera_recording_files where organization_id = '<org>') as segment_cuoi,
+  (select max(scanned_at) from packing_events where organization_id = '<org>') as scan_cuoi;
+```
 
 **PASS:** nhận tin Lark, và:
 
@@ -311,6 +369,92 @@ select id, name, monitoring_enabled from organizations;
 | T8 | Alert đúng tenant/kho/camera | | |
 
 **8/8 PASS → được mang sang khách.** Bài nào FAIL thì dừng, không "gần đúng".
+
+---
+
+---
+
+## Checklist rời kho — 9/9 mới được về
+
+Áp cho MỌI lần lắp đặt ở kho khách, kể cả khách thứ hai trở đi. Khác với gate 8
+bài ở trên: gate 8 chứng minh **cơ chế cảnh báo sống**, checklist này chứng minh
+**một kho cụ thể chạy được**. Làm gate 8 một lần; làm checklist này mỗi kho.
+
+| # | Mục | Cách kiểm | Xong |
+|---|---|---|---|
+| 1 | Agent online | Dashboard hiện agent, hoặc `select code, now() - last_seen_at from warehouse_agents` < 1 phút | |
+| 2 | Camera online | Dashboard hiện camera xanh | |
+| 3 | Có segment mới | `select max(started_at) from camera_recording_files where organization_id = '<org>'` — trong 2 phút gần nhất | |
+| 4 | Scan đơn tạo packing event | Quét thử một đơn, `select max(scanned_at) from packing_events where organization_id = '<org>'` | |
+| 5 | Tìm được video theo đơn | Mở `/watch` cho đúng đơn vừa quét | |
+| 6 | Cắt được clip | Bấm cắt, chờ tới `ready`, **mở xem được** | |
+| 7 | `system-check` có record mới | `select max(ran_at) from system_jobs where job_name='system-check'` < 15 phút | |
+| 8 | Test alert Lark thành công | Xem hướng dẫn riêng bên dưới | |
+| 9 | Reboot máy, toàn hệ tự lên lại | Reboot máy kho, đợi 5 phút, kiểm lại mục 1–3 | |
+
+**9/9 mới được rời kho.** Mục 6 phải **mở clip xem thật**, không dừng ở trạng
+thái `ready` trong DB — `ready` chỉ nói file đã lên bucket, không nói nội dung
+đúng.
+
+Lấy `<org>` cho mục 3–4:
+
+```sql
+select id, name from organizations where monitoring_enabled = true;
+```
+
+Kho mới lắp phải được **bật `monitoring_enabled`** — nếu quên, mọi mục kiểm bỏ
+qua kho đó và nó là điểm mù dù mọi thứ khác xanh:
+
+```sql
+update organizations set monitoring_enabled = true where id = '<org>';
+```
+
+Mục 9 dựa vào installer đã đặt service `SERVICE_AUTO_START` và
+`AppExit Default Restart` (betacom-agent.iss:296,300) — agent tự lên sau reboot
+và tự khởi động lại nếu chết. Vẫn phải kiểm bằng mắt, không tin cấu hình.
+
+Trên máy kho, kiểm nhanh:
+
+```powershell
+Get-Service BetacomAgent | Select-Object Name, Status, StartType
+```
+
+`Status = Running`, `StartType = Automatic`.
+
+Mục 8 là mục hay bị bỏ nhất vì mất thời gian nhất, và cũng là mục duy nhất
+chứng minh kho này thật sự nằm trong tầm cảnh báo. Bỏ nó thì kho đó là điểm mù,
+đúng như Đại Kim từng là điểm mù suốt 27 ngày.
+
+### Cách chạy mục 8 mà không phải chờ 10 phút
+
+Ngưỡng warn là 10 phút **đóng gói** trôi qua sau segment cuối — ở kho mới lắp,
+đứng chờ đủ 10 phút rồi quét đơn liên tục là lãng phí.
+
+Đường nhanh: dừng agent, rồi **quét đơn với thời điểm cách segment cuối > 10
+phút**. Vì mục này so hai mốc trong DB (`packing_events.scanned_at` so với
+`camera_recording_files.ended_at`), không so với đồng hồ hiện tại, nên chỉ cần
+khoảng cách giữa hai mốc đủ lớn:
+
+1. `nssm stop BetacomAgent` — ghi lại giờ, đây là mốc segment cuối
+2. Chờ **15 phút** (làm mục khác trong checklist trong lúc chờ)
+3. Quét 2–3 đơn thật ở trạm đóng gói
+4. Kích syscheck: `curl -sS -X POST -H "Authorization: Bearer $CRON_SECRET" https://betabox.betacom.agency/api/system/check`
+5. **PASS:** nhận tin Lark nêu `recording_freshness`, có tên kho đúng
+6. `nssm start BetacomAgent`, chờ segment mới, kích syscheck lần nữa
+7. **PASS:** nhận tin **"[Betabox] Hạ tầng đã hồi phục"**
+
+Vì sao 15 phút chứ không phải 10: công thức là
+`scanned_at − ended_at − graceMs > warnMs`, với `graceMs` = 3 phút và `warnMs`
+= 10 phút (`CHECK_CONFIG.recording`). Cần khoảng cách **> 13 phút**; 15 là biên
+an toàn. Muốn chạm mức crit thì chờ **> 23 phút** (20 + 3).
+
+Bước 2 chạy song song với mục 1–7 của checklist, nên thực tế không tốn thêm
+thời gian. Đừng rút ngắn bằng cách sửa ngưỡng ở kho khách — sửa xong quên trả
+lại là để kho đó ngoài tầm cảnh báo.
+
+> `scripts/verify-lark-notify.ts` KHÔNG dùng được cho mục này: nó test webhook
+> **nghiệp vụ** gửi cho kho (`LARK_NOTIFY_ENABLED`), khác webhook **hạ tầng**
+> (`LARK_INFRA_WEBHOOK_URL`) của hệ tự kiểm. Hai đường tách nhau có chủ đích.
 
 ---
 
