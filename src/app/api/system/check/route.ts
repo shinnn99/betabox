@@ -47,6 +47,7 @@ export async function POST(request: NextRequest) {
   const base = process.env.NEXT_PUBLIC_APP_URL ?? null;
   let alert: Awaited<ReturnType<typeof sendSystemAlert>> = {
     alerted: [],
+    recovered: [],
     sent: null,
     error: admin ? null : "không có kết nối Supabase để đọc lịch sử chống spam",
   };
@@ -64,7 +65,7 @@ export async function POST(request: NextRequest) {
     } catch (err) {
       // sendSystemAlert đã hứa không throw; bọc thêm ở đây để lời hứa đó
       // hỏng cũng không kéo mất dòng sổ bên dưới.
-      alert = { alerted: [], sent: false, error: errorMessage(err) };
+      alert = { alerted: [], recovered: [], sent: false, error: errorMessage(err) };
     }
   }
 
@@ -81,6 +82,10 @@ export async function POST(request: NextRequest) {
         worst,
         checks: checks.map((c) => ({ key: c.key, status: c.status })),
         alerted: alert.alerted,
+        // Dấu hồi phục: readRecentAlerts đọc lại chính trường này để biết
+        // khoá nào đã đóng sự cố. Thiếu nó thì tin hồi phục vẫn gửi được
+        // một lần, nhưng lần hỏng SAU sẽ bị bản ghi crit cũ nén mất.
+        recovered: alert.recovered,
         sent: alert.sent,
         error: alert.error,
       },
