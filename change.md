@@ -108,8 +108,8 @@ docs([Module]):     Cập nhật tài liệu
 
 - **Mục tiêu:** Đưa toàn bộ thay đổi bài toán hai camera đã kiểm tra lên `origin/2-camera`, tuyệt đối không commit/push vào `main`.
 - **Files tạo/sửa:** `.gitignore`, `change.md`; commit các file triển khai, migration, test, plan và báo cáo liên quan.
-- **Chi tiết thay đổi:** Loại khỏi commit thư mục bản cài local, `.env`, private key/certificate tự sinh và scratch scripts; kiểm tra credential, staged diff và nhánh trước khi commit/push.
-- **Trạng thái:** Đang xử lý
+- **Chi tiết thay đổi:** Đã loại khỏi commit thư mục bản cài local, `.env`, private key/certificate tự sinh và scratch scripts; credential scan sạch; staged diff đã kiểm tra. Commit chức năng `a696146` đã được đẩy lên đúng `origin/2-camera`. GitHub cảnh báo binary MediaMTX 53,44 MB vượt mức khuyến nghị 50 MB nhưng vẫn nhận file; không tạo agent/installer mới.
+- **Trạng thái:** Đã hoàn thành — remote `origin/2-camera` đã cập nhật; không commit hoặc push vào `main`.
 
 ### [C.1.1-FIX] - Sửa MediaMTX relay không nhận source từ environment
 
