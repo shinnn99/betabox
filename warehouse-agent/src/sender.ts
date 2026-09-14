@@ -13,14 +13,14 @@ export interface ScanPayload {
   port: string;
   raw_value: string;
   scanned_at: string;
-  /** 'serial' from this agent; 'hid_keyboard'/'manual' come from the web UI. */
-  source: "serial" | "hid_keyboard" | "manual";
+  /** Physical scanner, web input, or the QR camera reader. */
+  source: "serial" | "hid_keyboard" | "manual" | "camera_qr";
   /**
    * Identity snapshot captured at scan time (VID/PID/serial/etc.). Lets
    * forensics tell which physical USB device produced a given scan, even
    * if the scanner is later rebound to another device_code.
    */
-  device_identity_snapshot: Record<string, string> | null;
+  device_identity_snapshot: Record<string, unknown> | null;
 }
 
 export interface SendResult {

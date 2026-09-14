@@ -75,7 +75,7 @@ export async function POST(req: Request) {
   const [{ data: dev }, { data: stn }] = await Promise.all([
     admin
       .from("station_devices")
-      .select("id, device_code, device_type, status")
+      .select("id, device_code, device_type, status, name, config_json")
       .eq("id", deviceId)
       .eq("organization_id", ctx.organizationId)
       .maybeSingle(),
@@ -133,15 +133,14 @@ export async function POST(req: Request) {
     );
   }
 
-  // Rule: at most one active device PER (station, device_type). A packing
-  // station typically needs both a scanner and a camera, so we only retire
-  // the previous assignment that shares the same device_type as the new one.
+  // Slot uniqueness is role-aware: a station can have one overview camera,
+  // one QR camera, one physical scanner and one qrcam virtual scanner.
   //
   // Cross-tenant guard: filter organization_id trước station_id để attacker
   // biết station_id org khác không enumerate được device assignments.
   const { data: stationActive, error: stationActiveErr } = await admin
     .from("station_device_assignments")
-    .select("id, station_devices!inner ( device_type )")
+    .select("id, device_id, station_devices!inner ( device_type, device_code, config_json )")
     .eq("organization_id", ctx.organizationId)
     .eq("station_id", stationId)
     .is("unassigned_at", null);
@@ -157,13 +156,21 @@ export async function POST(req: Request) {
 
   const sameTypeIds = ((stationActive ?? []) as Array<{
     id: string;
-    station_devices: { device_type: string } | { device_type: string }[] | null;
+    device_id: string;
+    station_devices: { device_type: string; device_code: string; config_json: Record<string, unknown> | null } | Array<{ device_type: string; device_code: string; config_json: Record<string, unknown> | null }> | null;
   }>)
     .filter((r) => {
       const sd = Array.isArray(r.station_devices)
         ? r.station_devices[0]
         : r.station_devices;
-      return sd?.device_type === dev.device_type;
+      if (!sd || r.device_id === deviceId || sd.device_type !== dev.device_type) return false;
+      if (dev.device_type === "camera") {
+        return String(sd.config_json?.role ?? "proof_primary") === String(dev.config_json?.role ?? "proof_primary");
+      }
+      if (dev.device_type === "scanner") {
+        return sd.device_code.toLowerCase().startsWith("qrcam_") === dev.device_code.toLowerCase().startsWith("qrcam_");
+      }
+      return true;
     })
     .map((r) => r.id);
 
@@ -201,6 +208,67 @@ export async function POST(req: Request) {
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 400 });
+  }
+
+  // A QR camera participates in the existing scanner resolver through a
+  // virtual scanner device. Keep the physical scanner assignment intact so
+  // admins can switch scan_source without rewiring devices.
+  if (dev.device_type === "camera" && String(dev.config_json?.role) === "proof_qr") {
+    const cameraId = String(dev.config_json?.camera_id ?? "");
+    const { data: camera } = await admin
+      .from("cameras")
+      .select("camera_code")
+      .eq("organization_id", ctx.organizationId)
+      .eq("id", cameraId)
+      .maybeSingle();
+    if (!camera) {
+      return NextResponse.json({ error: "camera_not_found" }, { status: 409 });
+    }
+    const virtualCode = `qrcam_${camera.camera_code}`.toLowerCase();
+    const { data: existingVirtual, error: virtualLookupErr } = await admin
+      .from("station_devices")
+      .select("id")
+      .eq("organization_id", ctx.organizationId)
+      .eq("device_code", virtualCode)
+      .maybeSingle();
+    if (virtualLookupErr) {
+      return NextResponse.json({ error: "virtual_scanner_lookup_failed", message: virtualLookupErr.message }, { status: 500 });
+    }
+    let virtualId = existingVirtual?.id as string | undefined;
+    if (!virtualId) {
+      const { data: virtual, error: virtualCreateErr } = await admin
+        .from("station_devices")
+        .insert({
+          organization_id: ctx.organizationId,
+          device_code: virtualCode,
+          device_type: "scanner",
+          name: `QR camera ${dev.name}`,
+          status: "active",
+          connection_type: "unknown",
+          config_json: { virtual_source: "camera_qr", camera_id: cameraId },
+        })
+        .select("id")
+        .single();
+      if (virtualCreateErr || !virtual) {
+        return NextResponse.json({ error: "virtual_scanner_create_failed", message: virtualCreateErr?.message }, { status: 500 });
+      }
+      virtualId = virtual.id;
+    }
+    const { error: virtualCloseErr } = await admin
+      .from("station_device_assignments")
+      .update({ unassigned_at: now, status: "ended" })
+      .eq("organization_id", ctx.organizationId)
+      .eq("device_id", virtualId)
+      .is("unassigned_at", null);
+    if (virtualCloseErr) {
+      return NextResponse.json({ error: "virtual_scanner_move_failed", message: virtualCloseErr.message }, { status: 500 });
+    }
+    const { error: virtualAssignErr } = await admin
+      .from("station_device_assignments")
+      .insert({ organization_id: ctx.organizationId, device_id: virtualId, station_id: stationId, assigned_at: now, status: "active" });
+    if (virtualAssignErr) {
+      return NextResponse.json({ error: "virtual_scanner_assign_failed", message: virtualAssignErr.message }, { status: 500 });
+    }
   }
 
   // Active assignment changed → the camera↔station map in listCameras

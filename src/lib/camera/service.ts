@@ -453,6 +453,7 @@ export function validateCameraInput(
 export async function createCamera(
   organizationId: string,
   input: CameraInput,
+  options?: { agentId?: string | null; status?: "active" | "inactive" | "error" },
 ): Promise<CameraPublic> {
   const admin = createAdminClient();
   const enc = input.password ? encryptPassword(input.password) : null;
@@ -470,6 +471,8 @@ export async function createCamera(
       password_ciphertext: enc?.ciphertext ?? null,
       password_iv: enc?.iv ?? null,
       password_tag: enc?.tag ?? null,
+      agent_id: options?.agentId ?? null,
+      status: options?.status ?? "active",
     })
     .select(ALL_COLUMNS)
     .single();

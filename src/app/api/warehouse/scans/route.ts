@@ -17,7 +17,7 @@ import { hookLarkNotifyScan } from "@/lib/lark/hook-scan";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type ScanSource = "serial" | "hid_keyboard" | "manual";
+type ScanSource = "serial" | "hid_keyboard" | "manual" | "camera_qr";
 
 interface ScanPayload {
   agent_event_id: string;
@@ -61,7 +61,7 @@ function parsePayload(raw: unknown): ScanPayload | { error: string } {
   // (because that's the only thing the legacy agent could be).
   const rawSource = typeof r.source === "string" ? r.source.trim() : "serial";
   const source: ScanSource =
-    rawSource === "hid_keyboard" || rawSource === "manual"
+    rawSource === "hid_keyboard" || rawSource === "manual" || rawSource === "camera_qr"
       ? rawSource
       : "serial";
 
@@ -272,6 +272,13 @@ export async function POST(req: Request) {
     }>();
 
   const scannerUnmapped = !resolved;
+  let scanSourceDisabled = false;
+  if (resolved) {
+    const { data: station } = await admin.from("packing_stations").select("scan_source").eq("id", resolved.station_id).maybeSingle();
+    const configured = station?.scan_source === "camera" ? "camera" : "scanner";
+    const incoming = parsed.source === "camera_qr" ? "camera" : "scanner";
+    scanSourceDisabled = configured !== incoming;
+  }
   if (scannerUnmapped) {
     console.warn(
       `[warehouse-scans] unmapped scanner: org=${agent.organization_id} device=${parsed.scanner_device_code} at=${parsed.scanned_at}`,
@@ -302,7 +309,12 @@ export async function POST(req: Request) {
   // signal. For waybill scans, an unmapped scanner is. We only expose one
   // warning field so the agent log stays terse.
   const warning: { code: string; message: string } | null =
-    scanType === "staff_qr" && staffQrInvalidReason
+    scanSourceDisabled
+      ? {
+          code: "scan_source_disabled",
+          message: "Nguồn quét này đang bị tắt trong cấu hình bàn.",
+        }
+      : scanType === "staff_qr" && staffQrInvalidReason
       ? {
           code: "invalid_staff_qr",
           message: "Staff QR is invalid or revoked",
@@ -379,6 +391,7 @@ export async function POST(req: Request) {
   if (
     scanType === "staff_qr" &&
     recognizedStaff &&
+    !scanSourceDisabled &&
     resolved &&
     resolved.station_id &&
     resolved.warehouse_id
@@ -397,7 +410,7 @@ export async function POST(req: Request) {
   // waybill scan — the RPC itself records unmapped/no-session/duplicate
   // statuses so nothing gets dropped.
   let packingResult: PackingResult | null = null;
-  if (scanType === "waybill") {
+  if (scanType === "waybill" && !scanSourceDisabled) {
     packingResult = await runWaybillRpc(admin, eventId);
     // Lark notify — schedule sau response bằng `after()` (Next.js 15+).
     // Vercel serverless: fire-and-forget "trần" (void Promise) sẽ bị kill khi

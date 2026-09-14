@@ -55,12 +55,15 @@ export const NTP_DRIFT_ALERT_THRESHOLD_SECONDS = 30;
 export async function readAgentLiveness(
   admin: ReturnType<typeof createAdminClient>,
   organizationId: string,
+  agentId?: string,
 ): Promise<AgentLiveness> {
-  const { data } = await admin
+  let query = admin
     .from("warehouse_agents")
     .select("id, last_seen_at, time_drift_seconds")
     .eq("organization_id", organizationId)
-    .eq("status", "active")
+    .eq("status", "active");
+  if (agentId) query = query.eq("id", agentId);
+  const { data } = await query
     .order("last_seen_at", { ascending: false, nullsFirst: false })
     .limit(1);
 

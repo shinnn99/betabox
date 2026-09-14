@@ -21,6 +21,7 @@ export const CONNECTION_FIELDS = [
   "ip",
   "rtsp_port",
   "rtsp_path",
+  "rtsp_substream_path",
   "username",
   "password",
 ] as const;
@@ -31,6 +32,7 @@ export interface DetectConnectionChangeInput {
   ip?: string;
   rtsp_port?: number;
   rtsp_path?: string;
+  rtsp_substream_path?: string | null;
   username?: string;
   password?: string | null;
 }

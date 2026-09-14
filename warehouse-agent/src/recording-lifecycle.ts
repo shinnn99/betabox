@@ -1,4 +1,5 @@
 import {
+  getRecording,
   startRecording,
   stopRecording,
   classifyErrorFromStderr,
@@ -6,6 +7,7 @@ import {
   listActiveRecordings,
   type RecordingSpec,
 } from "./recording";
+import { randomUUID } from "node:crypto";
 import {
   fetchRecordingCredentials,
   postRecordingStatus,
@@ -113,6 +115,12 @@ export interface LifecycleDeps {
 export class RecordingLifecycle {
   private readonly states = new Map<string, CamLifecycleState>();
   private desired = new Map<string, DesiredEntry>();
+  private readonly provisionalCameraIds = new Set<string>();
+  private readonly localStartPromises = new Map<string, Promise<boolean>>();
+  private readonly delayedStops = new Map<
+    string,
+    { sessionId: string; stopAt: string; timer: NodeJS.Timeout }
+  >();
   // Cache spec cho camera probe. `states` bị delete khi spawn fail
   // (transient/permanent) → cam_02 tắt vật lý chỉ có state 1 lần/5phút
   // (mỗi lần long-retry) → probeTargets() từ states không probe đều
@@ -126,7 +134,7 @@ export class RecordingLifecycle {
   constructor(private readonly deps: LifecycleDeps) {}
 
   snapshotActive(): ActiveRecordingReport[] {
-    return listActiveRecordings().map((r) => ({
+    return listActiveRecordings().filter((r) => !this.provisionalCameraIds.has(r.spec.cameraId)).map((r) => ({
       session_id: r.spec.sessionId,
       camera_id: r.spec.cameraId,
       pid: r.pid,
@@ -258,13 +266,16 @@ export class RecordingLifecycle {
       }
     }
 
-    // Xóa các camera có trong desired nhưng backend không trả (bị
-    // xóa / đổi org).
-    const returnedIds = new Set(credentials.map((c) => c.camera_id));
+    // Boot chỉ phục hồi khi cloud xác nhận bàn vẫn còn ca mở. Một desired
+    // cũ sau khi ra ca hoặc tắt máy cuối ngày không được tự bật lại.
+    const confirmedCredentials = credentials.filter(
+      (credential) => credential.station_has_open_session === true,
+    );
+    const returnedIds = new Set(confirmedCredentials.map((c) => c.camera_id));
     for (const cid of Array.from(this.desired.keys())) {
       if (!returnedIds.has(cid)) {
         console.warn(
-          `[recording-lifecycle] camera ${cid} in desired but backend didn't return it; dropping`,
+          `[recording-lifecycle] camera ${cid} is not confirmed by an open station session; dropping desired`,
         );
         this.desired.delete(cid);
       }
@@ -273,7 +284,7 @@ export class RecordingLifecycle {
 
     // Spawn song song, một quả hỏng không kéo cả rổ.
     const results = await Promise.allSettled(
-      credentials.map((cred) => this.spawnFromCredential(cred)),
+      confirmedCredentials.map((cred) => this.spawnFromCredential(cred)),
     );
     let ok = 0;
     let fail = 0;
@@ -328,8 +339,16 @@ export class RecordingLifecycle {
     | { ok: true; skipped: boolean; pid?: number; outputDir?: string }
     | { ok: false; reason: string; kind: "permanent" | "transient"; stderrTail: string }
   > {
+    this.cancelScheduledStop(params.cameraId);
+
+    const localStart = this.localStartPromises.get(params.cameraId);
+    if (localStart) await localStart;
+
     // Idempotent guard TRƯỚC khi làm gì. Nếu đã ghi → skipped.
     if (isRecording(params.cameraId)) {
+      if (this.provisionalCameraIds.has(params.cameraId)) {
+        await this.adoptCloudSession(params.cameraId, params.sessionId);
+      }
       return { ok: true, skipped: true };
     }
 
@@ -392,11 +411,114 @@ export class RecordingLifecycle {
   }
 
   /**
+   * Bật ghi ngay từ QR nhân viên tại máy bàn, không chờ WAN/cloud.
+   * Credential chỉ đến từ cache RAM; session cloud sẽ được nhận sau qua
+   * lệnh start_recording và được adopt mà không restart ffmpeg.
+   */
+  async startLocalOne(credential: CredentialItem): Promise<boolean> {
+    this.cancelScheduledStop(credential.camera_id);
+    if (isRecording(credential.camera_id)) return true;
+    const existing = this.localStartPromises.get(credential.camera_id);
+    if (existing) return existing;
+
+    this.provisionalCameraIds.add(credential.camera_id);
+    const spec: RecordingSpec = {
+      cameraId: credential.camera_id,
+      cameraCode: credential.camera_code,
+      sessionId: randomUUID(),
+      rtspUrl: credential.rtsp_url,
+      transport: credential.transport,
+      segmentSeconds: credential.segment_seconds,
+    };
+    const pending = this.startInternal(spec, false, true)
+      .then((ok) => {
+        if (!ok) {
+          this.provisionalCameraIds.delete(credential.camera_id);
+          this.probeSpecs.delete(credential.camera_id);
+        }
+        return ok;
+      })
+      .finally(() => {
+        this.localStartPromises.delete(credential.camera_id);
+      });
+    this.localStartPromises.set(credential.camera_id, pending);
+    return pending;
+  }
+
+  cancelScheduledStop(cameraId: string): boolean {
+    const pending = this.delayedStops.get(cameraId);
+    if (!pending) return false;
+    clearTimeout(pending.timer);
+    this.delayedStops.delete(cameraId);
+    console.log(`[recording-lifecycle] cancelled delayed stop camera=${cameraId}`);
+    return true;
+  }
+
+  async scheduleStop(params: {
+    cameraId: string;
+    sessionId: string;
+    stopAt: string;
+  }): Promise<{ scheduled: boolean; stopped: boolean; forced: boolean }> {
+    const running = getRecording(params.cameraId);
+    if (running && running.spec.sessionId !== params.sessionId) {
+      console.warn(`[recording-lifecycle] ignored stale stop camera=${params.cameraId}`);
+      return { scheduled: false, stopped: false, forced: false };
+    }
+    this.cancelScheduledStop(params.cameraId);
+    const stopAtMs = new Date(params.stopAt).getTime();
+    const delayMs = Number.isFinite(stopAtMs) ? stopAtMs - Date.now() : 0;
+    if (delayMs <= 0) {
+      const outcome = await this.stopOne(params);
+      return { scheduled: false, ...outcome };
+    }
+
+    const timer = setTimeout(() => {
+      this.delayedStops.delete(params.cameraId);
+      swallow(this.stopOne(params), `stopOne[delayed:${params.cameraId}]`);
+    }, delayMs);
+    timer.unref();
+    this.delayedStops.set(params.cameraId, {
+      sessionId: params.sessionId,
+      stopAt: params.stopAt,
+      timer,
+    });
+    console.log(
+      `[recording-lifecycle] scheduled stop camera=${params.cameraId} at=${params.stopAt}`,
+    );
+    return { scheduled: true, stopped: false, forced: false };
+  }
+
+  private async adoptCloudSession(cameraId: string, sessionId: string): Promise<void> {
+    const running = getRecording(cameraId);
+    const state = this.states.get(cameraId);
+    if (!running || !state) return;
+    running.spec.sessionId = sessionId;
+    state.spec.sessionId = sessionId;
+    this.provisionalCameraIds.delete(cameraId);
+    this.desired.set(cameraId, {
+      camera_id: cameraId,
+      session_id: sessionId,
+      desired_since: new Date().toISOString(),
+    });
+    await this.deps.desiredStore.save(this.desired);
+    await this.deps.segmentIndex.onRecordingStarted({
+      cameraId,
+      cameraCode: running.spec.cameraCode,
+      sessionId,
+    });
+    await this.reportStatus(running.spec, "recording", null, running.pid);
+  }
+
+  /**
    * Đường chung cho boot spawn và start_recording. isFreshStart=true
    * nghĩa là lệnh mới từ cloud — nếu spawn OK phải ghi vào desired.
    * isFreshStart=false là boot — desired đã có sẵn.
    */
-  private async startInternal(spec: RecordingSpec, isFreshStart: boolean): Promise<boolean> {
+  private async startInternal(
+    spec: RecordingSpec,
+    isFreshStart: boolean,
+    isLocalStart = false,
+  ): Promise<boolean> {
     const state: CamLifecycleState = this.states.get(spec.cameraId) ?? {
       spec,
       shortRetryCount: 0,
@@ -471,7 +593,7 @@ export class RecordingLifecycle {
         await this.reportStatus(spec, "error", `${outcome.reason} :: ${outcome.stderrTail.slice(-500)}`);
         // Vẫn retry chậm. Giữ state + probeSpecs để long-retry và fast
         // recovery (probe OK 2 nhịp) có chỗ bám.
-        if (!isFreshStart) {
+        if (!isFreshStart && !isLocalStart) {
           this.scheduleLongRetry(spec);
         } else {
           this.states.delete(spec.cameraId);
@@ -490,7 +612,7 @@ export class RecordingLifecycle {
         // transient", cloud/user quyết retry hay không). Trước đây
         // state cũng bị delete → OK. Giờ giữ state nhưng KHÔNG schedule
         // → state mồ côi. Xóa state cho ca này để tránh mồ côi.
-        if (!isFreshStart) {
+        if (!isFreshStart && !isLocalStart) {
           await this.reportStatus(spec, "degraded", outcome.reason);
           this.scheduleLongRetry(spec);
           // State giữ. scheduleLongRetry đã set state.pendingTimer.
@@ -530,7 +652,7 @@ export class RecordingLifecycle {
     await this.deps.segmentIndex.onRecordingStarted({
       cameraId: spec.cameraId,
       cameraCode: spec.cameraCode,
-      sessionId: spec.sessionId,
+      sessionId: this.provisionalCameraIds.has(spec.cameraId) ? null : spec.sessionId,
     });
     return true;
   }
@@ -714,6 +836,7 @@ export class RecordingLifecycle {
     cameraId: string;
     sessionId: string;
   }): Promise<{ ok: true; stopped: boolean; forced: boolean }> {
+    this.cancelScheduledStop(params.cameraId);
     const state = this.states.get(params.cameraId);
     if (state) {
       state.stopped = true;
@@ -724,6 +847,7 @@ export class RecordingLifecycle {
     }
     const outcome = await stopRecording(params.cameraId);
     this.desired.delete(params.cameraId);
+    this.provisionalCameraIds.delete(params.cameraId);
     this.probeSpecs.delete(params.cameraId);
     await this.deps.desiredStore.save(this.desired);
     this.states.delete(params.cameraId);
@@ -823,6 +947,7 @@ export class RecordingLifecycle {
     codecDetected?: string | null,
     codecWarning?: string | null,
   ): Promise<void> {
+    if (this.provisionalCameraIds.has(spec.cameraId)) return;
     const r = await postRecordingStatus({
       backendUrl: this.deps.backendUrl,
       agentCode: this.deps.agentCode,
@@ -843,6 +968,8 @@ export class RecordingLifecycle {
   }
 
   async shutdown(): Promise<void> {
+    for (const pending of this.delayedStops.values()) clearTimeout(pending.timer);
+    this.delayedStops.clear();
     // Cancel pending timers.
     for (const state of this.states.values()) {
       state.stopped = true;

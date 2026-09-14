@@ -57,11 +57,15 @@ Source: "..\dist-package\BetacomAgent\ffmpeg.exe";              DestDir: "{app}"
 Source: "..\dist-package\BetacomAgent\ffprobe.exe";             DestDir: "{app}"; Flags: ignoreversion
 Source: "..\vendor\nssm\nssm.exe";                              DestDir: "{app}"; Flags: ignoreversion
 Source: "..\vendor\nssm\LICENSE.txt";                           DestDir: "{app}"; DestName: "NSSM-LICENSE.txt"; Flags: ignoreversion
+Source: "..\vendor\mediamtx\mediamtx.exe";                     DestDir: "{app}\vendor\mediamtx"; Flags: ignoreversion
+Source: "..\vendor\mediamtx\LICENSE";                          DestDir: "{app}\vendor\mediamtx"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "..\vendor\mediamtx\VERSION.txt";                      DestDir: "{app}\vendor\mediamtx"; Flags: ignoreversion
 Source: "..\scripts\cleanup-segments.ps1";                      DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 Name: "{app}\logs";        Permissions: users-modify
 Name: "{app}\data";        Permissions: users-modify
+Name: "{app}\vendor\mediamtx"
 
 [Code]
 var

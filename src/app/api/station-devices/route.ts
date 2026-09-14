@@ -18,7 +18,8 @@ type DeviceType = (typeof VALID_TYPES)[number];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Camera devices use config_json = { camera_id, role?: "proof_primary" }.
+ * Camera devices use config_json =
+ * { camera_id, role: "proof_primary" | "proof_qr" }.
  * We check: shape valid, camera exists in this org, and no OTHER active
  * station_device already references this same camera_id. Returns a
  * NextResponse on failure or null on pass.
@@ -38,6 +39,16 @@ export async function validateCameraConfig(
         error: "validation",
         message:
           "Camera device cần config_json.camera_id là UUID hợp lệ.",
+      },
+      { status: 400 },
+    );
+  }
+  const role = String(configJson.role ?? "").trim();
+  if (role !== "proof_primary" && role !== "proof_qr") {
+    return NextResponse.json(
+      {
+        error: "validation",
+        message: "Vai trò camera phải là proof_primary hoặc proof_qr.",
       },
       { status: 400 },
     );

@@ -56,6 +56,26 @@ export interface ApiContext {
   impersonatingOrgId?: string;
 }
 
+/** Return the packing station assigned to the currently authenticated user. */
+export async function getCurrentUserStation(): Promise<{
+  id: string;
+  name: string;
+} | null> {
+  const ctx = await readClaims();
+  if (ctx instanceof NextResponse) return null;
+  const admin = createAdminClient();
+  const { data } = await admin
+    .from("user_profiles")
+    .select("station_id, packing_stations(id, name)")
+    .eq("id", ctx.userId)
+    .eq("organization_id", ctx.organizationId)
+    .maybeSingle();
+  const station = Array.isArray(data?.packing_stations)
+    ? data.packing_stations[0]
+    : data?.packing_stations;
+  return station?.id && station?.name ? { id: station.id, name: station.name } : null;
+}
+
 // ============================================================================
 // readJwtClaims — Lớp A. Không đổi ngữ nghĩa so với readClaims cũ.
 // ============================================================================

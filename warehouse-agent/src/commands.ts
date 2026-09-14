@@ -104,8 +104,14 @@ export interface CredentialItem {
   camera_id: string;
   camera_code: string;
   rtsp_url: string;
+  rtsp_substream_url: string | null;
   transport: "tcp" | "udp";
   segment_seconds: number;
+  station_id: string | null;
+  role: "proof_primary" | "proof_qr" | null;
+  scan_source: "scanner" | "camera";
+  scanner_device_code: string | null;
+  station_has_open_session: boolean;
 }
 
 export async function fetchRecordingCredentials(params: {

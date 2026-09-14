@@ -34,6 +34,8 @@ import {
 } from "./commands";
 import { DesiredStore } from "./desired-store";
 import { RecordingLifecycle } from "./recording-lifecycle";
+import { ShiftRecording } from "./shift-recording";
+import { QrScanService, type CameraQrScan } from "./qr/qr-scan-service";
 import { SegmentIndex } from "./segment-index";
 import {
   checkSegmentsExist,
@@ -64,6 +66,8 @@ import {
 import { callBootDeclare } from "./boot-declare";
 import { FfmpegRuntimeWatchdog } from "./ffmpeg-runtime-watchdog";
 import { listActiveRecordings } from "./recording";
+import { connectCamera } from "./camera-connect";
+import { RelayHub, relayPathName, type RelayPath } from "./live/relay-hub";
 import {
   verifyStaleMarker,
   quarantineStaleGeneration,
@@ -136,6 +140,22 @@ async function main(): Promise<void> {
   const dataDir = isPackaged
     ? resolve(dirname(process.execPath), "data")
     : resolve(__dirname, "..", "data");
+  const installDir = isPackaged ? dirname(process.execPath) : resolve(__dirname, "..");
+  const relayHub = new RelayHub({
+    binary: resolve(installDir, "vendor", "mediamtx", "mediamtx.exe"),
+    runtimeDir: dataDir,
+    dashboardOrigin: new URL(config.backendUrl).origin,
+  });
+  const relayPaths = (cameras: ActiveCameraItem[]): RelayPath[] =>
+    cameras.flatMap((camera) => {
+      const paths: RelayPath[] = [
+        { name: relayPathName(camera.camera_code, "main"), source: camera.rtsp_url },
+      ];
+      if (camera.rtsp_substream_url) {
+        paths.push({ name: relayPathName(camera.camera_code, "sub"), source: camera.rtsp_substream_url });
+      }
+      return paths;
+    });
 
   const queue = new ScanQueue(resolve(dataDir, "pending-scans.jsonl"));
   const desiredStore = new DesiredStore(
@@ -319,6 +339,15 @@ async function main(): Promise<void> {
     segmentIndex,
     pidRegistry,
   });
+  const shiftRecording = new ShiftRecording(lifecycle);
+  const qrScanService = new QrScanService({
+    ffmpegBin: config.ffmpegPath,
+    frameRate: config.qrFrameRate,
+    confirmFrames: config.qrConfirmFrames,
+    absenceMs: config.qrAbsenceMs,
+    onScan: (scan) => handleCameraQrScan(scan),
+    onWarning: () => console.warn("[qr-scan-service] multiple QR codes in frame"),
+  });
 
   console.log(
     `Warehouse agent starting — code=${config.agentCode}, backend=${config.backendUrl}, pinned=${config.pinnedScanners.length}, recordingDir=${recordingRoot}`,
@@ -394,6 +423,7 @@ async function main(): Promise<void> {
       device_identity_snapshot:
         Object.keys(binding.identity).length > 0 ? binding.identity : null,
     };
+    swallow(shiftRecording.onLocalStaffQr(rawValue), "shiftRecording.onLocalStaffQr[serial]");
     void (async () => {
       const ok = await tryDeliver(payload, { fromQueue: false });
       if (!ok) {
@@ -407,6 +437,29 @@ async function main(): Promise<void> {
         }
       }
     })();
+  }
+
+  async function handleCameraQrScan({ camera, emission }: CameraQrScan): Promise<void> {
+    const payload: ScanPayload = {
+      agent_event_id: randomUUID(),
+      scanner_device_code:
+        camera.scanner_device_code ?? `qrcam_${camera.camera_code}`.toLowerCase(),
+      port: `camera:${camera.camera_code}`,
+      raw_value: emission.text,
+      scanned_at: emission.scannedAt,
+      source: "camera_qr",
+      device_identity_snapshot: {
+        first_seen_at: emission.scannedAt,
+        best_frame_at: emission.bestFrameAt,
+        qr_box: emission.box,
+      },
+    };
+    swallow(
+      shiftRecording.onLocalStaffQr(emission.text),
+      "shiftRecording.onLocalStaffQr[camera]",
+    );
+    const ok = await tryDeliver(payload, { fromQueue: false });
+    if (!ok) await queue.append(payload);
   }
 
   function openOrRebind(binding: ScannerBinding): void {
@@ -594,7 +647,12 @@ async function main(): Promise<void> {
     }
 
     if (command.type === "stop_recording") {
-      const p = command.payload as { camera_id?: string; session_id?: string };
+      const p = command.payload as {
+        camera_id?: string;
+        session_id?: string;
+        stop_at?: string;
+        delay_seconds?: number;
+      };
       if (!p.camera_id || !p.session_id) {
         await reportCommandResult({
           backendUrl: config.backendUrl,
@@ -607,9 +665,14 @@ async function main(): Promise<void> {
         return;
       }
       console.log(`[COMMAND STOP_RECORDING] ${command.id} camera=${p.camera_id}`);
-      const outcome = await lifecycle.stopOne({
+      const stopAt =
+        typeof p.stop_at === "string"
+          ? p.stop_at
+          : new Date(Date.now() + Math.max(0, Number(p.delay_seconds ?? 0)) * 1000).toISOString();
+      const outcome = await lifecycle.scheduleStop({
         cameraId: p.camera_id,
         sessionId: p.session_id,
+        stopAt,
       });
       await reportCommandResult({
         backendUrl: config.backendUrl,
@@ -617,7 +680,12 @@ async function main(): Promise<void> {
         agentSecret: config.agentSecret,
         commandId: command.id,
         status: "done",
-        result: { stopped: outcome.stopped, forced: outcome.forced },
+        result: {
+          scheduled: outcome.scheduled,
+          stop_at: stopAt,
+          stopped: outcome.stopped,
+          forced: outcome.forced,
+        },
       });
       return;
     }
@@ -1193,6 +1261,47 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (command.type === "connect_camera") {
+      const p = command.payload as { onvif_endpoint?: string; username?: string; password?: string; host?: string; rtsp_paths?: string[] };
+      if (!p.onvif_endpoint || !p.username || !p.password || !p.host) {
+        throw new Error("connect_camera payload missing in-memory credentials/endpoint");
+      }
+      const result = await connectCamera({
+        onvifEndpoint: p.onvif_endpoint,
+        username: p.username,
+        password: p.password,
+        host: p.host,
+        ffmpegBin: config.ffmpegPath,
+        rtspPaths: p.rtsp_paths,
+      });
+      await reportCommandResult({
+        backendUrl: config.backendUrl,
+        agentCode: config.agentCode,
+        agentSecret: config.agentSecret,
+        commandId: command.id,
+        status: "done",
+        // connectCamera intentionally returns only credential-free paths.
+        result: result as unknown as Record<string, unknown>,
+      });
+      return;
+    }
+
+    if (command.type === "test_qr_decode") {
+      const decoded = await qrScanService.testDecode(10_000);
+      await reportCommandResult({
+        backendUrl: config.backendUrl,
+        agentCode: config.agentCode,
+        agentSecret: config.agentSecret,
+        commandId: command.id,
+        status: "done",
+        result: {
+          codes: decoded.map((item) => ({ text: item.text, qr_box: item.box })),
+          duration_seconds: 10,
+        },
+      });
+      return;
+    }
+
     if (command.type === "probe_codec") {
       const p = command.payload as { camera_id?: string };
       if (!p.camera_id) {
@@ -1482,10 +1591,10 @@ async function main(): Promise<void> {
     }
   }
 
-  // v0.7.1: khai báo sớm để `ping()` (function declaration, hoisted)
+  // v0.7.1: khai báo ref sớm để `ping()` (function declaration, hoisted)
   // capture reference. Runtime chỉ được assign sau khi tạo dưới đây, nên
   // ping() đầu tiên có thể gọi khi watchdog chưa sẵn — dùng `?.` an toàn.
-  let runtimeWatchdog: FfmpegRuntimeWatchdog | undefined;
+  const runtimeWatchdog: { current?: FfmpegRuntimeWatchdog } = {};
 
   // Heartbeat so the backend dashboard knows the agent is alive.
   // sendHeartbeat đã retry 3 lần với backoff — chỉ đến đây khi tất cả
@@ -1503,7 +1612,7 @@ async function main(): Promise<void> {
         // v0.7.1: gửi kèm watchdog liveness để cloud dashboard sau này
         // có thể alert khi watchdog treo (hiện endpoint không đọc, chỉ
         // log warn ở agent khi vượt ngưỡng).
-        watchdogLastTickMsAgo: runtimeWatchdog?.getLivenessMsAgo(),
+        watchdogLastTickMsAgo: runtimeWatchdog.current?.getLivenessMsAgo(),
       });
       if (!r.ok) console.error(`[HEARTBEAT-FAIL ${r.status}]`);
       // Cache retention_days từ cloud xuống file local. Chỉ cache khi
@@ -1759,7 +1868,7 @@ async function main(): Promise<void> {
   // (segment 60s × 2 + 30s buffer) không có file mới → kill process → retry
   // layer respawn qua onUnexpectedExit. KHÔNG tự spawn (một đường spawn
   // duy nhất, không đá short-retry).
-  runtimeWatchdog = new FfmpegRuntimeWatchdog({
+  runtimeWatchdog.current = new FfmpegRuntimeWatchdog({
     recordingRoot,
     getActiveCameras: () =>
       listActiveRecordings().map((r) => ({
@@ -1768,7 +1877,7 @@ async function main(): Promise<void> {
         segmentSeconds: r.spec.segmentSeconds,
       })),
   });
-  runtimeWatchdog.start();
+  runtimeWatchdog.current.start();
 
   // Camera probe (mở rộng):
   //   Nguồn A — lifecycle.probeTargets(): camera đang recording hoặc đang
@@ -1799,8 +1908,11 @@ async function main(): Promise<void> {
       backendUrl: config.backendUrl,
       agentCode: config.agentCode,
       agentSecret: config.agentSecret,
-    }).then((creds) => {
+    }).then(async (creds) => {
       lastActiveCameras = creds;
+      shiftRecording.updateCameras(creds);
+      await relayHub.reconcile(relayPaths(creds));
+      await qrScanService.reconcile(creds);
     }),
     "warm active-cameras cache",
   );
@@ -1835,7 +1947,25 @@ async function main(): Promise<void> {
       }));
 
     const targets = [...localTargets, ...allActiveTargets];
-    if (targets.length === 0) return;
+    if (targets.length === 0) {
+      // Bắt buộc fetch credentials trực tiếp nếu không có targets để probe (gộp request).
+      // Nếu return sớm, vòng lặp vĩnh viễn không bao giờ gọi lên cloud và sẽ bị deadlock
+      // (không cập nhật được danh sách camera mới nếu lastActiveCameras đang null).
+      try {
+        const fallbackCreds = await fetchAllActiveCameraCredentials({
+          backendUrl: config.backendUrl,
+          agentCode: config.agentCode,
+          agentSecret: config.agentSecret,
+        });
+        lastActiveCameras = fallbackCreds;
+        shiftRecording.updateCameras(fallbackCreds);
+        await relayHub.reconcile(relayPaths(fallbackCreds));
+        await qrScanService.reconcile(fallbackCreds);
+      } catch (err) {
+        console.warn(`[camera-probe] fallback fetch failed: ${(err as Error).message}`);
+      }
+      return;
+    }
     const results = await probeTargets(targets);
 
     // Fast recovery: probe biết trước ffmpeg — nếu camera sống lại
@@ -1854,7 +1984,12 @@ async function main(): Promise<void> {
       probes: results,
       wantActiveCameras: true,
     });
-    if (fresh) lastActiveCameras = fresh;
+    if (fresh) {
+      lastActiveCameras = fresh;
+      shiftRecording.updateCameras(fresh);
+      await relayHub.reconcile(relayPaths(fresh));
+      await qrScanService.reconcile(fresh);
+    }
   }, config.cameraProbeIntervalMs);
 
   // Retry queued scans periodically.
@@ -1924,7 +2059,7 @@ async function main(): Promise<void> {
     clearInterval(pollTimer);
     clearInterval(cameraProbeTimer);
     clearInterval(clipOutboxTimer);
-    runtimeWatchdog?.stop();
+    runtimeWatchdog.current?.stop();
     for (const s of sessions.values()) s.stop();
 
     const SHUTDOWN_TIMEOUT_MS = 4500;
@@ -1942,6 +2077,8 @@ async function main(): Promise<void> {
       clipResultOutbox.flushNow(),
       // Flush pending log events cuối. Không blocker, race với SHUTDOWN_TIMEOUT_MS.
       remoteLogger.dispose(),
+      qrScanService.stop(),
+      relayHub.stop(),
     ]);
     const timeout = new Promise<"timeout">((r) =>
       setTimeout(() => r("timeout"), SHUTDOWN_TIMEOUT_MS),

@@ -127,7 +127,7 @@ export async function POST(_req: Request, ctx: RouteContext) {
   const { data: pe } = await admin
     .from("packing_events")
     .select(
-      "id, organization_id, proof_camera_id, timing_status, work_started_at, scanned_at",
+      "id, order_id, organization_id, proof_camera_id, timing_status, work_started_at, scanned_at",
     )
     .eq("id", packingEventId)
     .maybeSingle();
@@ -195,6 +195,11 @@ export async function POST(_req: Request, ctx: RouteContext) {
 
   // TRỤ 2: đọc liveness NGAY BÂY GIỜ.
   const liveness = await readAgentLiveness(admin, pe.organization_id);
+  if (liveness.is_offline && pe.order_id) {
+    const { data: existingRequest } = await admin.from("order_proof_requests")
+      .select("id").eq("order_id", pe.order_id).in("status", ["pending", "processing"]).limit(1).maybeSingle();
+    if (!existingRequest) await admin.from("order_proof_requests").insert({ order_id: pe.order_id, requested_by: authCtx.userId, status: "pending" });
+  }
 
   // ================ NHÁNH 1: có ready ================
   // Ưu tiên phát clip cũ. Nếu song song có pending → hiện regenerating.

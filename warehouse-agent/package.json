@@ -10,12 +10,14 @@
     "start": "node dist/index.js",
     "list-ports": "tsx src/list-ports.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --require ./scripts/node-userinfo-shim.cjs --import tsx --test tests/*.test.ts",
     "build:test-pkg": "tsc src/test-pkg-minimal.ts --outDir dist-test --target es2022 --module commonjs --esModuleInterop --skipLibCheck && pkg dist-test/test-pkg-minimal.js --targets node22-win-x64 --output dist-exe/test-serialport.exe --config package.json",
     "build:exe": "npm run build && pkg dist/index.js --targets node22-win-x64 --output dist-exe/betacom-agent.exe --config package.json"
   },
   "pkg": {
     "assets": [
       "node_modules/@serialport/bindings-cpp/prebuilds/win32-x64/**/*",
+      "node_modules/zxing-wasm/dist/full/zxing_full.wasm",
       "assets/fonts/*.ttf"
     ],
     "targets": [
@@ -26,7 +28,8 @@
     "@serialport/parser-delimiter": "^12.0.0",
     "dotenv": "^16.4.5",
     "serialport": "^12.0.0",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "zxing-wasm": "3.1.4"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

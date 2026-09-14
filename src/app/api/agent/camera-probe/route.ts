@@ -286,6 +286,7 @@ export async function POST(req: Request) {
       admin,
       agent.organization_id,
       null,
+      agent.id,
     );
     if ("error" in creds) {
       // Probe ĐÃ ghi xong ở trên — không đánh hỏng cả request vì phần

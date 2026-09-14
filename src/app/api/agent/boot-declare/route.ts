@@ -121,6 +121,12 @@ export async function POST(req: Request) {
   //   - alive rỗng → đóng mọi session của org (không loại trừ gì).
   //   - alive có phần tử → đóng session không trong alive.
   const nowIso = new Date().toISOString();
+  const { data: ownedCameras, error: cameraErr } = await admin
+    .from("cameras")
+    .select("id")
+    .eq("agent_id", agent.id);
+  if (cameraErr) return NextResponse.json({ error: "camera_lookup_failed" }, { status: 500 });
+  const ownedCameraIds = (ownedCameras ?? []).map((camera) => camera.id as string);
   let updateQuery = admin
     .from("camera_recording_sessions")
     .update({
@@ -129,8 +135,9 @@ export async function POST(req: Request) {
       updated_at: nowIso,
       error_message: "agent_boot_declared_clean",
     })
-    .eq("organization_id", agent.organization_id)
     .in("status", ["recording", "connection_lost"]);
+  if (ownedCameraIds.length > 0) updateQuery = updateQuery.in("camera_id", ownedCameraIds);
+  else return NextResponse.json({ ok: true, closed: 0, kept_alive: body.alive_camera_ids.length });
 
   if (body.alive_camera_ids.length > 0) {
     // PostgREST: `.not("camera_id", "in", "(uuid1,uuid2)")` cần chuỗi

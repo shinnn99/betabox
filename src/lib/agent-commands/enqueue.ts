@@ -49,6 +49,48 @@ export interface EnqueueStopRecordingArgs {
   agentId: string;
   cameraId: string;
   sessionId: string;
+  stopAt?: string;
+}
+
+export interface EnqueueConnectCameraArgs {
+  organizationId: string;
+  agentId: string;
+  cameraId: string;
+  stationId: string;
+  role: "proof_primary" | "proof_qr";
+  requestedBy: string;
+  createdNew: boolean;
+}
+
+/**
+ * Queue only identifiers and non-secret setup metadata. poll-commands injects
+ * decrypted credentials into the authenticated agent response in memory;
+ * plaintext passwords are never persisted in agent_commands.
+ */
+export async function enqueueConnectCamera(
+  args: EnqueueConnectCameraArgs,
+): Promise<{ command_id: string }> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("agent_commands")
+    .insert({
+      organization_id: args.organizationId,
+      agent_id: args.agentId,
+      type: "connect_camera",
+      payload: {
+        camera_id: args.cameraId,
+        station_id: args.stationId,
+        role: args.role,
+        requested_by: args.requestedBy,
+        created_new: args.createdNew,
+      },
+    })
+    .select("id")
+    .single();
+  if (error || !data) {
+    throw new Error(`enqueue connect_camera failed: ${error?.message}`);
+  }
+  return { command_id: data.id };
 }
 
 export async function enqueueStartRecording(
@@ -180,6 +222,7 @@ export async function enqueueStopRecording(
       payload: {
         camera_id: args.cameraId,
         session_id: args.sessionId,
+        ...(args.stopAt ? { stop_at: args.stopAt } : {}),
       },
     })
     .select("id")

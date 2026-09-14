@@ -6,6 +6,7 @@ import {
 } from "@/lib/warehouse/agent-auth";
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
+import { enqueueCutClip } from "@/lib/agent-commands/enqueue";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -92,6 +93,21 @@ export async function POST(req: Request) {
     console.warn(
       `[heartbeat] last_seen_at update failed agent=${agent.id} code=${seenErr.code ?? "?"} message=${seenErr.message}`,
     );
+  }
+
+  const { data: pendingRequests } = await admin.from("order_proof_requests")
+    .select("id, order_id").eq("status", "pending").order("requested_at").limit(10);
+  for (const request of pendingRequests ?? []) {
+    const { data: event } = await admin.from("packing_events")
+      .select("id, proof_camera_id").eq("order_id", request.order_id)
+      .eq("organization_id", agent.organization_id).order("scanned_at", { ascending: false }).limit(1).maybeSingle();
+    if (!event?.proof_camera_id) continue;
+    const { data: camera } = await admin.from("cameras").select("agent_id").eq("id", event.proof_camera_id).maybeSingle();
+    if (camera?.agent_id !== agent.id) continue;
+    const { error: claimError } = await admin.from("order_proof_requests").update({ status: "processing" }).eq("id", request.id).eq("status", "pending");
+    if (claimError) continue;
+    try { await enqueueCutClip({ organizationId: agent.organization_id, agentId: agent.id, packingEventId: event.id }); }
+    catch (error) { await admin.from("order_proof_requests").update({ status: "failed", fail_reason: (error as Error).message }).eq("id", request.id); }
   }
 
   // Trả retention_days của org để agent cache local. Cleanup script

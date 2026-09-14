@@ -30,6 +30,9 @@ $requiredFiles = @(
     "dist-package\BetacomAgent\ffmpeg.exe",
     "dist-package\BetacomAgent\ffprobe.exe",
     "vendor\nssm\nssm.exe",
+    "vendor\mediamtx\mediamtx.exe",
+    "vendor\mediamtx\LICENSE",
+    "vendor\mediamtx\VERSION.txt",
     "installer\betacom-agent.iss",
     "scripts\cleanup-segments.ps1"
 )
@@ -58,6 +61,7 @@ foreach ($ps1 in $ps1Files) {
 
 Write-Host "==> [4/4] Chạy Inno Setup compiler..." -ForegroundColor Cyan
 $isccCandidates = @(
+    (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\iscc.exe"),
     "C:\Program Files (x86)\Inno Setup 6\iscc.exe",
     "C:\Program Files\Inno Setup 6\iscc.exe"
 )

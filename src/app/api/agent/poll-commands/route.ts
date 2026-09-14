@@ -6,6 +6,7 @@ import {
 } from "@/lib/warehouse/agent-auth";
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
+import { decryptPassword } from "@/lib/camera/crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -82,6 +83,68 @@ function parseAgentState(raw: unknown): ActiveRecordingReport[] {
     out.push({ session_id: sessionId, camera_id: cameraId, pid, started_at: startedAt });
   }
   return out;
+}
+
+interface ClaimedCommand {
+  id: string;
+  type: string;
+  payload: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
+async function injectConnectCameraCredentials(
+  admin: ReturnType<typeof createAdminClient>,
+  agentId: string,
+  organizationId: string,
+  commands: ClaimedCommand[],
+): Promise<ClaimedCommand[]> {
+  const cameraIds = commands.flatMap((command) => {
+    const id = command.type === "connect_camera" && typeof command.payload?.camera_id === "string"
+      ? command.payload.camera_id
+      : "";
+    return id ? [id] : [];
+  });
+  if (cameraIds.length === 0) return commands;
+  const { data: cameras, error } = await admin
+    .from("cameras")
+    .select("id, ip, rtsp_port, username, password_ciphertext, password_iv, password_tag, rtsp_path, rtsp_substream_path")
+    .eq("organization_id", organizationId)
+    .eq("agent_id", agentId)
+    .in("id", cameraIds);
+  if (error) {
+    console.error(`[poll-commands] connect credential lookup failed agent=${agentId}: ${error.message}`);
+    return commands;
+  }
+  const byId = new Map((cameras ?? []).map((camera) => [camera.id, camera]));
+  return commands.map((command) => {
+    if (command.type !== "connect_camera") return command;
+    const cameraId = typeof command.payload?.camera_id === "string" ? command.payload.camera_id : "";
+    const camera = byId.get(cameraId);
+    if (!camera?.password_ciphertext || !camera.password_iv || !camera.password_tag) return command;
+    try {
+      const password = decryptPassword({
+        ciphertext: camera.password_ciphertext,
+        iv: camera.password_iv,
+        tag: camera.password_tag,
+      });
+      return {
+        ...command,
+        payload: {
+          ...command.payload,
+          onvif_endpoint: typeof command.payload?.onvif_endpoint === "string"
+            ? command.payload.onvif_endpoint
+            : `http://${camera.ip}/onvif/device_service`,
+          host: `${camera.ip}:${camera.rtsp_port}`,
+          username: camera.username,
+          password,
+          rtsp_paths: [camera.rtsp_path, camera.rtsp_substream_path].filter(Boolean),
+        },
+      };
+    } catch {
+      console.error(`[poll-commands] connect credential decrypt failed agent=${agentId} camera=${cameraId}`);
+      return command;
+    }
+  });
 }
 
 export async function POST(req: Request) {
@@ -229,8 +292,15 @@ export async function POST(req: Request) {
     }
   }
 
+  const commands = await injectConnectCameraCredentials(
+    admin,
+    agent.id,
+    agent.organization_id,
+    (claimed ?? []) as ClaimedCommand[],
+  );
+
   return NextResponse.json({
     ok: true,
-    commands: claimed ?? [],
+    commands,
   });
 }

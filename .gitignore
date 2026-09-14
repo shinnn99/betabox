@@ -46,6 +46,14 @@ warehouse-agent/data/pending-scans.jsonl
 # Sensitive footage; must never be pushed to git.
 warehouse-agent/recordings/
 
+# Local installed/bundled agent copy and generated MediaMTX TLS material.
+/BetacomAgent/
+/warehouse-agent/auto.crt
+/warehouse-agent/auto.key
+
+# One-off local database/debug scripts.
+/scratch_*.mjs
+
 # Scratch/temp slice files accidentally created in repo root.
 *.tmp_slice*
 

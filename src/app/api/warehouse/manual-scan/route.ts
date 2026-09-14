@@ -95,6 +95,35 @@ export async function POST(req: Request) {
 
   const admin = createAdminClient();
 
+  // Manual/HID input belongs to the scanner source. Refuse before writing a
+  // raw event when the station is configured for camera QR; unlike agent
+  // ingest, this browser endpoint is synchronous and can give immediate UI
+  // feedback without representing a physical scan attempt.
+  const { data: resolved } = await admin
+    .rpc("resolve_scanner_at", {
+      p_organization_id: ctx.organizationId,
+      p_device_code: scannerCode,
+      p_at: scannedAt,
+    })
+    .maybeSingle<{ station_id: string }>();
+  if (resolved?.station_id) {
+    const { data: station } = await admin
+      .from("packing_stations")
+      .select("scan_source")
+      .eq("organization_id", ctx.organizationId)
+      .eq("id", resolved.station_id)
+      .maybeSingle();
+    if (station?.scan_source === "camera") {
+      return NextResponse.json(
+        {
+          error: "scan_source_disabled",
+          message: "Bàn này đang dùng camera để đọc mã.",
+        },
+        { status: 409 },
+      );
+    }
+  }
+
   let eventId: string;
   let isDuplicate = false;
 

@@ -60,6 +60,9 @@ const EnvSchema = z.object({
    * trong 1-30s (agent report cả fail). 90s = 3 nhịp missed mới stale.
    */
   CAMERA_PROBE_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
+  QR_FRAME_RATE: z.coerce.number().int().min(1).max(30).default(10),
+  QR_CONFIRM_FRAMES: z.coerce.number().int().min(1).max(10).default(2),
+  QR_ABSENCE_MS: z.coerce.number().int().min(500).max(10000).default(2000),
   /**
    * Thư mục lưu segment recording. Mỗi camera có thư mục riêng
    * <RECORDING_DIR>/<camera_code>/<YYYY>/<MM>/<DD>/<code>_<YYYYMMDD>_<HHMMSS>.mp4
@@ -167,6 +170,9 @@ export interface AgentConfig {
   defaultBaudRate: number;
   pollIntervalMs: number;
   cameraProbeIntervalMs: number;
+  qrFrameRate: number;
+  qrConfirmFrames: number;
+  qrAbsenceMs: number;
   recordingDir: string;
   ffmpegPath: string;
   ffprobePath: string;
@@ -214,6 +220,9 @@ export function loadConfig(): AgentConfig {
     defaultBaudRate: env.DEFAULT_BAUD_RATE,
     pollIntervalMs: env.POLL_INTERVAL_MS,
     cameraProbeIntervalMs: env.CAMERA_PROBE_INTERVAL_MS,
+    qrFrameRate: env.QR_FRAME_RATE,
+    qrConfirmFrames: env.QR_CONFIRM_FRAMES,
+    qrAbsenceMs: env.QR_ABSENCE_MS,
     recordingDir: env.RECORDING_DIR,
     ffmpegPath: env.FFMPEG_PATH,
     ffprobePath: env.FFPROBE_PATH,

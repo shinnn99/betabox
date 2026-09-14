@@ -117,6 +117,7 @@ export async function POST(req: Request) {
     admin,
     agent.organization_id,
     parsed.all_active ? null : parsed.camera_ids,
+    agent.id,
   );
   if ("error" in result) {
     return NextResponse.json(

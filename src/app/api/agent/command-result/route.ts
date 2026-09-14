@@ -6,6 +6,7 @@ import {
 } from "@/lib/warehouse/agent-auth";
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
+import { finalizeConnectCamera } from "@/lib/camera/station-setup";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -153,6 +154,48 @@ export async function POST(req: Request) {
   // Chỉ ghi khi status=done + result có codec. Nếu failed → ghi
   // codec_probe_error (giữ codec_detected cũ, không xóa vì probe cũ
   // vẫn là fact quan sát được trước đó).
+  if (updated.type === "connect_camera") {
+    const payload = (updated.payload ?? {}) as Record<string, unknown>;
+    const cameraId = typeof payload.camera_id === "string" ? payload.camera_id : "";
+    if (body.status === "done" && body.result) {
+      try {
+        await finalizeConnectCamera({
+          organizationId: updated.organization_id,
+          agentId: agent.id,
+          payload,
+          result: body.result,
+        });
+      } catch (error) {
+        const message = `camera setup finalize failed: ${(error as Error).message}`.slice(0, 500);
+        await admin.from("agent_commands").update({ status: "failed", error: message, payload: {} }).eq("id", updated.id);
+        if (cameraId) {
+          await admin
+            .from("cameras")
+            .update({ status: "error", last_test_result: { success: false, message } })
+            .eq("organization_id", updated.organization_id)
+            .eq("id", cameraId);
+        }
+        console.error(`[command-result] ${message} command=${updated.id}`);
+        return NextResponse.json({ error: "camera_setup_finalize_failed" }, { status: 500 });
+      }
+    } else if (cameraId) {
+      if (payload.created_new === true) {
+        await admin.from("cameras").delete().eq("organization_id", updated.organization_id).eq("id", cameraId);
+      } else {
+        await admin
+          .from("cameras")
+          .update({
+            status: "error",
+            last_tested_at: new Date().toISOString(),
+            last_test_result: { success: false, message: body.error_message ?? "connect_failed" },
+          })
+          .eq("organization_id", updated.organization_id)
+          .eq("id", cameraId);
+      }
+    }
+    await admin.from("agent_commands").update({ payload: {} }).eq("id", updated.id);
+  }
+
   if (updated.type === "probe_codec") {
     const payload = updated.payload as { camera_id?: string } | null;
     const cameraId = payload?.camera_id;

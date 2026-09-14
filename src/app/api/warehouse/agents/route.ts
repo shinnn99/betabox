@@ -53,12 +53,14 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => null)) as {
     code?: unknown;
     name?: unknown;
+    station_id?: unknown;
   } | null;
   if (!body) {
     return NextResponse.json({ error: "invalid_body" }, { status: 400 });
   }
   const code = typeof body.code === "string" ? body.code.trim().toUpperCase() : "";
   const name = typeof body.name === "string" ? body.name.trim() : "";
+  const stationId = typeof body.station_id === "string" && body.station_id.trim() ? body.station_id.trim() : null;
   if (!CODE_RE.test(code)) {
     return NextResponse.json(
       {
@@ -86,6 +88,7 @@ export async function POST(req: Request) {
       name,
       secret,
       status: "active",
+      station_id: stationId,
     })
     .select("id, code, name, status, created_at")
     .single();
@@ -110,7 +113,7 @@ export async function POST(req: Request) {
     action: "warehouse_agent.create",
     targetType: "warehouse_agent",
     targetId: data.id,
-    metadata: { code, name },
+    metadata: { code, name, station_id: stationId },
   });
 
   return NextResponse.json(
