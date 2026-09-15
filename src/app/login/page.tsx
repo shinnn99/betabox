@@ -63,6 +63,21 @@ export default function LoginPage() {
     } catch {
       // Fallback dashboard tenant
     }
+    try {
+      const sessionRes = await fetch("/api/session-context", {
+        cache: "no-store",
+      });
+      if (sessionRes.ok) {
+        const session = (await sessionRes.json()) as { role?: string };
+        if (session.role === "packer") {
+          router.replace("/dashboard/station");
+          router.refresh();
+          return;
+        }
+      }
+    } catch {
+      // Giữ fallback dashboard cho tài khoản tenant cũ.
+    }
     router.replace("/dashboard");
     router.refresh();
   };

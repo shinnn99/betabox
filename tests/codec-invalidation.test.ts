@@ -25,11 +25,12 @@ test("detectConnectionChange: đổi password null (clear) → ['password']", ()
   assert.deepEqual(changed, ["password"]);
 });
 
-test("detectConnectionChange: đổi cả 5 field → tất cả", () => {
+test("detectConnectionChange: đổi cả 6 field → tất cả", () => {
   const changed = detectConnectionChange({
     ip: "10.0.0.1",
     rtsp_port: 554,
     rtsp_path: "/stream2",
+    rtsp_substream_path: "/stream2-sub",
     username: "admin",
     password: "new-pass",
   });

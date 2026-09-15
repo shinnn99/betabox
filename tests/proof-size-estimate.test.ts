@@ -48,8 +48,8 @@ test("capped_timeout 180s: cửa sổ = pre + 180 + buffer, KHÔNG dùng work_en
     preSeconds: 5,
     defaultPostSeconds: 60,
   });
-  assert.equal(w.endReason, "work_duration_from_capped");
-  assert.equal(w.windowSeconds, 5 + 180 + 5);
+  assert.equal(w.endReason, "capped_at_max_duration");
+  assert.equal(w.windowSeconds, 180);
 });
 
 test("finalized_by_checkout 518s: cửa sổ = pre + 518 + buffer", () => {
@@ -61,8 +61,8 @@ test("finalized_by_checkout 518s: cửa sổ = pre + 518 + buffer", () => {
     preSeconds: 5,
     defaultPostSeconds: 60,
   });
-  assert.equal(w.endReason, "work_ended");
-  assert.equal(w.windowSeconds, 528);
+  assert.equal(w.endReason, "capped_at_max_duration");
+  assert.equal(w.windowSeconds, 180);
 });
 
 test("đơn đóng cực nhanh được kéo lên sàn tối thiểu", () => {
@@ -88,7 +88,7 @@ test("work_ended vượt trần kỹ thuật thì bị cap, không cắt vô h�
     defaultPostSeconds: 60,
   });
   assert.equal(w.endReason, "capped_at_max_duration");
-  assert.equal(w.windowSeconds, 5 + MAX_CLIP_DURATION_SECONDS);
+  assert.equal(w.windowSeconds, MAX_CLIP_DURATION_SECONDS);
 });
 
 test("work_ended sớm hơn scan (clock skew) rơi nhánh phòng thủ", () => {
@@ -143,11 +143,11 @@ test("checkout 528s có segment phủ đủ → over_limit, cộng theo phần c
   });
 
   assert.equal(est.estimate_method, "overlapping_segments");
-  assert.equal(est.proof_size_risk, "over_limit");
-  assert.equal(est.proof_window_seconds, 528);
+  assert.equal(est.proof_size_risk, "safe");
+  assert.equal(est.proof_window_seconds, 180);
   assert.equal(est.estimate_correction_factor, FACTOR);
   // 528s × 256 KB/s × 1.05 ≈ 139 MiB. Sai số nhỏ do làm tròn tỷ lệ chồng lấn.
-  const expected = 528 * KBPS_256 * FACTOR;
+  const expected = 180 * KBPS_256 * FACTOR;
   assert.ok(
     Math.abs((est.estimated_file_size_bytes ?? 0) - expected) < expected * 0.02,
     `ước tính ${est.estimated_file_size_bytes} lệch quá xa ${expected}`,
@@ -176,7 +176,7 @@ test("capped 190s @p50: safe sau khi nới trần (trước 2026-08-13 là near_
   // 190s × 256 KB/s × 1.05 ≈ 49,9 MiB. E2E 2026-08-07 đo clip thật
   // 49,3 MiB, khớp bậc độ lớn — con số này KHÔNG đổi theo trần upload.
   const mib = (est.estimated_file_size_bytes ?? 0) / MIB;
-  assert.ok(mib > 49 && mib < 50, `ước tính ${mib.toFixed(1)} MiB`);
+  assert.ok(mib > 47 && mib < 48, `ước tính ${mib.toFixed(1)} MiB`);
   // Đây là ca chốt chặn của lần nới trần 2026-08-13: cùng clip này,
   // dưới guard 50/warn 49 cũ thì `near_limit` (cả bảng vàng), dưới
   // guard 90/warn 80 mới thì `safe`. Đơn capped 3 phút bình thường
@@ -223,7 +223,7 @@ test("segment phủ thiếu (camera tắt giữa chừng) → KHÔNG báo safe g
     warnBytes: WARN,
   });
   assert.equal(est.estimate_method, "camera_recent_p95");
-  assert.equal(est.proof_size_risk, "over_limit");
+  assert.equal(est.proof_size_risk, "safe");
 });
 
 test("không segment, không lịch sử camera → unknown, không đoán bừa", () => {

@@ -33,7 +33,8 @@ export const MIN_CLIP_DURATION_SECONDS = 15;
  * ngưỡng nghiệp vụ `max_order_seconds`. Xem ghi chú hai lớp ở
  * clip-resolver.ts.
  */
-export const MAX_CLIP_DURATION_SECONDS = 600;
+/** Hard maximum of the final MP4, including pre-roll. */
+export const MAX_CLIP_DURATION_SECONDS = 180;
 
 export type FinalizedEndReason =
   | "work_ended"
@@ -101,14 +102,14 @@ export function computeFinalizedClipWindow(
   if (isCapped) {
     candidateMs = durValid
       ? scannedMs + dur * 1000 + WORK_ENDED_POST_BUFFER_SECONDS * 1000
-      : scannedMs + MAX_CLIP_DURATION_SECONDS * 1000;
+      : clipStart.getTime() + MAX_CLIP_DURATION_SECONDS * 1000;
   } else {
     candidateMs = workEndedMs + WORK_ENDED_POST_BUFFER_SECONDS * 1000;
   }
 
   // Trần cứng bất kể nhánh nào — phòng ca work_ended_at vượt max (scan
   // kế đến rất muộn với timing_status='finalized_by_next_scan').
-  const maxEndMs = scannedMs + MAX_CLIP_DURATION_SECONDS * 1000;
+  const maxEndMs = clipStart.getTime() + MAX_CLIP_DURATION_SECONDS * 1000;
   if (candidateMs > maxEndMs) {
     return finish(clipStart, new Date(maxEndMs), "capped_at_max_duration");
   }

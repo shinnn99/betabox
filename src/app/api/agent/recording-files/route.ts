@@ -225,6 +225,7 @@ export async function POST(req: Request) {
 
   const plan = planRecordingFileWrites({
     organizationId: agent.organization_id,
+    agentId: agent.id,
     files: parsed.files,
     allowedCameraIds: allowedCameras,
     existing,

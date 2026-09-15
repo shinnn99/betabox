@@ -114,9 +114,7 @@ function runProcess(opts: RunOpts): Promise<FfmpegRunResult> {
     proc.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       if (process.env.CAMERA_DEBUG_FFMPEG === "1") {
-        const safe = opts.rtspUrlForLog
-          ? text.split(opts.rtspUrlForLog).join(maskRtspUrl(opts.rtspUrlForLog))
-          : text;
+        const safe = maskRtspUrl(text);
         process.stdout.write(`[ffmpeg:${opts.logTag}:live] ${safe}`);
       }
       if (stderrBuf.length < MAX_STDERR) {
@@ -164,11 +162,10 @@ function runProcess(opts: RunOpts): Promise<FfmpegRunResult> {
       // When the process didn't exit cleanly, surface the stderr tail so
       // we can diagnose RTSP/codec errors. The URL is masked above already,
       // but the URL also appears inside ffmpeg's own stderr messages
-      // (e.g. "Cannot open rtsp://admin:Pw@..."), so we mask the buffer too.
+      // (e.g. an input URL echoed after "Cannot open"), so we mask the
+      // complete buffer too.
       if (!timedOut && code !== 0 && stderrBuf) {
-        const safe = opts.rtspUrlForLog
-          ? stderrBuf.split(opts.rtspUrlForLog).join(maskRtspUrl(opts.rtspUrlForLog))
-          : stderrBuf;
+        const safe = maskRtspUrl(stderrBuf);
         console.log(`[ffmpeg:${opts.logTag}] stderr:\n${safe}`);
       }
       resolve({

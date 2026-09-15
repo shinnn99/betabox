@@ -44,8 +44,10 @@ import {
   isBrowserSafeCodec,
   probeDurationSeconds,
   probeFileVideoCodec,
+  type CutClipResult,
   type CutSegmentInput,
 } from "./clip-cutter";
+import { composeProofClip } from "./compose/clip-composer";
 import { CLIPS_SUBDIR, probeCodec, testCameraConnection } from "./recording";
 import { promises as fsp } from "node:fs";
 import { existsSync } from "node:fs";
@@ -706,6 +708,11 @@ async function main(): Promise<void> {
         covered_range?: { lower?: string; upper?: string };
         gaps?: unknown;
         total_gap_seconds?: number;
+        angles?: {
+          overview?: { camera_id?: string; segments?: CutSegmentInput[] } | null;
+          qr?: { camera_id?: string; segments?: CutSegmentInput[] } | null;
+        };
+        information_strip?: string;
         audit?: {
           end_reason?: string | null;
           next_scan_boundary?: string | null;
@@ -738,9 +745,25 @@ async function main(): Promise<void> {
         });
         return;
       }
+      const targetStartIso = p.target_start;
+      const targetEndIso = p.target_end;
+      const legacySegments = p.segments;
       console.log(
         `[COMMAND CUT_CLIP] ${command.id} clip=${p.clip_id} pe=${p.packing_event_id} segments=${p.segments.length} replaces=${p.replaces_clip_id ?? "null"}`,
       );
+
+      const overviewSegments = Array.isArray(p.angles?.overview?.segments)
+        ? p.angles.overview.segments
+        : p.segments;
+      const qrSegments = Array.isArray(p.angles?.qr?.segments)
+        ? p.angles.qr.segments
+        : [];
+      const isTwoAnglePayload = Boolean(p.angles) && qrSegments.length > 0;
+      const allSegments = [...overviewSegments, ...qrSegments];
+      const sourceFiles = [...new Set(allSegments.map((segment) => segment.file_path))];
+      // DB's legacy cut_mode constraint allows only copy/reencode. Keep the
+      // detailed PiP mode in generation_params.compose_mode.
+      const outputMode = isTwoAnglePayload ? "reencode" : "copy";
 
       // Safe-retry pipeline S4:
       //   1. Cắt vào temp file `{pe}.{command_id}.tmp.mp4`.
@@ -769,7 +792,7 @@ async function main(): Promise<void> {
       const bakAbs = resolve(recordingRoot, bakRel);
       const clipName = `${p.packing_event_id}.mp4`;
 
-      const targetDurationS = (Date.parse(p.target_end) - Date.parse(p.target_start)) / 1000;
+      const targetDurationS = (Date.parse(targetEndIso) - Date.parse(targetStartIso)) / 1000;
 
       // Local cleanup helper cho fail path: xóa tmp/bak nếu tồn tại,
       // canonical KHÔNG BAO GIỜ đụng ở fail path.
@@ -805,7 +828,7 @@ async function main(): Promise<void> {
           waybillCode: p.waybill_code!,
           outcome: "failed",
           errorMessage,
-          sourceFiles: p.segments!.map((s) => s.file_path),
+          sourceFiles,
           generationParams: { ...(p.audit ?? {}), ...extraGenerationParams },
         });
         await reportCommandResult({
@@ -821,7 +844,7 @@ async function main(): Promise<void> {
       // === STEP 1: Check segments tồn tại ===
       const exists = await checkSegmentsExist({
         recordingRoot,
-        segments: p.segments,
+        segments: allSegments,
       });
       if (!exists.ok) {
         // Phân biệt "quá hạn lưu trữ" (nghiệp vụ) vs "bug mất file"
@@ -836,7 +859,7 @@ async function main(): Promise<void> {
         // parse tên file (nguồn thứ hai, vỡ khi đổi format).
         const cached = await readRetentionCache();
         const earliestStartMs = Math.min(
-          ...p.segments.map((s) => Date.parse(s.started_at)),
+          ...allSegments.map((s) => Date.parse(s.started_at)),
         );
         const isExpired =
           cached !== null &&
@@ -875,10 +898,10 @@ async function main(): Promise<void> {
         cameraId: p.camera_id,
         waybillCode: p.waybill_code,
         outcome: "encoding",
-        sourceFiles: p.segments.map((s) => s.file_path),
+        sourceFiles,
         generationParams: {
-          cut_mode: "copy",
-          burn_in: false,
+          cut_mode: outputMode,
+          burn_in: isTwoAnglePayload,
           ...(p.audit ?? {}),
         },
       });
@@ -886,19 +909,75 @@ async function main(): Promise<void> {
       // === STEP 3: Cut vào TMP file (không đụng canonical) ===
       const cutStartIso = p.cut_start;
       const cutEndIso = p.cut_end;
-      const segments = p.segments;
-
-      const cutResult = await encodeGate.run(() =>
-        cutClip({
-          ffmpegBin: config.ffmpegPath,
-          ffprobeBin: config.ffprobePath,
-          recordingRoot,
-          outputAbsPath: tmpAbs,
-          cutStart: new Date(cutStartIso),
-          cutEnd: new Date(cutEndIso),
-          segments,
-        }),
-      );
+      let cutResult: CutClipResult;
+      if (isTwoAnglePayload) {
+        const composeStarted = Date.now();
+        try {
+          const fontCandidates = [
+            resolve(process.cwd(), "assets", "fonts", "NotoSans-Bold.ttf"),
+            resolve(process.cwd(), "warehouse-agent", "assets", "fonts", "NotoSans-Bold.ttf"),
+          ];
+          await encodeGate.run(() =>
+            composeProofClip({
+              ffmpegBin: config.ffmpegPath,
+              overview: overviewSegments.length > 0
+                ? {
+                    segments: overviewSegments.map((segment) =>
+                      resolve(recordingRoot, segment.file_path),
+                    ),
+                    firstStartedAt: overviewSegments[0].started_at,
+                  }
+                : null,
+              qr: qrSegments.length > 0
+                ? {
+                    segments: qrSegments.map((segment) =>
+                      resolve(recordingRoot, segment.file_path),
+                    ),
+                    firstStartedAt: qrSegments[0].started_at,
+                  }
+                : null,
+              outputPath: tmpAbs,
+              targetStart: targetStartIso,
+              targetEnd: targetEndIso,
+              informationText: p.information_strip ?? p.waybill_code,
+              fontPath: fontCandidates.find((candidate) => existsSync(candidate)),
+            }),
+          );
+          const outputStat = await fsp.stat(tmpAbs);
+          const outputDuration =
+            (await probeDurationSeconds(config.ffprobePath, tmpAbs)) ?? targetDurationS;
+          cutResult = {
+            ok: outputStat.size > 0,
+            fileSizeBytes: outputStat.size,
+            durationSeconds: outputDuration,
+            durationDriftSeconds: Math.abs(targetDurationS - outputDuration),
+            stderrTail: "",
+            elapsedMs: Date.now() - composeStarted,
+          };
+        } catch (error) {
+          cutResult = {
+            ok: false,
+            errorMessage: `compose_failed: ${(error as Error).message}`,
+            fileSizeBytes: 0,
+            durationSeconds: 0,
+            durationDriftSeconds: 0,
+            stderrTail: (error as Error).message,
+            elapsedMs: Date.now() - composeStarted,
+          };
+        }
+      } else {
+        cutResult = await encodeGate.run(() =>
+          cutClip({
+            ffmpegBin: config.ffmpegPath,
+            ffprobeBin: config.ffprobePath,
+            recordingRoot,
+            outputAbsPath: tmpAbs,
+            cutStart: new Date(cutStartIso),
+            cutEnd: new Date(cutEndIso),
+            segments: legacySegments,
+          }),
+        );
+      }
 
       if (!cutResult.ok) {
         console.error(
@@ -1085,10 +1164,10 @@ async function main(): Promise<void> {
           isPartial: p.partial_coverage ?? false,
           coveredRangeLower: p.covered_range?.lower ?? null,
           coveredRangeUpper: p.covered_range?.upper ?? null,
-          sourceFiles: p.segments.map((s) => s.file_path),
+          sourceFiles,
           generationParams: {
-            cut_mode: "copy",
-            burn_in: false,
+            cut_mode: outputMode,
+            burn_in: isTwoAnglePayload,
             local_canonical_rename_failed: true,
             local_canonical_stale: true,
             local_recovery_tmp_path: tmpRel,
@@ -1144,10 +1223,10 @@ async function main(): Promise<void> {
           isPartial: p.partial_coverage ?? false,
           coveredRangeLower: p.covered_range?.lower ?? null,
           coveredRangeUpper: p.covered_range?.upper ?? null,
-          sourceFiles: p.segments.map((s) => s.file_path),
+          sourceFiles,
           generationParams: {
-            cut_mode: "copy",
-            burn_in: false,
+            cut_mode: outputMode,
+            burn_in: isTwoAnglePayload,
             local_tmp_rename_failed: true,
             local_canonical_stale: true,
             local_recovery_tmp_path: tmpRel,
@@ -1202,10 +1281,10 @@ async function main(): Promise<void> {
         isPartial: p.partial_coverage ?? false,
         coveredRangeLower: p.covered_range?.lower ?? null,
         coveredRangeUpper: p.covered_range?.upper ?? null,
-        sourceFiles: p.segments.map((s) => s.file_path),
+        sourceFiles,
         generationParams: {
-          cut_mode: "copy",
-          burn_in: false,
+          cut_mode: outputMode,
+          burn_in: isTwoAnglePayload,
           output_codec_name: codecProbe.codecName,
           output_codec_tag: codecProbe.codecTag,
           ss_seconds: (Date.parse(p.cut_start) - Date.parse(p.segments[0].started_at)) / 1000,

@@ -1,6 +1,7 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { resolveClipBounds, type SegmentFile } from "@/lib/order-proof/clip-resolver";
+import { planQrCameraForProofClip } from "@/lib/agent-commands/cut-clip-planning";
 
 // GOP pad bù keyframe snap khi `-c copy`. Cùng con số với code cũ
 // (clip-cutter.ts GOP_PAD_BEFORE/AFTER_SECONDS=3). Tính ở cloud, gửi
@@ -276,6 +277,39 @@ export interface EnqueueCutClipFailure {
   message: string;
 }
 
+interface AssignedCameraDeviceRow {
+  station_devices:
+    | { status: string; config_json: Record<string, unknown> | null }
+    | Array<{ status: string; config_json: Record<string, unknown> | null }>
+    | null;
+}
+
+async function resolveAssignedCameraByRole(args: {
+  organizationId: string;
+  stationId: string;
+  role: "proof_primary" | "proof_qr";
+}): Promise<string | null> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("station_device_assignments")
+    .select("station_devices!inner(status, config_json)")
+    .eq("organization_id", args.organizationId)
+    .eq("station_id", args.stationId)
+    .is("unassigned_at", null)
+    .order("assigned_at", { ascending: false });
+  if (error) throw new Error(`resolve station camera failed: ${error.message}`);
+  for (const row of (data ?? []) as AssignedCameraDeviceRow[]) {
+    const device = Array.isArray(row.station_devices)
+      ? row.station_devices[0]
+      : row.station_devices;
+    if (!device || device.status === "archived") continue;
+    if (device.config_json?.role !== args.role) continue;
+    const cameraId = device.config_json.camera_id;
+    if (typeof cameraId === "string" && cameraId) return cameraId;
+  }
+  return null;
+}
+
 export interface EnqueueUploadClipArgs {
   organizationId: string;
   agentId: string;
@@ -528,8 +562,61 @@ export async function enqueueCutClip(
     return { ok: false, reason: "not_found", message: peErr?.message ?? "packing_event not found" };
   }
 
-  const resolved = await resolveClipBounds({
+  const overviewCameraId =
+    pe.proof_camera_id ??
+    (pe.station_id
+      ? await resolveAssignedCameraByRole({
+          organizationId: args.organizationId,
+          stationId: pe.station_id,
+          role: "proof_primary",
+        })
+      : null);
+
+  // `proof_qr_camera_id` is queried separately so a rolling deployment remains
+  // compatible while migration M6 is being applied. Once present it is the
+  // immutable snapshot; legacy events fall back to the station assignment.
+  const { data: qrSnapshot } = await admin
+    .from("packing_events")
+    .select("proof_qr_camera_id")
+    .eq("id", pe.id)
+    .maybeSingle();
+  const { data: station } = pe.station_id
+    ? await admin
+        .from("packing_stations")
+        .select("code, name")
+        .eq("id", pe.station_id)
+        .maybeSingle()
+    : { data: null };
+  const [{ data: warehouse }, { data: staff }] = await Promise.all([
+    pe.warehouse_id
+      ? admin.from("warehouses").select("name").eq("id", pe.warehouse_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+    pe.staff_id
+      ? admin
+          .from("staff_profiles")
+          .select("staff_code, full_name")
+          .eq("id", pe.staff_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
+  const qrPlan = planQrCameraForProofClip({
+    snapshotCameraId: qrSnapshot?.proof_qr_camera_id,
+    stationId: pe.station_id,
+  });
+  const qrCameraId = qrPlan.cameraId
+    ? qrPlan.cameraId
+    : qrPlan.shouldResolveStationAssignment && pe.station_id
+      ? await resolveAssignedCameraByRole({
+          organizationId: args.organizationId,
+          stationId: pe.station_id,
+          role: "proof_qr",
+        })
+      : null;
+
+  const overviewResolved = await resolveClipBounds({
     organizationId: args.organizationId,
+    cameraIdOverride: overviewCameraId ?? undefined,
+    agentId: args.agentId,
     packingEvent: {
       id: pe.id,
       warehouse_id: pe.warehouse_id,
@@ -543,6 +630,32 @@ export async function enqueueCutClip(
       timing_status: pe.timing_status,
     },
   });
+
+  const qrResolved = qrCameraId
+    ? await resolveClipBounds({
+        organizationId: args.organizationId,
+        cameraIdOverride: qrCameraId,
+        agentId: args.agentId,
+        packingEvent: {
+          id: pe.id,
+          warehouse_id: pe.warehouse_id,
+          station_id: pe.station_id,
+          staff_id: pe.staff_id,
+          work_session_id: pe.work_session_id,
+          scanned_at: pe.scanned_at,
+          proof_camera_id: qrCameraId,
+          work_ended_at: pe.work_ended_at,
+          work_duration_seconds: pe.work_duration_seconds,
+          timing_status: pe.timing_status,
+        },
+      })
+    : null;
+
+  const resolved = overviewResolved.ok
+    ? overviewResolved
+    : qrResolved?.ok
+      ? qrResolved
+      : overviewResolved;
 
   if (!resolved.ok) {
     return {
@@ -646,6 +759,43 @@ export async function enqueueCutClip(
       ended_at: s.ended_at,
       duration_seconds: s.duration_seconds,
     })),
+    angles: {
+      overview: overviewResolved.ok && overviewResolved.cameraId
+        ? {
+            camera_id: overviewResolved.cameraId,
+            segments: (overviewResolved.files ?? []).map((s: SegmentFile) => ({
+              file_path: s.file_path,
+              started_at: s.started_at,
+              ended_at: s.ended_at,
+              duration_seconds: s.duration_seconds,
+            })),
+          }
+        : null,
+      qr: qrResolved?.ok && qrResolved.cameraId
+        ? {
+            camera_id: qrResolved.cameraId,
+            segments: (qrResolved.files ?? []).map((s: SegmentFile) => ({
+              file_path: s.file_path,
+              started_at: s.started_at,
+              ended_at: s.ended_at,
+              duration_seconds: s.duration_seconds,
+            })),
+          }
+        : null,
+    },
+    layout: {
+      mode: "pip",
+      canvas: { width: 1920, height: 1080 },
+      qr: { x: 1280, y: 0, width: 640, height: 360, border: 2 },
+      information_strip: "bottom",
+    },
+    information_strip: [
+      pe.waybill_code,
+      warehouse?.name,
+      station ? `${station.code} · ${station.name}` : null,
+      staff ? `${staff.staff_code} · ${staff.full_name}` : null,
+      new Date(pe.scanned_at).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }),
+    ].filter(Boolean).join("  ·  "),
     partial_coverage: isPartial,
     covered_range: {
       lower: new Date(coveredStartMs).toISOString(),
@@ -662,6 +812,12 @@ export async function enqueueCutClip(
       before_next_seconds: resolved.beforeNextSeconds,
       default_post_seconds: resolved.defaultPostSeconds,
       replaces_clip_id: args.replacesClipId ?? null,
+      compose_mode: "pip",
+      layout: "live_pip_1_9_top_right",
+      angles_present: [
+        ...(overviewResolved.ok ? ["overview"] : []),
+        ...(qrResolved?.ok ? ["qr"] : []),
+      ],
     },
   };
 
@@ -674,6 +830,12 @@ export async function enqueueCutClip(
     before_next_seconds: resolved.beforeNextSeconds,
     default_post_seconds: resolved.defaultPostSeconds,
     replaces_clip_id: args.replacesClipId ?? null,
+    compose_mode: "pip",
+    layout: "live_pip_1_9_top_right",
+    angles_present: [
+      ...(overviewResolved.ok ? ["overview"] : []),
+      ...(qrResolved?.ok ? ["qr"] : []),
+    ],
   };
 
   const { data: rpcRow, error: rpcErr } = await admin

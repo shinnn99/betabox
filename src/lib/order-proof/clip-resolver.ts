@@ -61,6 +61,7 @@ export interface ResolveResult {
 
 export interface SegmentFile {
   id: string;
+  agent_id?: string | null;
   file_path: string;
   started_at: string;
   ended_at: string | null;
@@ -330,6 +331,10 @@ async function findSessionEndForEvent(opts: {
 export async function resolveClipBounds(opts: {
   organizationId: string;
   packingEvent: PackingEventInput;
+  /** Resolve one explicit angle while reusing the same business time window. */
+  cameraIdOverride?: string;
+  /** Only return files physically owned by the command target agent. */
+  agentId?: string;
   // Optional hook fired after camera + clipStart/clipEnd are decided
   // but BEFORE we query camera_recording_files for overlap. The proof
   // pipeline uses this to sync the camera's segment rows scoped to the
@@ -444,14 +449,15 @@ export async function resolveClipBounds(opts: {
   // Cap chung cuối cùng — áp cho MỌI nhánh (belt-and-suspenders, phòng
   // bug thoát khi tầng cap trên tính sai). Trần trùng với nghiệp vụ
   // `max_order_seconds` mặc định 10 phút.
-  const maxClipEndMs = scannedAt.getTime() + MAX_CLIP_DURATION_SECONDS * 1000;
+  // Cap the complete output file, including pre-roll, at exactly 3 minutes.
+  const maxClipEndMs = clipStart.getTime() + MAX_CLIP_DURATION_SECONDS * 1000;
   if (clipEnd.getTime() > maxClipEndMs) {
     clipEnd = new Date(maxClipEndMs);
     endReason = "capped_at_max_duration";
   }
 
   // 4) Resolve camera (snapshot first, fallback resolver for legacy).
-  let cameraId = packingEvent.proof_camera_id;
+  let cameraId = opts.cameraIdOverride ?? packingEvent.proof_camera_id;
   if (!cameraId && packingEvent.station_id) {
     const { data } = await admin.rpc("resolve_station_camera_at", {
       p_organization_id: opts.organizationId,
@@ -502,9 +508,9 @@ export async function resolveClipBounds(opts: {
   // tightens parsing for timestamps in a future version.
   const clipStartIso = clipStart.toISOString();
   const clipEndIso = clipEnd.toISOString();
-  const { data: files, error } = await admin
+  let filesQuery = admin
     .from("camera_recording_files")
-    .select("id, file_path, started_at, ended_at, duration_seconds")
+    .select("id, agent_id, file_path, started_at, ended_at, duration_seconds")
     .eq("organization_id", opts.organizationId)
     .eq("camera_id", cameraId)
     // Lát 3a-1 tách hai nguồn (agent/legacy_nextjs) — clip cắt bởi
@@ -514,8 +520,11 @@ export async function resolveClipBounds(opts: {
     // tồn tại và fail sớm, hoặc tệ hơn: lẫn nội dung sai đơn.
     .eq("source", "agent")
     .lt("started_at", clipEndIso)
-    .or(`ended_at.is.null,ended_at.gt."${clipStartIso}"`)
-    .order("started_at", { ascending: true });
+    .or(`ended_at.is.null,ended_at.gt."${clipStartIso}"`);
+  if (opts.agentId) filesQuery = filesQuery.eq("agent_id", opts.agentId);
+  const { data: files, error } = await filesQuery.order("started_at", {
+    ascending: true,
+  });
   if (error) {
     return {
       ok: false,

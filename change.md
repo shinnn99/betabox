@@ -38,6 +38,29 @@ docs([Module]):     Cập nhật tài liệu
 
 <!-- Thêm các task mới ở ĐÂY (phía trên các task cũ hơn) -->
 
+### [FIX-2CAM-PROOF-PIP] - Clip bằng chứng phải có cả Hikvision và Dahua
+
+- **Mục tiêu:** Sửa luồng proof hiện chỉ trả camera toàn cảnh Hikvision; mỗi request phải lấy segment riêng của `proof_primary` và `proof_qr`, ghép Dahua thành ô PiP đúng bố cục rồi mới upload.
+- **Files tạo/sửa:** `src/lib/order-proof/clip-window.ts`, `src/lib/order-proof/clip-resolver.ts`, `src/lib/agent-commands/enqueue.ts`, `warehouse-agent/src/index.ts`, `warehouse-agent/src/compose/clip-composer.ts`, `src/lib/warehouse/recording-files-batch.ts`, `src/app/api/agent/recording-files/route.ts`, `tests/codec-invalidation.test.ts`, `tests/proof-size-estimate.test.ts`, `tests/recording-files-batch.test.ts`, `.env.local`, `scripts/qa-run-source-agent.ps1`, `scripts/qa-compose-two-camera-proof.ts`, `scripts/qa-upload-two-camera-proof.mjs`, `plans/completed/FIX-2CAM-PROOF-PIP.md`, `change.md`.
+- **Chi tiết thay đổi:** Xác nhận clip `0c82d0a2-d9af-41cf-95e0-cf94d546e77a` cũ chỉ mang Hikvision. Cloud nay resolve segment riêng theo `proof_primary`/`proof_qr` và đúng `agent_id`, gửi hai góc cùng layout; agent nối từng góc, seek chính xác lúc compose, ghép H.264 1920×1080 không âm thanh với Hikvision toàn khung, Dahua 640×360 góc trên phải, viền trắng và dải thông tin đáy. Hard cap file cuối là 180 giây tính cả pre-roll; guard QA đặt 150 MiB. Segment report lấy `agent_id` từ danh tính HMAC, không tin payload. Không hard-code Bàn 3 trong logic sản phẩm và không đổi template UI.
+- **Kết quả kiểm tra:** Bản PiP thật dài 132,72 giây, 51.444.746 byte, H.264 1920×1080; ảnh kiểm tra thấy rõ cả Hikvision và Dahua. Đã upload thay đúng object QA trên Supabase; Storage/DB xác nhận `angles_present=[overview,qr]`. Root 337/337 test xanh; agent 88/88 test xanh; root và agent typecheck xanh; ESLint các file mục tiêu xanh. Live MediaMTX đã khởi động lại trên 8554/8889.
+- **Trạng thái:** Đã hoàn thành
+
+### [QA-2CAM-QR-SEGMENT-COMPOSE] - Kiểm thử QR, segment và ghép clip hai góc
+
+- **Mục tiêu:** Kiểm thử thực tế tại `BAN_03`: Dahua nhận QR thứ nhất và QR thứ hai để tạo hai sự kiện/đơn liên tiếp; recording hai camera vẫn chạy theo segment; clip mỗi đơn tối đa 180 giây; chỉ khi nhận proof request mới cắt segment của từng camera, tạo hai video góc quay, ghép thành một clip cuối và upload Supabase.
+- **Files tạo/sửa:** `supabase/migrations/20260914083000_two_cameras_scan_source.sql` (triển khai remote); `scripts/qa-run-source-agent.ps1`, `scripts/qa-open-station-shift.mjs` và ảnh/recording tạm; `src/lib/live/station-access.ts`, `src/app/api/live/[stationId]/route.ts`, `src/app/api/live/[stationId]/events/route.ts`, `src/components/station/StationLivePanel.tsx`; dự kiến sửa `src/lib/warehouse/recording-files-batch.ts`, `src/app/api/agent/recording-files/route.ts` và test liên quan để segment luôn ghi `agent_id`; báo cáo trong `plans/reports/`, `change.md`.
+- **Chi tiết thay đổi:** Trước tiên đối chiếu `docs/tuan-tu-xu-ly-2-camera.md`, trạng thái migration, agent/recording/QR/clip pipeline và dữ liệu Bàn 3. Credential chỉ dùng trong RAM. Dữ liệu test sẽ được đánh dấu để truy vết và rollback; không upload clip trước khi có request. Mọi sửa đổi là logic sản phẩm tổng quát theo station/agent/role (Admin và tài khoản được gán bàn), không hard-code Bàn 3 hoặc tài khoản kiểm thử; môi trường hiện tại chỉ dùng một tài khoản để chạy hết chức năng E2E. Đã sửa quyền API live và bổ sung alert realtime “Đã nhận” có âm thanh, giữ nguyên template. E2E tiếp tục phát hiện segment từ agent vẫn có `agent_id = null`; sẽ bổ sung trường này từ danh tính HMAC của agent, không tin payload.
+- **Trạng thái:** Đang xử lý
+
+### [C.1.4-FULLSCREEN-TOGGLE] - Bật/tắt toàn màn hình camera
+
+- **Mục tiêu:** Nút toàn màn hình của khung live phải mở được và bấm lại để thoát được; trạng thái/icon/nhãn truy cập đồng bộ kể cả khi người dùng thoát bằng phím Esc.
+- **Files tạo/sửa:** `src/components/station/LiveLayout.tsx`, `change.md`.
+- **Chi tiết thay đổi:** Dùng Fullscreen API trong Client Component; nếu đang fullscreen thì gọi `document.exitFullscreen()`, nếu chưa thì gọi `requestFullscreen()`. Theo dõi và cleanup sự kiện `fullscreenchange`; đổi icon Expand/Minimize, `aria-label`, `aria-pressed` và tooltip theo trạng thái. Không tác động WebRTC/recording.
+- **Kết quả kiểm tra:** `pnpm typecheck`: đạt; ESLint `LiveLayout.tsx`: 0 lỗi; test helper live: 5/5 đạt.
+- **Trạng thái:** Đã hoàn thành
+
 ### [PROCESS-001] - Cập nhật quy trình quản lý thay đổi
 
 - **Mục tiêu:** Đồng bộ `change.md` với yêu cầu quản lý trạng thái, kiểm tra lỗi và hoàn tác ở mức file mà không dùng Git.
@@ -103,6 +126,21 @@ docs([Module]):     Cập nhật tài liệu
 - **Files tạo/sửa:** `warehouse-agent/src/qr/qr-frame-source.ts`, `warehouse-agent/src/qr/qr-decoder.ts`, `warehouse-agent/src/qr/qr-zone.ts`, `warehouse-agent/src/qr/qr-scan-service.ts`, `warehouse-agent/src/index.ts`, `warehouse-agent/src/config.ts`, `warehouse-agent/src/sender.ts`, `warehouse-agent/package.json`, `warehouse-agent/package-lock.json`, `warehouse-agent/tests/qr-decoder.test.ts`, `warehouse-agent/tests/qr-zone.test.ts`.
 - **Chi tiết thay đổi:** Đã bổ sung FFmpeg đọc raw frame xám 640×360 ở tốc độ cấu hình từ substream MediaMTX localhost, luôn drain stdout và tự restart; ZXing WASM 3.1.4 ghim phiên bản/nạp asset local; state machine xác nhận 2 khung, chống phát lại khi che nhãn, chỉ đổi mã sau 2 giây vắng, loại frame nhiều QR và giữ timestamp/box tốt nhất. Service chỉ chạy khi `scan_source=camera`, có chế độ test 10 giây không tạo đơn, đẩy sự kiện `camera_qr` vào queue hiện hữu và nối staff QR sang ghi theo ca. `.exe` đã đóng gói hết cảnh báo thiếu WASM. Không đổi template UI.
 - **Trạng thái:** Đang xử lý — typecheck agent/root xanh; 86/86 test agent xanh; decode QR thật và build `.exe` đạt. Chưa thể chạy tiêu chí nghiệm thu replay video kho 3 ngày vì workspace không có file video/segment đầu vào; chưa chuyển sang `completed`.
+
+### [QA-2CAMERA-FULL] - Kiểm thử toàn bộ hệ thống hai camera
+
+- **Mục tiêu:** Kiểm thử release-gate toàn bộ luồng mới theo `docs/tuan-tu-xu-ly-2-camera.md`: web/API, migration, agent, MediaMTX, QR, bảo mật credential và các contract liên tầng; báo cáo đầy đủ lỗi/tồn đọng, không tự sửa trong lượt QA.
+- **Files tạo/sửa:** `plans/reports/QA-2CAMERA-FULL-2026-09-15.md`, `change.md`; không sửa logic sản phẩm.
+- **Chi tiết thay đổi:** Đã chạy toàn bộ typecheck, ESLint, test, production build, standalone/dev smoke, kiểm tra clean-bootstrap và 4 migration hai-camera trên PostgreSQL cô lập, SQL behavior theo ca, secret scan, static contract audit, FFprobe và MediaMTX → FFmpeg → QR decoder trên cả Hikvision/Dahua thật. Typecheck/build/agent test/media smoke đạt; root test còn 1 lỗi, ESLint còn 16 lỗi, clean-bootstrap migration thất bại và phát hiện các lỗi định tuyến sai agent/camera cùng nhiều bước kiến trúc chưa triển khai. Báo cáo chi tiết nằm tại `plans/reports/QA-2CAMERA-FULL-2026-09-15.md`. Container/script QA tạm đã dọn; UI dev đang chạy ở `https://localhost:3000/login`. Không build agent `.exe`/installer và không dùng Git.
+- **Trạng thái:** Báo lỗi — release gate không đạt, chưa được phát hành
+
+### [C.1.4-LIVE-MONITOR] - Hiển thị trực tiếp hai camera theo bàn
+
+- **Mục tiêu:** Trên giao diện Giám sát đóng hàng, chọn một bàn sẽ hiển thị trực tiếp camera toàn cảnh toàn khung và camera QR ở ô 1/9 góc trên phải; admin xem được bàn thuộc tổ chức, tài khoản đóng gói chỉ xem được bàn đã gán.
+- **Files tạo/sửa:** Dự kiến `src/app/api/live/[stationId]/route.ts`, `src/app/dashboard/station/page.tsx`, `src/components/station/LiveLayout.tsx`, `src/components/station/WebRtcPlayer.tsx`, `src/app/dashboard/operations/page.tsx`, `warehouse-agent/src/qr/qr-decoder.ts`, test liên quan và `change.md`; giữ nguyên template giao diện hiện tại.
+- **Chi tiết thay đổi:** Đã thêm API live kiểm tổ chức/vai trò/bàn, station page cho tài khoản bàn, bộ phát WHEP client có retry/cleanup, layout toàn cảnh + QR đúng ô 1/9 và tích hợp ô chọn bàn vào Giám sát đóng hàng mà không đổi template. Đăng nhập `packer` được điều hướng về trang bàn. Kiểm thử ảnh thật Dahua xác nhận ZXing mặc định không nhận nhưng `tryDenoise` nhận đúng ở cả 1920×1080, 640×360 và crop; đã bật tùy chọn này trong decoder. Không trả RTSP/credential về cloud/UI.
+- **Kết quả kiểm tra:** `pnpm typecheck` đạt; ESLint mục tiêu 0 lỗi (còn 1 warning cũ trong `operations/page.tsx` và cảnh báo ignored cho thư mục agent); 5/5 test helper live đạt; 88/88 test agent đạt; `pnpm build` đạt ngoài sandbox. Chưa nghiệm thu live end-to-end vì Supabase đích chưa áp dụng schema/quyền hai-camera, assignment hiện gán Dahua sai vai trò và Hikvision chưa active; main stream Dahua là H.265 trong khi kiến trúc bắt buộc H.264; cổng MediaMTX localhost chưa chạy.
+- **Trạng thái:** Báo lỗi — giữ ở `plans/active`, chưa chuyển `completed`
 
 ### [RELEASE-2CAMERA] - Commit và đẩy nhánh 2-camera
 
@@ -270,3 +308,37 @@ docs([Module]):     Cập nhật tài liệu
 - **Trạng thái:** 🔄 Đang xử lý / ✅ Đã hoàn thành / ⏪ Rollback
 - **Ghi chú lỗi (nếu rollback):** ...
 ```
+### [C.1.4-CAMERA-H264-TEST] - Chuẩn hoá H.264 và kiểm thử hai camera LAN
+
+- **Mục tiêu:** Cấu hình hai camera kiểm thử Hikvision và Dahua dùng H.264 cho các profile main/sub; tạo Bàn 3 trong tổ chức Kho Đại Kim, đổi mã hai camera thành `dahua_3` ở vai trò `proof_qr` và `hik_3` ở vai trò `proof_primary`.
+- **Files tạo/sửa:** Cấu hình encoder hai camera LAN; dữ liệu Supabase cho `BAN_03`, camera/device/assignment/agent; `plans/completed/C.1.4-station-live-page.md`, `change.md`. Toàn bộ script, ảnh, Chrome profile và staging migration QA tạm đã xoá sau kiểm tra.
+- **Chi tiết thay đổi:** Hikvision vốn đã H.264; Dahua được đổi các profile H.265 sang H.264 nhưng giữ độ phân giải/FPS/bitrate/GOP. Tạo `BAN_03` trong đúng tenant UI `Betacom`, gán `AGENT_KHO_HN_01`, `hik_3` vai trò `proof_primary`, `dahua_3` vai trò `proof_qr` và scanner ảo `qrcam_dahua_3`. Tenant tạo nhầm trước đó được chuyển inactive/archive, credential camera cũ được xoá nhưng lịch sử được giữ nguyên. Không ép clip xuống 50 MB; giữ trần 90 MiB. Credential chỉ dùng trong RAM.
+- **Kết quả kiểm tra:** FFprobe qua MediaMTX đạt: Hik H.264 2688×1520, Dahua H.264 1920×1080; Dahua đọc QR ngay frame xử lý đầu; chữ nhãn đọc rõ; WHEP/CORS localhost đạt; hậu kiểm tenant/agent/device/assignment đạt.
+- **Trạng thái:** Đã hoàn thành
+### [C.1.4-LIVE-TOGGLE] - Bấm thẻ bàn để mở hoặc đóng live
+
+- **Mục tiêu:** Trên Giám sát đóng hàng, bấm thẻ bàn để mở live hai camera; bấm lại cùng bàn để đóng; đổi sang bàn khác sẽ chuyển live, không tác động tới ghi hình/QR trên agent.
+- **Files tạo/sửa:** `src/app/dashboard/operations/page.tsx`, `src/components/station/WebRtcPlayer.tsx`, `src/components/station/LiveLayout.tsx`, `plans/completed/C.1.4-station-live-page.md`, `change.md`; giữ nguyên template.
+- **Chi tiết thay đổi:** Chỉ mount `StationLivePanel` khi bàn đang mở; bấm lại cùng bàn unmount viewer, đóng peer/session WHEP nhưng không gọi lệnh dừng recording/camera. Sửa xung đột class `relative` ghi đè `absolute` khiến Dahua PiP nằm ngoài vùng hiển thị; QR PiP có lớp `z-10` đúng góc trên phải.
+- **Kết quả kiểm tra:** `pnpm typecheck` đạt; 5/5 test live đạt; 88/88 test agent đạt; ESLint mục tiêu 0 lỗi, còn 1 warning polling cũ ngoài thay đổi. Log trình duyệt xác nhận đồng thời hai peer WHEP Hik/Dahua established.
+- **Trạng thái:** Đã hoàn thành
+### [SEC-CAMERA-CREDENTIAL-REDACTION] - Không để lộ tài khoản camera trong log
+
+- **Mục tiêu:** Bảo đảm username/password camera do admin nhập không bị ghi nguyên văn hoặc xuất hiện trong RTSP URL tại file cấu hình, hàng đợi lệnh và log; credential chỉ được giải mã tạm thời trong RAM lúc Agent kết nối thiết bị.
+- **Files tạo/sửa:** `src/lib/camera/rtsp.ts`, `src/lib/camera/ffmpeg.ts`, `warehouse-agent/src/recording.ts`, `tests/rtsp-redaction.test.ts`, `warehouse-agent/tests/recording-redaction.test.ts`, `warehouse-agent/tests/relay-hub.test.ts`, `plans/completed/SEC-CAMERA-CREDENTIAL-REDACTION.md`, log runtime đã phát sinh và `change.md`; đã xóa `scratch_url.mjs`.
+- **Chi tiết thay đổi:** Giữ nguyên luồng kết nối camera cũ qua UI và password mã hóa trong database. Redaction giờ che toàn bộ RTSP userinfo, lọc mọi URL trong FFmpeg stderr thay vì chỉ thay đúng chuỗi đầu vào. Đã làm sạch log Agent cũ, xóa scratch chứa URL credential, khởi động lại Agent nguồn ngoài sandbox và xác nhận MediaMTX nghe tại 8554/8889, hai FFmpeg hoạt động, log cũ/mới đều có 0 credential chưa che. Root test 339/339, Agent test 89/89, hai typecheck và ESLint mục tiêu đều đạt.
+- **Trạng thái:** Đã hoàn thành
+### [DOC-2CAM-HANDOVER] - Chu thich code va README cho luong 2 camera
+
+- **Muc tieu:** Bo sung chu thich dung cho va README cho cac folder lien quan den luong 2 camera de dev khac doc hieu nhanh pham vi, vai tro va nhung phan da xu ly.
+- **Files tao/sua:** `src/lib/camera/README.md`, `src/lib/order-proof/README.md`, `src/lib/live/README.md`, `src/components/station/README.md`, `src/app/api/live/README.md`, `src/app/api/packing-stations/README.md`, `src/app/api/order-proof/README.md`, `src/app/api/agent/README.md`, `src/app/api/cameras/[id]/recording/README.md`, `warehouse-agent/src/README.md`, `warehouse-agent/src/compose/README.md`, `warehouse-agent/src/live/README.md`, `warehouse-agent/src/qr/README.md`, `supabase/migrations/README.md`, `src/components/station/LiveLayout.tsx`, `src/components/station/StationLivePanel.tsx`, `warehouse-agent/src/compose/clip-composer.ts`, `warehouse-agent/src/live/relay-hub.ts`, `warehouse-agent/src/recording.ts`, `change.md`.
+- **Chi tiet thay doi:** Da bo sung README ngan cho cac folder chinh cua luong 2-camera va them comment tai cac contract de hong: live layout phai dong bo voi proof composer, viewer toggle khong dung recording, MediaMTX config khong ghi credential, RTSP redaction che ca username/password. Khong doi logic runtime trong phan tai lieu.
+- **Trang thai:** Da hoan thanh
+
+### [FIX-2CAM-SEGMENT-COMPOSE] - Sua ghep segment 2 camera thanh 1 video proof
+
+- **Muc tieu:** Kiem tra va sua pipeline ghep segment cua 2 camera de video dau ra giong khung giam sat: camera toan canh full frame, camera QR PiP goc tren phai.
+- **Files tao/sua:** `src/lib/agent-commands/enqueue.ts`, `src/lib/agent-commands/cut-clip-planning.ts`, `tests/cut-clip-planning.test.ts`, `change.md`.
+- **Chi tiet thay doi:** Sua logic chon QR camera cho proof clip: neu `packing_events.proof_qr_camera_id` co snapshot thi dung snapshot; neu khong co thi fallback sang camera `proof_qr` dang gan vao station bat ke `packing_stations.scan_source`. `scan_source` chi quyet dinh nguon tao scan, khong duoc lam mat goc Dahua/QR trong video bang chung. Them helper va test de khoa lai behavior nay. Khi chay full agent test, da dung tam runtime warehouse-agent/MediaMTX/FFmpeg test cu dang giu cong 8554; khong lap lai credential trong log bao cao.
+- **Ket qua kiem tra:** `pnpm test`: 342/342 pass; `pnpm typecheck`: pass; ESLint cac file muc tieu: pass; `warehouse-agent npm run typecheck`: pass; `warehouse-agent npm test`: fail lan dau do MediaMTX runtime cu chiem port 8554, sau khi dung dung runtime test thi 89/89 pass.
+- **Trang thai:** Da hoan thanh

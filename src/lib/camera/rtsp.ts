@@ -36,9 +36,9 @@ export function buildRtspUrl(parts: RtspParts): string {
   return `rtsp://${userInfo}@${parts.ip}:${parts.port}${normalizePath(parts.path)}`;
 }
 
-// Replace the password segment with `***` so URLs can be safely logged.
-// Operates on the already-built URL so it works on whatever buildRtspUrl
-// emits today and any future variants.
+// Remove the complete userinfo segment so neither camera username nor password
+// can escape through application/FFmpeg logs. This also accepts arbitrary log
+// text, not only a bare URL, because FFmpeg embeds the input URL in stderr.
 export function maskRtspUrl(url: string): string {
-  return url.replace(/(rtsp:\/\/[^:/@]+:)([^@]+)(@)/i, "$1***$3");
+  return url.replace(/(rtsps?:\/\/)[^\s/@]+@/gi, "$1***@");
 }

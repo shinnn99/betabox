@@ -12,9 +12,16 @@ import {
   relayPathName,
 } from "../src/live/relay-hub";
 
+function credentialFixture(host: string, path: string): string {
+  const url = new URL(`rtsp://${host}${path}`);
+  url.username = "camera-user";
+  url.password = "camera-password";
+  return url.toString();
+}
+
 const paths = [
-  { name: "cam02sub", source: "rtsp://admin:secret@192.168.1.22/sub" },
-  { name: "cam01main", source: "rtsp://admin:secret@192.168.1.21/main" },
+  { name: "cam02sub", source: credentialFixture("192.168.1.22", "/sub") },
+  { name: "cam01main", source: credentialFixture("192.168.1.21", "/main") },
 ];
 
 test("relay config binds listeners to localhost and pulls sources on demand", () => {

@@ -86,6 +86,8 @@ export function buildRelayConfig(paths: RelayPath[], dashboardOrigin: string): s
 export function buildRelayEnvironment(paths: RelayPath[]): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const path of normalizeRelayPaths(paths)) {
+    // Keep RTSP sources out of mediamtx.generated.yml. The child process still
+    // receives them, but the runtime config file stays safe to inspect/share.
     env[`MTX_PATHS_${path.name.toUpperCase()}_SOURCE`] = path.source;
   }
   return env;

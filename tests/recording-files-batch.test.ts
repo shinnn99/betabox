@@ -25,6 +25,7 @@ import {
  */
 
 const ORG = "e3cb7cd1-e869-4d55-936d-5bcb1a1467b8";
+const AGENT = "dc4bdb26-9e51-4d53-be57-65baacbb3a68";
 const CAM = "3a5112e0-3197-4d55-badb-efc37418612e";
 const CAM_KHAC = "5ce23718-0737-43bb-a1dc-7646e87c0a89";
 const ALLOWED = new Set([CAM, CAM_KHAC]);
@@ -52,6 +53,7 @@ const plan = (
 ) =>
   planRecordingFileWrites({
     organizationId: ORG,
+    agentId: AGENT,
     files,
     allowedCameraIds: ALLOWED,
     existing,
@@ -65,6 +67,7 @@ test("lô sạch → ghi hết, không collision, không skip", () => {
   assert.deepEqual(r.collisions, []);
   assert.deepEqual(r.skippedOutOfOrg, []);
   assert.equal(r.rows[0].organization_id, ORG);
+  assert.equal(r.rows[0].agent_id, AGENT);
   assert.equal(r.rows[0].status, "ready");
   assert.equal(r.rows[0].source, "agent");
 });

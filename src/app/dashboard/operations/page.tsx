@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import StatCard from "@/components/StatCard";
+import StationLivePanel from "@/components/station/StationLivePanel";
 import { useToast } from "@/components/ui/Toast";
 import { formatDateKeyVn, shiftDateKey, vnDateKey } from "@/lib/time/vietnam";
 import { startVisibilityPolling } from "@/lib/polling/visibility-poller";
@@ -539,6 +540,7 @@ export default function OperationsPage() {
   const toast = useToast();
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [stations, setStations] = useState<StationCard[]>([]);
+  const [selectedStationId, setSelectedStationId] = useState("");
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -812,6 +814,11 @@ export default function OperationsPage() {
     (summary?.today.unmapped_scanner ?? 0) +
     (summary?.today.invalid_code ?? 0);
   const todayCapped = summary?.today.capped_timeout ?? 0;
+  const openStationId = stations.some(
+    (station) => station.station_id === selectedStationId,
+  )
+    ? selectedStationId
+    : "";
 
   const agentSummary =
     onlineAgents === totalAgents && totalAgents > 0
@@ -902,7 +909,7 @@ export default function OperationsPage() {
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
           {/* Stations 3/5 */}
           <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-100 p-4 lg:p-5 shadow-sm">
-            <div className="flex items-center justify-between mb-3">
+            <div className="mb-3 flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-sm font-semibold text-slate-800">
                   Bàn đóng hàng
@@ -912,15 +919,61 @@ export default function OperationsPage() {
                   {stations.filter((s) => s.active_session).length} đang có người
                 </p>
               </div>
-              <WarehouseIcon className="h-4 w-4 text-slate-400" />
+              <div className="flex items-center gap-2">
+                {stations.length > 0 && (
+                  <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
+                    <span className="sr-only">Chọn bàn để xem camera trực tiếp</span>
+                    <select
+                      value={openStationId}
+                      onChange={(event) => setSelectedStationId(event.target.value)}
+                      className="min-w-40 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                      aria-label="Bàn đóng hàng"
+                    >
+                      <option value="">Chọn bàn để xem trực tiếp</option>
+                      {stations.map((station) => (
+                        <option key={station.station_id} value={station.station_id}>
+                          {station.station_code} · {station.station_name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <WarehouseIcon className="h-4 w-4 text-slate-400" />
+              </div>
             </div>
             {stations.length === 0 ? (
               <p className="text-xs text-slate-500">Chưa có bàn nào được khai báo.</p>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                {stations.map((st) => (
-                  <StationCardView key={st.station_id} st={st} />
-                ))}
+              <div className="space-y-3">
+                {openStationId && (
+                  <div id="station-live-panel">
+                    <StationLivePanel stationId={openStationId} />
+                  </div>
+                )}
+                <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+                  {stations.map((st) => (
+                    <button
+                      key={st.station_id}
+                      type="button"
+                      onClick={() => setSelectedStationId((current) =>
+                        current === st.station_id ? "" : st.station_id,
+                      )}
+                      aria-expanded={openStationId === st.station_id}
+                      aria-controls={
+                        openStationId === st.station_id
+                          ? "station-live-panel"
+                          : undefined
+                      }
+                      className={`rounded-xl text-left transition ${
+                        openStationId === st.station_id
+                          ? "ring-2 ring-emerald-400 ring-offset-1"
+                          : "hover:ring-1 hover:ring-slate-200"
+                      }`}
+                    >
+                      <StationCardView st={st} />
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>

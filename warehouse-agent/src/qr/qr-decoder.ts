@@ -68,6 +68,7 @@ export async function decodeGrayFrame(
     tryHarder: true,
     tryRotate: true,
     tryInvert: true,
+    tryDenoise: true,
   });
   return results
     .filter((result) => result.format === "QRCode" && !result.error && result.text.trim())

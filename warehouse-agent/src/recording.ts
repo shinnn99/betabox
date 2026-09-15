@@ -137,8 +137,11 @@ export async function killRecordingProcessForRestart(
   return { stopped: !runningMap.has(cameraId), forced: true };
 }
 
-function maskRtspUrl(url: string): string {
-  return url.replace(/(rtsp:\/\/[^:/@]+:)([^@]+)(@)/i, "$1***$3");
+export function maskRtspUrl(url: string): string {
+  // Redact the complete userinfo segment, not only the password. Camera
+  // usernames are operational secrets too, and FFmpeg often echoes the full
+  // input URL inside stderr lines.
+  return url.replace(/(rtsps?:\/\/)[^\s/@]+@/gi, "$1***@");
 }
 
 function safeCode(code: string): string {
@@ -345,7 +348,7 @@ export async function startRecording(args: StartArgs): Promise<StartOutcome | St
     child.stdout?.on("data", () => {});
     child.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8");
-      const safe = text.split(args.spec.rtspUrl).join(maskRtspUrl(args.spec.rtspUrl));
+      const safe = maskRtspUrl(text);
       // Giữ NGUYÊN dòng gốc ra stdout để đọc log tại chỗ, nhưng lọc rác
       // trước khi vào `lastStderr` — đây là chuỗi mà classifyErrorFromStderr
       // sẽ đọc. Dahua bơm hàng nghìn dòng "Non-monotonic DTS; previous:
