@@ -546,7 +546,7 @@ function DeviceDialog({
       body.device_identity = pickedIdentity ?? {};
       if (pickedIdentity) body.connection_type = "serial";
     }
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

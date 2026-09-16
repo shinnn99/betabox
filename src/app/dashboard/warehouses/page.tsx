@@ -793,7 +793,7 @@ function WarehouseDialog({
       // Lark webhook: cấu hình ở trang riêng /dashboard/settings/warehouse-config
       // — không nhét vào form này (nhiều thông tin lẫn lộn).
     }
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

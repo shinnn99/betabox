@@ -398,7 +398,7 @@ function ManualForm({
     const url =
       mode === "create" ? "/api/cameras" : `/api/cameras/${initial!.id}`;
     const method = mode === "create" ? "POST" : "PUT";
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

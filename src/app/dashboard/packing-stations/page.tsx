@@ -494,7 +494,7 @@ function StationDialog({
     if (mode === "create") body.warehouse_id = form.warehouse_id;
     if (mode === "edit") body.status = form.status;
 
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

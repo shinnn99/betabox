@@ -403,7 +403,7 @@ function StaffDialog({
     };
     const url = mode === "create" ? "/api/staff" : `/api/staff/${initial!.id}`;
     const method = mode === "create" ? "POST" : "PATCH";
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
