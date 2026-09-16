@@ -5,6 +5,7 @@ import {
 } from "@/lib/supabase/guard";
 import { audit } from "@/lib/audit";
 import {
+  CameraCodeLockedError,
   deleteCamera,
   HasProofClipsError,
   updateCameraWithAudit,
@@ -80,6 +81,17 @@ export async function PUT(req: Request, { params }: RouteContext) {
     });
     return NextResponse.json({ camera });
   } catch (err) {
+    if (err instanceof CameraCodeLockedError) {
+      return NextResponse.json(
+        {
+          error: err.code,
+          current_code: err.currentCode,
+          files_count: err.filesCount,
+          message: err.message,
+        },
+        { status: 409 },
+      );
+    }
     const code = (err as { code?: string }).code;
     if (code === "23505") {
       return NextResponse.json(

@@ -304,10 +304,27 @@ export async function ensureCameraSoftLinks(
   }
 
   // Existing device_codes (any type) to dodge unique collisions on insert.
+  //
+  // Bất đối xứng ở đây từng đẻ ra bản sao rác: vòng `claimed` phía trên bỏ
+  // qua hàng `archived`, nên một camera đã có soft-link nhưng hàng đó bị
+  // archive sẽ bị coi là "chưa claim" → rơi vào `missing`. Trước 2026-09-16
+  // câu SELECT này lấy CẢ hàng archived, nên mã `auto_x` vẫn bị coi là đã
+  // dùng → nhánh chống trùng bên dưới sinh `auto_x_la75`. Kết quả: org Đại
+  // Kim có `auto_dahua_3` (archived) song song `auto_dahua_3_la75` (active),
+  // hàng mới mất `role` nên không gắn được vào bàn.
+  //
+  // Hai vòng giờ nhìn cùng một tập hàng: bỏ qua archived ở CẢ hai. Mã của
+  // hàng archived được tái dùng — đúng ý, vì hàng đó không còn hiệu lực.
+  //
+  // UNIQUE thật trên (organization_id, device_code) vẫn bao gồm hàng
+  // archived, nên nếu tái dùng đụng hàng archived thì INSERT trả 23505 và
+  // vòng dưới nuốt đúng mã lỗi đó — không mất dữ liệu, chỉ là camera đó
+  // chờ tới lượt quét sau. Đánh đổi này tốt hơn đẻ bản sao câm lặng.
   const { data: codeRows } = await admin
     .from("station_devices")
     .select("device_code")
-    .eq("organization_id", organizationId);
+    .eq("organization_id", organizationId)
+    .neq("status", "archived");
   const usedCodes = new Set<string>(
     ((codeRows ?? []) as Array<{ device_code: string }>).map(
       (r) => r.device_code,
@@ -573,6 +590,29 @@ export async function updateCameraWithAudit(
     .eq("id", id)
     .maybeSingle();
 
+  // Đổi `camera_code` của camera ĐÃ GHI dữ liệu là thao tác gần như luôn sai.
+  //
+  // Agent đặt tên thư mục theo `camera_code` tại thời điểm ghi, nên mã cũ
+  // đóng băng trong `file_path` của mọi segment đã có. Đổi mã làm hàng camera
+  // và kho file nói hai chuyện khác nhau — 2026-09-16 camera kho Đại Kim đổi
+  // `dahua_01` → `dahua_3` trong khi 18.192 file vẫn nằm ở `dahua_01/`.
+  //
+  // Chặn ở đây chứ không phải ở UI: UI nào cũng có thể bị bỏ qua, còn đây là
+  // đường duy nhất mọi lệnh ghi đi qua. Ai thật sự cần đổi thì archive camera
+  // rồi tạo mới — giữ nguyên liên kết giữa file cũ và mã cũ.
+  const oldCode = (before as { camera_code?: string } | null)?.camera_code;
+  const newCode = update.camera_code as string | undefined;
+  if (before && newCode !== undefined && oldCode && newCode !== oldCode) {
+    const { count } = await admin
+      .from("camera_recording_files")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", organizationId)
+      .eq("camera_id", id);
+    if ((count ?? 0) > 0) {
+      throw new CameraCodeLockedError(oldCode, count ?? 0);
+    }
+  }
+
   const { data, error } = await admin
     .from("cameras")
     .update(update)
@@ -660,6 +700,21 @@ export function buildCameraAuditDiff(
     if (from !== to) diff[field] = { from, to };
   }
   return diff;
+}
+
+export class CameraCodeLockedError extends Error {
+  code = "camera_code_locked" as const;
+  currentCode: string;
+  filesCount: number;
+  constructor(currentCode: string, filesCount: number) {
+    super(
+      `Camera đã ghi ${filesCount.toLocaleString("vi-VN")} file dưới mã "${currentCode}". ` +
+        `Đổi mã sẽ làm dữ liệu cũ không khớp tên thư mục. ` +
+        `Nếu thật sự cần đổi, hãy lưu trữ camera này và tạo camera mới.`,
+    );
+    this.currentCode = currentCode;
+    this.filesCount = filesCount;
+  }
 }
 
 export class HasProofClipsError extends Error {
