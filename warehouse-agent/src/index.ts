@@ -34,6 +34,11 @@ import {
 } from "./commands";
 import { DesiredStore } from "./desired-store";
 import { RecordingLifecycle } from "./recording-lifecycle";
+import {
+  healCameraIp,
+  shouldAttemptHeal,
+  type HealCandidate,
+} from "./camera-heal";
 import { ShiftRecording } from "./shift-recording";
 import { QrScanService, type CameraQrScan } from "./qr/qr-scan-service";
 import { SegmentIndex } from "./segment-index";
@@ -94,6 +99,7 @@ const fetchLogLimiter = new LogRateLimiter();
 import {
   probeTargets,
   reportProbes,
+  type ProbeResult,
   type ActiveCameraItem,
 } from "./camera-probe";
 import {
@@ -1979,6 +1985,78 @@ async function main(): Promise<void> {
   // null = chưa biết gì → không thu hồi desired của ai.
   let lastActiveCameras: ActiveCameraItem[] | null = null;
 
+  // E.1 Bước A lớp 3 — trạng thái cho việc tự dò lại IP theo MAC.
+  //
+  // Đếm trong RAM chứ không đọc `probe_consecutive_fails` từ cloud: số của
+  // cloud gộp mọi nguồn và reset theo luật riêng, còn ở đây ta cần đúng
+  // nghĩa "agent này probe hỏng mấy nhịp liên tiếp". Agent khởi động lại
+  // thì đếm lại từ đầu — chấp nhận được, vì chỉ làm chậm lần chữa đầu
+  // tiên vài phút.
+  const probeFailStreak = new Map<string, number>();
+  const lastHealAttemptAt = new Map<string, number>();
+
+  /**
+   * Chọn ĐÚNG MỘT camera đang hỏng để quét lại.
+   *
+   * Quét /24 chạy trên chính máy đang ghi hình, nên không bao giờ quét
+   * nhiều camera cùng lúc. Và nếu cả cụm cùng hỏng thì gần như chắc là
+   * mất điện/mất mạng — quét lúc đó chỉ tốn tài nguyên, nên vẫn chỉ thử
+   * một cái rồi chờ hết thời gian chờ.
+   */
+  async function tryHealDriftingCameraIp(probeResults: ProbeResult[]): Promise<void> {
+    const cameras = lastActiveCameras;
+    if (!cameras || cameras.length === 0) return;
+    const now = Date.now();
+
+    for (const result of probeResults) {
+      if (result.ok) continue;
+      const camera = cameras.find((c) => c.camera_id === result.camera_id);
+      if (!camera) continue;
+      // Lấy IP từ chính RTSP URL đang dùng. Chỉ đọc hostname — phần
+      // userinfo (tài khoản camera) không bao giờ được chạm tới ở đây.
+      let host: string;
+      try {
+        host = new URL(camera.rtsp_url).hostname;
+      } catch {
+        continue;
+      }
+      if (!host) continue;
+
+      const candidate: HealCandidate = {
+        cameraId: camera.camera_id,
+        cameraCode: camera.camera_code,
+        ip: host,
+        macAddress: camera.mac_address ?? null,
+        consecutiveFails: probeFailStreak.get(result.camera_id) ?? 0,
+      };
+      if (
+        !shouldAttemptHeal({
+          candidate,
+          lastAttemptAtMs: lastHealAttemptAt.get(result.camera_id) ?? null,
+          nowMs: now,
+        })
+      ) {
+        continue;
+      }
+
+      lastHealAttemptAt.set(result.camera_id, now);
+      const healed = await healCameraIp({
+        backendUrl: config.backendUrl,
+        agentCode: config.agentCode,
+        agentSecret: config.agentSecret,
+        candidate,
+      });
+      if (healed) {
+        probeFailStreak.delete(result.camera_id);
+        // Bảo lifecycle lấy lại credential và spawn ffmpeg ngay. Không có
+        // dòng này thì ghi hình phải chờ hết nhịp long-retry 5 phút, dù
+        // cloud đã biết IP mới từ giây trước.
+        lifecycle.notifyEndpointHealed(result.camera_id);
+      }
+      return;
+    }
+  }
+
   // Một lượt fetch lúc khởi động để nhịp probe ĐẦU TIÊN đã có danh sách,
   // giữ nguyên hành vi cũ ngay sau boot. Từ nhịp thứ hai trở đi danh sách
   // đi nhờ phản hồi probe, không tốn request riêng.
@@ -2053,6 +2131,17 @@ async function main(): Promise<void> {
     for (const r of results) {
       lifecycle.notifyProbeResult(r.camera_id, r.ok);
     }
+
+    // E.1 Bước A: probe hỏng liên tiếp thường là DHCP đổi IP chứ không
+    // phải camera chết. Đếm tại chỗ rồi tự dò lại theo MAC.
+    for (const r of results) {
+      if (r.ok) {
+        probeFailStreak.delete(r.camera_id);
+        continue;
+      }
+      probeFailStreak.set(r.camera_id, (probeFailStreak.get(r.camera_id) ?? 0) + 1);
+    }
+    await tryHealDriftingCameraIp(results);
     // Xin luôn danh sách active cho nhịp sau — gộp hai request thành một.
     // Hỏng thì trả null; giữ danh sách cũ, KHÔNG hạ về mảng rỗng (mảng rỗng
     // nghĩa là "org không còn camera nào" → thu hồi desired toàn kho).

@@ -52,6 +52,7 @@ export interface ActiveCameraItem {
   role: "proof_primary" | "proof_qr" | null;
   scan_source: "scanner" | "camera";
   scanner_device_code: string | null;
+  mac_address?: string | null;
   station_has_open_session: boolean;
 }
 

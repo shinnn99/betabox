@@ -43,6 +43,8 @@ export async function PUT(req: Request, { params }: RouteContext) {
   if (typeof body.location === "string" || body.location === null)
     input.location = body.location as string | null;
   if (body.password !== undefined) input.password = body.password as string | null;
+  if (typeof body.mac_address === "string" || body.mac_address === null)
+    input.mac_address = body.mac_address as string | null;
   if (body.status === "active" || body.status === "inactive" || body.status === "error")
     input.status = body.status;
 

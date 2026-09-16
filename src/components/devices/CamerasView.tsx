@@ -36,6 +36,8 @@ export interface Camera {
   has_password: boolean;
   created_at: string;
   updated_at: string;
+  mac_address?: string | null;
+  ip_auto_healed_count?: number;
   current_station: {
     station_id: string;
     station_code: string;
@@ -659,6 +661,7 @@ interface DiscoveredDevice {
   rtsp_port: number | null;
   web_ports: number[];
   onvif_detected: boolean;
+  mac_address?: string | null;
   onvif_xaddr?: string | null;
   vendor: string | null;
   model: string | null;
@@ -1317,6 +1320,16 @@ function DeviceRow({
           <span className="font-mono text-sm font-semibold text-slate-800">
             {d.ip}
           </span>
+          {d.mac_address && (
+            // MAC hien ngay canh IP de ky thuat vien copy sang router dat
+            // DHCP reservation — do la cach ghim IP an toan nhat.
+            <span
+              className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600"
+              title="Dia chi MAC — dung de dat DHCP reservation tren router"
+            >
+              {d.mac_address}
+            </span>
+          )}
           {alreadyAdded && (
             <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">
               <CheckCircle2 className="h-3 w-3" /> Đã thêm vào hệ thống
@@ -1450,6 +1463,9 @@ function DiscoveredDeviceForm({
           password: form.password,
           rtsp_path: form.rtsp_path,
           location: form.location,
+          // MAC lay tu chinh lan quet nay. Day la thu giup camera tu tim
+          // lai duoc khi DHCP doi IP — khong luu o day thi mat luon.
+          mac_address: device.mac_address ?? null,
         }),
       });
       const saveData = await saveRes.json().catch(() => ({}));

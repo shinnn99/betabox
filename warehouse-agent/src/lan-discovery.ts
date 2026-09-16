@@ -1,5 +1,6 @@
 import { networkInterfaces } from "node:os";
 import net from "node:net";
+import { resolveMacAddresses } from "./lan-arp";
 import { onvifDiscover, xaddrHost, type OnvifMatch } from "./lan-onvif";
 import { probeHttp } from "./lan-probe";
 
@@ -32,6 +33,9 @@ export interface DiscoveredDevice {
   rtsp_port: number | null;
   web_ports: number[];
   onvif_detected: boolean;
+  // MAC doc tu bang ARP. Null khi khong tra duoc (thiet bi ngoai subnet,
+  // hoac MAC dung chung nhieu IP nen bi loai vi khong dang tin).
+  mac_address: string | null;
   onvif_xaddr: string | null;
   vendor: string | null;
   model: string | null;
@@ -280,6 +284,7 @@ interface ClassifyInput {
   httpTitle?: string | null;
   vendorHint?: string | null;
   onvifEndpointAlive?: boolean;
+  macAddress?: string | null;
   subnet: string;
 }
 
@@ -303,6 +308,7 @@ function classifyDiscoveredDevice(input: ClassifyInput): DiscoveredDevice {
     rtsp_port,
     web_ports,
     onvif_detected,
+    mac_address: input.macAddress ?? null,
     onvif_xaddr: input.onvif?.xaddrs?.[0] ?? null,
     vendor,
     model,
@@ -409,6 +415,23 @@ export async function scanForCameras(options: ScanOptions = {}): Promise<ScanRes
   });
   const httpByIp = new Map(httpResults.map((r) => [r.ip, r.probe]));
 
+  // Tra MAC SAU khi đã quét port: lúc này vừa mở kết nối tới từng host
+  // nên bảng ARP đang nóng, hầu hết thiết bị đã có entry và bước "chạm"
+  // chỉ còn là lưới an toàn cho vài host đến muộn.
+  //
+  // MAC là thứ quyết định camera có tự phục hồi được khi DHCP đổi IP hay
+  // không, nên thiếu MAC là mất tính năng — nhưng không được để nó làm
+  // hỏng cả lần quét. Lỗi ở đây chỉ ghi log rồi đi tiếp.
+  let macByIp = new Map<string, string>();
+  try {
+    macByIp = await resolveMacAddresses(
+      Array.from(byIp.keys()),
+      { touchPort: ports.includes(554) ? 554 : ports[0] },
+    );
+  } catch (error) {
+    console.warn(`[lan-discovery] tra MAC thất bại: ${(error as Error).message}`);
+  }
+
   const devices: DiscoveredDevice[] = Array.from(byIp.values()).map((h) => {
     const probe = httpByIp.get(h.ip);
     return classifyDiscoveredDevice({
@@ -419,6 +442,7 @@ export async function scanForCameras(options: ScanOptions = {}): Promise<ScanRes
       httpTitle: probe?.page_title ?? null,
       vendorHint: probe?.vendor_guess ?? null,
       onvifEndpointAlive: probe?.onvif_endpoint_alive ?? false,
+      macAddress: macByIp.get(h.ip) ?? null,
       subnet: h.subnet,
     });
   });
@@ -434,6 +458,7 @@ export async function scanForCameras(options: ScanOptions = {}): Promise<ScanRes
   console.log(
     `[lan-discovery] scan done mode=${mode} subnets=${subnets.length} ` +
       `hosts_open=${devices.length} onvif=${onvifMatches.length} ` +
+      `mac_resolved=${macByIp.size} ` +
       `http_probed=${httpResults.length} duration_ms=${Date.now() - started}`,
   );
 

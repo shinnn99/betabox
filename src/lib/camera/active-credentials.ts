@@ -2,6 +2,7 @@ import "server-only";
 import type { createAdminClient } from "@/lib/supabase/admin";
 import { decryptPassword } from "@/lib/camera/crypto";
 import { buildRtspUrl } from "@/lib/camera/rtsp";
+import { selectCamerasWithMacFallback } from "./mac-columns";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
@@ -17,6 +18,8 @@ export interface CameraCredentialItem {
   scan_source: "scanner" | "camera";
   scanner_device_code: string | null;
   station_has_open_session: boolean;
+  /** E.1: agent can MAC de tu do lai IP khi probe hong. Null = chua biet. */
+  mac_address: string | null;
 }
 
 /**
@@ -44,18 +47,45 @@ export async function listCameraCredentials(
   cameraIds: string[] | null,
   agentId?: string,
 ): Promise<{ items: CameraCredentialItem[] } | { error: string }> {
-  let camsQuery = admin
-    .from("cameras")
-    .select(
-      "id, camera_code, ip, rtsp_port, username, password_ciphertext, password_iv, password_tag, rtsp_path, rtsp_substream_path",
-    )
-    .eq("organization_id", orgId)
-    .eq("status", "active");
-  if (agentId) camsQuery = camsQuery.eq("agent_id", agentId);
-  if (cameraIds !== null) camsQuery = camsQuery.in("id", cameraIds);
+  const CAMERA_COLUMNS =
+    "id, camera_code, ip, rtsp_port, username, password_ciphertext, password_iv, password_tag, rtsp_path, rtsp_substream_path, mac_address";
 
-  const { data: cams, error } = await camsQuery;
-  if (error) return { error: error.message };
+  // Đây là đường đi của NGHIỆP VỤ CHÍNH: agent lấy credential để ghi hình.
+  // Database chưa có cột MAC thì bỏ cột đó ra chứ không được hỏng cả truy
+  // vấn — mất MAC chỉ mất khả năng tự dò IP, mất truy vấn là mất ghi hình.
+  // Kiểu tường minh vì danh sách cột là biến (Supabase chỉ suy được kiểu
+  // từ chuỗi hằng). `mac_address` để optional: nó vắng mặt trên database
+  // chưa áp migration.
+  interface CameraCredentialRow {
+    id: string;
+    camera_code: string;
+    ip: string;
+    rtsp_port: number;
+    username: string;
+    password_ciphertext: string | null;
+    password_iv: string | null;
+    password_tag: string | null;
+    rtsp_path: string;
+    rtsp_substream_path: string | null;
+    mac_address?: string | null;
+  }
+
+  const { data: cams, error } = await selectCamerasWithMacFallback<
+    CameraCredentialRow[] | null
+  >(CAMERA_COLUMNS, (cols) => {
+    let q = admin
+      .from("cameras")
+      .select(cols)
+      .eq("organization_id", orgId)
+      .eq("status", "active");
+    if (agentId) q = q.eq("agent_id", agentId);
+    if (cameraIds !== null) q = q.in("id", cameraIds);
+    return q as unknown as PromiseLike<{
+      data: CameraCredentialRow[] | null;
+      error: { code?: string | null; message?: string | null } | null;
+    }>;
+  });
+  if (error) return { error: error.message ?? "không đọc được danh sách camera" };
 
   let stationId: string | null = null;
   let scanSource: "scanner" | "camera" = "scanner";
@@ -169,6 +199,10 @@ export async function listCameraCredentials(
       scanner_device_code:
         role === "proof_qr" ? `qrcam_${c.camera_code}`.toLowerCase() : null,
       station_has_open_session: stationHasOpenSession,
+      // MAC KHÔNG phải bí mật (nó nằm sẵn trên mọi gói tin trong LAN) nên
+      // gửi kèm credential là an toàn, và đây là kênh duy nhất agent đã
+      // biết chắc "camera này thuộc về mình".
+      mac_address: c.mac_address ?? null,
     };
   });
 

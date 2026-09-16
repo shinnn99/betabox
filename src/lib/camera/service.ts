@@ -1,5 +1,6 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { normalizeMac } from "@/lib/camera/mac";
 import { decryptPassword, encryptPassword } from "./crypto";
 import { buildRtspUrl } from "./rtsp";
 import {
@@ -42,6 +43,8 @@ const STATION_MAP_TTL_MS = 30_000;
 
 interface CacheBucket {
   softLinksDoneAt: Map<string, number>;
+  /** Lần cuối kiểm scanner ảo của camera quét mã cho org này. */
+  qrScannersCheckedAt: Map<string, number>;
   stationMap: Map<string, { value: Map<string, CameraPublic["current_station"]>; expiresAt: number }>;
 }
 
@@ -52,6 +55,7 @@ function getCache(): CacheBucket {
   if (!g[CACHE_GLOBAL_KEY]) {
     g[CACHE_GLOBAL_KEY] = {
       softLinksDoneAt: new Map(),
+      qrScannersCheckedAt: new Map(),
       stationMap: new Map(),
     };
   }
@@ -65,6 +69,7 @@ export function invalidateCameraCaches(organizationId: string): void {
   if (!organizationId) return;
   const c = getCache();
   c.softLinksDoneAt.delete(organizationId);
+  c.qrScannersCheckedAt.delete(organizationId);
   c.stationMap.delete(organizationId);
 }
 
@@ -108,6 +113,9 @@ export interface CameraPublic {
   last_probe_at: string | null;
   last_probe_ok: boolean | null;
   last_probe_latency_ms: number | null;
+  // E.1: dinh danh on dinh cua camera. IP chi la dia chi hien tai.
+  mac_address: string | null;
+  ip_auto_healed_count: number;
 }
 
 // DB row including encrypted password columns. Internal use only.
@@ -117,8 +125,20 @@ export interface CameraRow extends Omit<CameraPublic, "has_password"> {
   password_tag: string | null;
 }
 
+import {
+  isMissingMacColumn,
+  selectCamerasWithMacFallback,
+  withoutMacColumns,
+} from "./mac-columns";
+import {
+  planVirtualScannerRepairs,
+  virtualScannerCode,
+  type QrCameraDeviceInput,
+  type VirtualScannerInput,
+} from "./qr-virtual-scanner";
+
 const SAFE_COLUMNS =
-  "id, name, camera_code, ip, rtsp_port, username, rtsp_path, location, status, last_tested_at, last_test_result, created_at, updated_at, codec_detected, codec_warning, codec_probed_at, codec_probe_error, last_probe_at, last_probe_ok, last_probe_latency_ms";
+  "id, name, camera_code, ip, rtsp_port, username, rtsp_path, location, status, last_tested_at, last_test_result, created_at, updated_at, codec_detected, codec_warning, codec_probed_at, codec_probe_error, last_probe_at, last_probe_ok, last_probe_latency_ms, mac_address, ip_auto_healed_count";
 
 const ALL_COLUMNS = `${SAFE_COLUMNS}, password_ciphertext, password_iv, password_tag`;
 
@@ -146,6 +166,8 @@ export function toPublicCamera(row: CameraRow): CameraPublic {
     last_probe_at: row.last_probe_at,
     last_probe_ok: row.last_probe_ok,
     last_probe_latency_ms: row.last_probe_latency_ms,
+    mac_address: row.mac_address,
+    ip_auto_healed_count: row.ip_auto_healed_count ?? 0,
   };
 }
 
@@ -235,19 +257,32 @@ async function loadCameraStationMap(
 
 export async function listCameras(organizationId: string): Promise<CameraPublic[]> {
   const admin = createAdminClient();
-  const { data, error } = await admin
-    .from("cameras")
-    .select(ALL_COLUMNS)
-    .eq("organization_id", organizationId)
-    .order("camera_code", { ascending: true });
+  const { data, error } = await selectCamerasWithMacFallback<CameraRow[] | null>(
+    ALL_COLUMNS,
+    (cols) =>
+      admin
+        .from("cameras")
+        .select(cols)
+        .eq("organization_id", organizationId)
+        .order("camera_code", { ascending: true }) as unknown as PromiseLike<{
+        data: CameraRow[] | null;
+        error: { code?: string | null; message?: string | null } | null;
+      }>,
+  );
   if (error) throw error;
-  const cameras = (data ?? []).map((r) => toPublicCamera(r as CameraRow));
+  const cameras = (data ?? []).map((r) => toPublicCamera(r));
   // Self-heal soft-links: every camera should have a station_devices row
   // so the merged /dashboard/devices listing and the assignment endpoint
   // both find it without the caller having to think about two tables.
   await ensureCameraSoftLinks(
     organizationId,
     cameras.map((c) => ({ id: c.id, camera_code: c.camera_code, name: c.name })),
+  );
+  // Camera quét mã phải có scanner ảo, nếu không mọi lần quét đều trả
+  // `unmapped_scanner` mà không có cảnh báo nào trên giao diện.
+  await ensureQrVirtualScanners(
+    organizationId,
+    cameras.map((c) => ({ id: c.id, camera_code: c.camera_code })),
   );
   const stationMap = await loadCameraStationMap(organizationId);
   for (const c of cameras) c.current_station = stationMap.get(c.id) ?? null;
@@ -353,19 +388,208 @@ export async function ensureCameraSoftLinks(
   cache.softLinksDoneAt.set(organizationId, Date.now());
 }
 
+/**
+ * Sửa chữa scanner ảo của camera quét mã. Xem `qr-virtual-scanner.ts` để
+ * biết vì sao bất biến này quan trọng và chuyện gì đã xảy ra khi nó vỡ.
+ *
+ * Chạy ngay sau `ensureCameraSoftLinks` trong `listCameras`, nên chi phí
+ * nằm ở đường đọc dashboard chứ không đụng vào luồng ghi hình.
+ */
+export async function ensureQrVirtualScanners(
+  organizationId: string,
+  cameras: Array<{ id: string; camera_code: string }>,
+): Promise<void> {
+  if (!organizationId || cameras.length === 0) return;
+  // Hàm này nằm trên đường đọc của dashboard nên phải rẻ. Cùng TTL với
+  // sweep soft-link; mọi thay đổi thiết bị/phân công đều gọi
+  // invalidateCameraCaches nên không sợ giữ trạng thái cũ.
+  const cache = getCache();
+  const lastChecked = cache.qrScannersCheckedAt.get(organizationId);
+  if (lastChecked !== undefined && Date.now() - lastChecked < SOFT_LINK_TTL_MS) {
+    return;
+  }
+  const admin = createAdminClient();
+
+  type DeviceRow = {
+    id: string;
+    device_code: string;
+    device_type: string;
+    status: string;
+    name: string | null;
+    config_json: Record<string, unknown> | null;
+  };
+
+  const { data: deviceRows, error: deviceErr } = await admin
+    .from("station_devices")
+    .select("id, device_code, device_type, status, name, config_json")
+    .eq("organization_id", organizationId);
+  if (deviceErr) {
+    console.error(
+      `[camera] ensureQrVirtualScanners read failed org=${organizationId}: ${deviceErr.message}`,
+    );
+    return;
+  }
+
+  const devices = (deviceRows ?? []) as DeviceRow[];
+  const qrCameraRows = devices.filter(
+    (d) =>
+      d.device_type === "camera" &&
+      d.status !== "archived" &&
+      String(d.config_json?.role ?? "") === "proof_qr",
+  );
+  if (qrCameraRows.length === 0) {
+    cache.qrScannersCheckedAt.set(organizationId, Date.now());
+    return;
+  }
+
+  const wantedCodes = new Set(
+    cameras.map((c) => virtualScannerCode(c.camera_code)),
+  );
+  const scannerRows = devices.filter(
+    (d) =>
+      d.device_type === "scanner" &&
+      wantedCodes.has(d.device_code.toLowerCase()),
+  );
+
+  const relevantIds = [...qrCameraRows, ...scannerRows].map((d) => d.id);
+  const { data: assignmentRows, error: assignmentErr } = await admin
+    .from("station_device_assignments")
+    .select("device_id, station_id")
+    .eq("organization_id", organizationId)
+    .in("device_id", relevantIds)
+    .is("unassigned_at", null);
+  if (assignmentErr) {
+    console.error(
+      `[camera] ensureQrVirtualScanners assignment read failed org=${organizationId}: ${assignmentErr.message}`,
+    );
+    return;
+  }
+  const stationByDevice = new Map(
+    (
+      (assignmentRows ?? []) as Array<{ device_id: string; station_id: string }>
+    ).map((a) => [a.device_id, a.station_id]),
+  );
+
+  const virtualScanners: VirtualScannerInput[] = scannerRows.map((d) => ({
+    deviceId: d.id,
+    deviceCode: d.device_code,
+    status: d.status,
+    stationId: stationByDevice.get(d.id) ?? null,
+  }));
+
+  const qrCameraDevices: QrCameraDeviceInput[] = qrCameraRows.map((d) => ({
+    deviceId: d.id,
+    cameraId: String(d.config_json?.camera_id ?? ""),
+    stationId: stationByDevice.get(d.id) ?? null,
+    name: d.name ?? "",
+  }));
+
+  const repairs = planVirtualScannerRepairs({
+    qrCameraDevices,
+    virtualScanners,
+    cameraCodeById: new Map(cameras.map((c) => [c.id, c.camera_code])),
+  });
+  cache.qrScannersCheckedAt.set(organizationId, Date.now());
+  if (repairs.length === 0) return;
+
+  const now = new Date().toISOString();
+  for (const repair of repairs) {
+    try {
+      if (repair.kind === "create") {
+        const { data: created, error } = await admin
+          .from("station_devices")
+          .insert({
+            organization_id: organizationId,
+            device_code: repair.deviceCode,
+            device_type: "scanner",
+            name: repair.name,
+            status: "active",
+            connection_type: "unknown",
+            config_json: {
+              virtual_source: "camera_qr",
+              camera_id: repair.cameraId,
+            },
+          })
+          .select("id")
+          .single();
+        if (error || !created) {
+          // 23505 = một request khác vừa tạo xong. Đúng kết quả mong muốn.
+          if ((error as { code?: string } | null)?.code !== "23505") {
+            console.warn(
+              `[camera] tạo scanner ảo ${repair.deviceCode} thất bại: ${error?.message}`,
+            );
+          }
+          continue;
+        }
+        await admin.from("station_device_assignments").insert({
+          organization_id: organizationId,
+          device_id: created.id,
+          station_id: repair.stationId,
+          assigned_at: now,
+          status: "active",
+        });
+        console.warn(
+          `[camera] đã tạo scanner ảo ${repair.deviceCode} và gán vào bàn ${repair.stationId} — trước đó mọi lần quét bằng camera đều trả unmapped_scanner`,
+        );
+        continue;
+      }
+
+      if (repair.kind === "activate") {
+        await admin
+          .from("station_devices")
+          .update({ status: "active", updated_at: now })
+          .eq("organization_id", organizationId)
+          .eq("id", repair.deviceId);
+        console.warn(`[camera] đã bật lại scanner ảo ${repair.deviceCode}`);
+        continue;
+      }
+
+      // assign: đóng phân công đang mở rồi mở phân công mới. Chỉ số
+      // uniq_active_assignment_per_device không cho hai phân công cùng mở.
+      await admin
+        .from("station_device_assignments")
+        .update({ unassigned_at: now, status: "ended" })
+        .eq("organization_id", organizationId)
+        .eq("device_id", repair.deviceId)
+        .is("unassigned_at", null);
+      await admin.from("station_device_assignments").insert({
+        organization_id: organizationId,
+        device_id: repair.deviceId,
+        station_id: repair.stationId,
+        assigned_at: now,
+        status: "active",
+      });
+      console.warn(
+        `[camera] đã gán scanner ảo ${repair.deviceCode} vào bàn ${repair.stationId}`,
+      );
+    } catch (error) {
+      console.warn(
+        `[camera] sửa scanner ảo ${repair.deviceCode} thất bại: ${(error as Error).message}`,
+      );
+    }
+  }
+}
+
 export async function getCameraRow(
   organizationId: string,
   id: string,
 ): Promise<CameraRow | null> {
   const admin = createAdminClient();
-  const { data, error } = await admin
-    .from("cameras")
-    .select(ALL_COLUMNS)
-    .eq("organization_id", organizationId)
-    .eq("id", id)
-    .maybeSingle();
+  const { data, error } = await selectCamerasWithMacFallback<CameraRow | null>(
+    ALL_COLUMNS,
+    (cols) =>
+      admin
+        .from("cameras")
+        .select(cols)
+        .eq("organization_id", organizationId)
+        .eq("id", id)
+        .maybeSingle() as unknown as PromiseLike<{
+        data: CameraRow | null;
+        error: { code?: string | null; message?: string | null } | null;
+      }>,
+  );
   if (error) throw error;
-  return (data as CameraRow | null) ?? null;
+  return data ?? null;
 }
 
 // Build a usable RTSP URL by decrypting the stored password. Throws if the
@@ -397,6 +621,8 @@ export interface CameraInput {
   password?: string | null; // plaintext from client; encrypted before write
   rtsp_path?: string;
   location?: string | null;
+  /** MAC do quet LAN tra ve. Chuan hoa truoc khi ghi; null = chua biet. */
+  mac_address?: string | null;
 }
 
 // IPv4 dotted-quad or any hostname-like token. Loose on purpose — accept
@@ -457,28 +683,42 @@ export async function createCamera(
 ): Promise<CameraPublic> {
   const admin = createAdminClient();
   const enc = input.password ? encryptPassword(input.password) : null;
-  const { data, error } = await admin
-    .from("cameras")
-    .insert({
-      organization_id: organizationId,
-      name: input.name.trim(),
-      camera_code: input.camera_code.trim(),
-      ip: input.ip.trim(),
-      rtsp_port: input.rtsp_port ?? 554,
-      username: (input.username ?? "admin").trim() || "admin",
-      rtsp_path: input.rtsp_path?.trim() || "/ch1/main",
-      location: input.location?.trim() || null,
-      password_ciphertext: enc?.ciphertext ?? null,
-      password_iv: enc?.iv ?? null,
-      password_tag: enc?.tag ?? null,
-      agent_id: options?.agentId ?? null,
-      status: options?.status ?? "active",
-    })
-    .select(ALL_COLUMNS)
-    .single();
+  const base = {
+    organization_id: organizationId,
+    name: input.name.trim(),
+    camera_code: input.camera_code.trim(),
+    ip: input.ip.trim(),
+    rtsp_port: input.rtsp_port ?? 554,
+    username: (input.username ?? "admin").trim() || "admin",
+    rtsp_path: input.rtsp_path?.trim() || "/ch1/main",
+    location: input.location?.trim() || null,
+    password_ciphertext: enc?.ciphertext ?? null,
+    password_iv: enc?.iv ?? null,
+    password_tag: enc?.tag ?? null,
+    agent_id: options?.agentId ?? null,
+    status: options?.status ?? "active",
+  };
+  // Thêm camera phải chạy được cả trên database chưa áp migration MAC:
+  // không lưu được MAC chỉ mất khả năng tự dò IP sau này, còn chặn thêm
+  // camera thì chặn luôn việc lắp kho mới.
+  const insert = (withMac: boolean) =>
+    admin
+      .from("cameras")
+      .insert(
+        (withMac
+          ? { ...base, mac_address: normalizeMac(input.mac_address) }
+          : base) as never,
+      )
+      .select(withMac ? ALL_COLUMNS : withoutMacColumns(ALL_COLUMNS))
+      .single() as unknown as PromiseLike<{
+      data: CameraRow;
+      error: { code?: string | null; message?: string | null } | null;
+    }>;
+  let { data, error } = await insert(true);
+  if (isMissingMacColumn(error)) ({ data, error } = await insert(false));
   if (error) throw error;
   invalidateCameraCaches(organizationId);
-  return toPublicCamera(data as CameraRow);
+  return toPublicCamera(data);
 }
 
 // Only the fields the caller actually provided are written. password
@@ -503,6 +743,11 @@ export async function updateCamera(
   if (input.rtsp_path !== undefined) update.rtsp_path = input.rtsp_path.trim();
   if (input.location !== undefined)
     update.location = input.location?.trim() || null;
+  // MAC chi ghi khi caller noi ro. `null` la hop le (xoa dinh danh cu),
+  // con undefined nghia la "khong dung toi" — khong duoc bien thanh null.
+  if (input.mac_address !== undefined) {
+    update.mac_address = normalizeMac(input.mac_address);
+  }
   if (input.status !== undefined) {
     update.status = input.status;
     // Tắt camera thì số đếm probe phải về 0. Agent chỉ probe camera đang
@@ -539,13 +784,22 @@ export async function updateCamera(
   }
 
   const admin = createAdminClient();
-  const { data, error } = await admin
-    .from("cameras")
-    .update(update)
-    .eq("organization_id", organizationId)
-    .eq("id", id)
-    .select(ALL_COLUMNS)
-    .maybeSingle();
+  const runUpdate = (withMac: boolean) => {
+    const payload = { ...update };
+    if (!withMac) delete payload.mac_address;
+    return admin
+      .from("cameras")
+      .update(payload)
+      .eq("organization_id", organizationId)
+      .eq("id", id)
+      .select(withMac ? ALL_COLUMNS : withoutMacColumns(ALL_COLUMNS))
+      .maybeSingle() as unknown as PromiseLike<{
+      data: CameraRow | null;
+      error: { code?: string | null; message?: string | null } | null;
+    }>;
+  };
+  let { data, error } = await runUpdate(true);
+  if (isMissingMacColumn(error)) ({ data, error } = await runUpdate(false));
   if (error) throw error;
   if (data) invalidateCameraCaches(organizationId);
 

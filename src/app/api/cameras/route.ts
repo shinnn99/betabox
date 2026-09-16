@@ -52,6 +52,8 @@ export async function POST(req: Request) {
         : "/ch1/main",
     location:
       typeof body.location === "string" ? body.location : null,
+    // MAC do UI gui kem khi admin chon thiet bi tu ket qua quet LAN.
+    mac_address: typeof body.mac_address === "string" ? body.mac_address : null,
   };
 
   const v = validateCameraInput(input, "create");

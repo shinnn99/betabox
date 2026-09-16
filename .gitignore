@@ -66,3 +66,7 @@ supabase/.temp/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Ban sao du lieu production keo xuong local (scripts/copy-prod-to-local.sh).
+# CHUA DU LIEU THAT cua khach — tuyet doi khong commit.
+.tmp/

@@ -218,6 +218,33 @@ export class RecordingLifecycle {
   }
 
   /**
+   * IP của camera vừa được chữa theo MAC: thử ghi lại NGAY, không đợi hết
+   * nhịp long-retry 5 phút.
+   *
+   * Vì sao không dùng được `notifyProbeResult`: nhịp probe vẫn đang trỏ
+   * vào URL cũ (IP cũ) nên không bao giờ "ok" để đếm đủ 2 nhịp — tự khoá
+   * lẫn nhau. `longRetryAttempt` lấy lại credential từ cloud, nên nó là
+   * chỗ duy nhất biết URL mới.
+   *
+   * Đo thật 16/09: thiếu đường này thì ghi hình nằm im tới 5 phút sau khi
+   * hệ thống đã biết IP mới — 5 phút không có bằng chứng, không vì lý do
+   * gì cả.
+   */
+  notifyEndpointHealed(cameraId: string): void {
+    const state = this.states.get(cameraId);
+    if (!state || state.stopped) return;
+    if (state.pendingTimer) {
+      clearTimeout(state.pendingTimer);
+      state.pendingTimer = null;
+    }
+    state.probeOkStreak = 0;
+    console.log(
+      `[recording-lifecycle] IP vừa được chữa camera=${state.spec.cameraCode}, thử ghi lại ngay`,
+    );
+    swallow(this.longRetryAttempt(state.spec), "longRetryAttempt[ip-healed]");
+  }
+
+  /**
    * Boot flow. Đọc desired file → gọi cloud lấy credential → spawn
    * ffmpeg song song bằng allSettled (một camera hỏng không kéo cả rổ).
    * Nếu mạng chưa lên (fetch credential fail), retry mỗi

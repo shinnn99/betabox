@@ -367,3 +367,53 @@ docs([Module]):     Cập nhật tài liệu
 - **Chi tiet thay doi:** Ten file dang `<ma van don>-<yyyyMMdd>-<HHmmss>.mp4` theo gio VN, moc lay tu `packing_events.scanned_at` de sinh lai clip van ra cung ten. Helper signed URL tra them `downloadUrl` (them query `?download=`) va `fileName`; URL phat inline giu nguyen khong co `download` de khong bien the `<video>` thanh tai xuong. Route `/watch` tra them `download_url` + `file_name`, hook expose ra UI, modal xem video co them nut "Tai video". `clip_name` trong DB nay do cloud tinh khi nhan ket qua cat, khong tin ten agent gui len. Clip cu van tai ve dung ten vi ten duoc tinh lai luc cap signed URL. `bucket_path` giu nguyen.
 - **Ket qua kiem tra:** `pnpm test` 357/357 dat (6 test moi); `pnpm typecheck` dat; guard `check-proof-clip-signed-url` dat; ESLint khong phat sinh loi moi (cac loi con lai da co san tren HEAD). Do that tren Storage: URL kem `?download=` tra `content-disposition: attachment; filename=...`, URL khong kem tra null.
 - **Trang thai:** Da hoan thanh
+
+### [E.1-ROLLBACK-A] - Rollback ve code da commit, chi giu lai Buoc A (tim camera bang MAC)
+
+- **Muc tieu:** Theo yeu cau: tra cay lam viec ve dung commit 997daab cua nhanh 2-camera de test quet ma don, sau do chi lay lai phan tim kiem bang dia chi MAC, tam hoan phan xem tu xa.
+- **Files tao/sua:** `src/lib/camera/mac-columns.ts` (moi), `src/lib/camera/active-credentials.ts`, `src/lib/camera/service.ts`, `warehouse-agent/src/camera-heal.ts`, `warehouse-agent/src/lan-arp.ts`, `warehouse-agent/src/index.ts`, `warehouse-agent/tests/camera-heal.test.ts`, `warehouse-agent/tests/lan-arp.test.ts`, `change.md`.
+- **Chi tiet thay doi:** Toan bo cong viec E.1 (A + B + UI + infra) duoc cat vao nhanh `e1-backup-20260916` (commit bf78829) TRUOC khi rollback, khoi phuc bang `git checkout e1-backup-20260916 -- .`. Sau do lay lai chi cac file cua Buoc A; rieng `warehouse-agent/src/index.ts` chua ca A lan B nen da go bo ba khoi cua B (import RemotePublisher, khoi tao publisher, hai nhanh lenh live_remote_start/stop, va stopAll luc shutdown). KHONG lay lai: relay-limits, remote-session, media-auth, live/remote, cron sweep, RemoteLivePanel, remote-publish, migration 20260916140000, infra/relay.
+- **Ket qua kiem tra:** `pnpm test` 357/357 dat; `pnpm typecheck` dat; ESLint cac file cloud 0 loi; agent `npm run typecheck` dat; agent test 111/112 (1 fail la relay-hub doi cong 8554 dang bi agent that chiem, khong lien quan).
+- **Trang thai:** Da hoan thanh
+
+### [E.1-A-FIX-ARP] - Tim camera theo MAC: hoi bang ARP truoc, quet cong chi la du phong
+
+- **Muc tieu:** Sua loi that phat hien khi chay tren kho: agent tu kich hoat do lai dung nhu thiet ke nhung KHONG tim thay camera, du camera van o nguyen tren mang.
+- **Files tao/sua:** `warehouse-agent/src/lan-arp.ts`, `warehouse-agent/src/camera-heal.ts`, `warehouse-agent/tests/lan-arp.test.ts`, `warehouse-agent/tests/camera-heal.test.ts`.
+- **Chi tiet thay doi:** Nguyen nhan do duoc: quet cong co timeout 1 giay va chay tren chinh may dang ghi hinh. Luc heal chay that, quet chi thay `hosts_open=3 mac_resolved=2`; chay tay vai giay sau tren cung subnet thay `hosts_open=7 mac_resolved=6` — camera can tim roi mat. Bang ARP luc do da co san dung IP. Nen doi thu tu: (1) `findIpByMac` doc thang bang ARP, loc theo tien to /24, tu choi khi MAC ung nhieu IP; (2) chua thay moi quet, va quet xong tra lai ARP lan nua vi quet chinh la cach danh thuc ARP; (3) THEM buoc xac nhan cong RTSP mo o IP moi truoc khi bao cloud — khop MAC da manh nhung mot ban ghi ARP cu co the tro vao thiet bi da tat. Do that tren LAN kho: tra ARP mat 47-60 ms va dung ca hai camera, so voi 4,7 s cua mot lan quet.
+- **Ket qua kiem tra:** agent test 111/112 (6 test moi: 3 cho findIpByMac, 3 cho thu tu tim kiem va chot "chua xac nhan RTSP thi khong bao cloud"); `npm run typecheck` dat. Do truc tiep tren LAN that: MAC Hikvision -> 192.168.31.135 trong 60 ms, MAC Dahua -> 192.168.31.12 trong 47 ms.
+- **Trang thai:** Da sua va co test; CHUA chay lai chuoi day du tren agent that vi may dang duoc dung de test quet ma don.
+
+### [E.1-A-DB-FALLBACK] - Cloud khong duoc gay khi database chua co cot MAC
+
+- **Muc tieu:** Chan lai mot loi da xay ra that: ma nguon doi cot `cameras.mac_address` tren database chua ap migration, lam hong ca luong ghi hinh.
+- **Files tao/sua:** `src/lib/camera/mac-columns.ts` (moi), `src/lib/camera/active-credentials.ts`, `src/lib/camera/service.ts`.
+- **Chi tiet thay doi:** Ma nguon va migration khong len cung luc. Luc 14:10 ngay 16/09 dieu do xay ra: `[camera-probe] active_cameras lookup failed ... column cameras.mac_address does not exist` — agent mat danh sach camera can ghi. Them `selectCamerasWithMacFallback`: gap loi undefined_column (42703) lien quan cot MAC thi chay lai truy van voi danh sach cot cu va canh bao mot lan kem ten migration can ap. Duong ghi (them/sua camera) cung tu bo `mac_address` khoi payload thay vi tu choi tao camera. Mat MAC chi mat kha nang tu do IP; mat truy van la mat ghi bang chung — khong danh doi duoc.
+- **Ket qua kiem tra:** Do tren he thong dang chay voi database CHUA ap migration: truoc khi sua, moi nhip `camera-probe` deu kem dong `column cameras.mac_address does not exist`; sau khi sua, khong con dong loi nao va chi con mot canh bao nhac ap migration. `pnpm test` 357/357, `pnpm typecheck` dat.
+- **Trang thai:** Da hoan thanh
+
+### [E.1-A-E2E] - Chay dau-cuoi tren agent that: tim ra hai loi chan duong, da sua
+
+- **Muc tieu:** Chung minh chuoi "camera doi IP -> he thong tu tim lai -> GHI HINH TIEP" chay duoc tren tien trinh agent that, khong phai goi ham.
+- **Files tao/sua:** `src/lib/supabase/proxy.ts`, `tests/agent-routes-bypass-proxy.test.ts` (moi), `warehouse-agent/src/recording-lifecycle.ts`, `warehouse-agent/src/index.ts`, `plans/reports/E.1-A-nghiem-thu-2026-09-16.md`, `change.md`.
+- **Chi tiet thay doi:** Hai loi chi lo ra khi chay that:
+  (1) `/api/agent/camera-ip-healed` chua co trong `PUBLIC_API_PREFIXES` cua proxy, nen bi chan tu vong ngoai voi `401 unauthenticated` — request KHONG bao gio toi cho kiem HMAC. Moi test truoc do goi thang route handler nen deu xanh. Da them vao danh sach VA them test `agent-routes-bypass-proxy` doi chieu toan bo `AGENT_API_PATHS` voi danh sach nay; da kiem nguoc bang cach xoa dong khai bao, test do dung nhu mong doi.
+  (2) Chua duoc IP roi nhung ghi hinh khong chay lai: nhip probe van tro vao URL cu nen khong bao gio "ok" du 2 nhip de kich hoat phuc hoi nhanh — tu khoa lan nhau, phai cho het nhip long-retry 5 phut. Them `RecordingLifecycle.notifyEndpointHealed()` lay lai credential va spawn ffmpeg ngay sau khi chua xong.
+- **Ket qua kiem tra:** Chay that tren agent voi camera that (dung agent nhanh, GIU service production chay nen ghi hinh that khong mat phut nao): tu luc agent khoi dong den khi co segment moi cua hik_3 la **55 giay** — probe hong 3 nhip -> `[camera-heal] IP moi 192.168.31.250 -> 192.168.31.135` -> `[recording-lifecycle] IP vua duoc chua, thu ghi lai ngay` -> `long-retry refreshed credentials (rtsp_url changed)` -> `[segment-index] rolled camera=hik_3`. DB: ip ve dung, `ip_auto_healed_count` tang, `ip_last_changed_at` co moc, mot dong `camera_endpoint_history` source=auto_heal. Kiem tien trinh: ffmpeg dang doc 192.168.31.135. `pnpm test` 358/358; agent test 111/112 (1 fail relay-hub doi cong 8554, co tu truoc).
+- **Trang thai:** Da hoan thanh — muc nghiem thu 2.4.1 cua ke hoach E.1 DAT
+
+### [E.1-A-2CAM] - Nghiem thu muc 2.4.2: camera cung model tren cung subnet
+
+- **Muc tieu:** Chung minh he thong khong nhan nham khi trong kho co hai camera cung model.
+- **Files tao/sua:** `plans/reports/E.1-A-nghiem-thu-2026-09-16.md`, `plans/active/E.1-ip-camera-co-dinh-va-remote-live.md`, `change.md`.
+- **Chi tiet thay doi:** Khong sua code. Chu du an cam them camera; tren LAN co ba thiet bi mo cong RTSP: 192.168.31.12 (dahua_3), 192.168.31.18 (cung dong firmware voi hik_3, header HTTP giong het), 192.168.31.135 (hik_3).
+- **Ket qua kiem tra:** Phan biet 4/4 tren ca hai duong tim kiem (tra ARP va qua ket qua quet), gom ca truong hop MAC bia lech dung 1 ky tu so voi hik_3 — tra ve "khong thay" chu khong vo lay camera cung model ben canh. Chay dau-cuoi voi ca ba camera dang song: 55 giay, chon dung .135, ffmpeg xac nhan doc 192.168.31.135, khong dung toi .18. Lan quet nay lai bo sot .18 (hosts_open=4) trong khi ARP thay du ba — lan thu ba quan sat duoc hien tuong nay.
+- **Trang thai:** Da hoan thanh — muc 2.4.2 DAT
+
+### [FIX-QRCAM-SCANNER] - Camera quet ma thieu scanner ao lam moi lan quet hong trong im lang
+
+- **Muc tieu:** Sua goc loi khien mo don bang QR khong chay: moi ma quet bang camera deu tra `unmapped_scanner`.
+- **Files tao/sua:** `src/lib/camera/qr-virtual-scanner.ts` (moi), `src/lib/camera/service.ts`, `tests/qr-virtual-scanner.test.ts` (moi), `change.md`.
+- **Chi tiet thay doi:** Agent bao ma quet duoi ten thiet bi `qrcam_<ma camera>`; cloud tra ten do qua `resolve_scanner_at`, ham nay doi thiet bi `status='active'` VA co mot phan cong dang mo. Scanner ao chi duoc tao trong nhanh gan cua `POST /api/station-device-assignments`. Ngay 15/09 camera `dahua_3` duoc chuyen sang BAN_03 cua to chuc Betacom bang cach tao ban ghi thiet bi moi (khong qua duong gan chuan), nen scanner ao cu bi archive lai o to chuc Dai Kim va to chuc moi khong co cai nao — hon mot ngay moi lan quet deu hong ma dashboard khong co canh bao nao, chi mot dong log o agent. Them `planVirtualScannerRepairs` (ham thuan, quyet dinh viec can sua) va `ensureQrVirtualScanners` (thuc thi) chay ngay sau `ensureCameraSoftLinks` trong `listCameras`, cung TTL 30s va cung bi xoa boi `invalidateCameraCaches`. Ba rang buoc co y: camera chua gan vao ban nao thi KHONG tao gi; khong bao gio go scanner ao (sai lech sua bang cach gan lai); khong tra duoc ma camera thi bo qua chu khong doan ten thiet bi.
+- **Ket qua kiem tra:** 7 test moi cho phan quyet dinh (tao moi, dung yen khi da dung, bat lai ban archived, keo ve dung ban khi gan nham, va hai truong hop khong duoc tao gi). Chay that tren ban sao production o Supabase local: truoc khi chay khong co `qrcam_*` nao; sau mot lan goi `listCameras` da tao `qrcam_dahua_3` active va gan vao BAN_03; `resolve_scanner_at` tra ve dung cap device/station. `pnpm test` 365/365; `pnpm typecheck` dat; ESLint sach.
+- **Trang thai:** Da hoan thanh phan ma; DB dang chay se tu sua khi mo trang Thiet bi lan dau.

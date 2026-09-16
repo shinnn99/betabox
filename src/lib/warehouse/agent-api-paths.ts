@@ -27,6 +27,7 @@ export const AGENT_API_PATHS = {
   verifyClipStaleMarker: "/api/agent/verify-clip-stale-marker",
   bootDeclare: "/api/agent/boot-declare",
   logEvents: "/api/agent/log-events",
+  cameraIpHealed: "/api/agent/camera-ip-healed",
 } as const;
 
 export type AgentApiPathKey = keyof typeof AGENT_API_PATHS;

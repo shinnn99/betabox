@@ -55,6 +55,9 @@ export interface DiscoveredDevice {
   rtsp_port: number | null;
   web_ports: number[];
   onvif_detected: boolean;
+  // MAC doc tu bang ARP. Null khi khong tra duoc (thiet bi ngoai subnet,
+  // hoac MAC dung chung nhieu IP nen bi loai vi khong dang tin).
+  mac_address: string | null;
   // Concrete ONVIF service URL when WS-Discovery reported one.
   onvif_xaddr: string | null;
   vendor: string | null;
@@ -339,6 +342,7 @@ interface ClassifyInput {
   httpTitle?: string | null;
   vendorHint?: string | null;
   onvifEndpointAlive?: boolean;
+  macAddress?: string | null;
   subnet: string;
 }
 
@@ -369,6 +373,7 @@ export function classifyDiscoveredDevice(input: ClassifyInput): DiscoveredDevice
     rtsp_port,
     web_ports,
     onvif_detected,
+    mac_address: input.macAddress ?? null,
     onvif_xaddr: input.onvif?.xaddrs?.[0] ?? null,
     vendor,
     model,

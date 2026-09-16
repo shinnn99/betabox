@@ -1,6 +1,7 @@
 # E.1 — Tìm IP camera cố định + Xem camera từ xa (ngoài LAN)
 
-**Trạng thái:** Chờ duyệt
+**Trạng thái:** Bước A đang làm (tìm camera theo MAC); **Bước B tạm hoãn theo yêu cầu chủ dự án 16/09**
+**Cập nhật:** 16/09/2026 — mã của Bước B đã rollback khỏi nhánh làm việc, cất ở nhánh `e1-backup-20260916` (commit bf78829)
 **Liên quan:** thay thế/mở rộng `C.1.5-remote-live.md` (bản stub), dùng lại `B.1-agent-onvif-camera-connect.md`, `C.1.1-mediamtx-local-relay.md`
 
 ---
@@ -79,6 +80,13 @@ ONVIF có `SetNetworkInterfaces`, làm được. Nhưng nhập sai gateway hoặ
 **UI** (`CamerasView.tsx`): hiện MAC dưới IP; badge "IP đã tự phục hồi N lần"; nút copy dòng hướng dẫn đặt DHCP reservation (MAC + IP đề xuất).
 
 ### 2.4 Nghiệm thu bài toán A
+
+> **Đã chạy đầu-cuối trên agent thật 16/09/2026 — [báo cáo](../reports/E.1-A-nghiem-thu-2026-09-16.md).**
+> **Mục 1, 2 và 3 đều ĐẠT.** Mục 1: 55 giây từ lúc agent khởi động tới khi có segment
+> mới, gồm cả việc ghi hình tự chạy lại. Mục 2: nghiệm thu với camera cùng model thật
+> trên cùng subnet (17:05–17:10), phân biệt đúng 4/4.
+> Ba lỗi thật đã tìm ra và sửa trong quá trình này (quét trượt khi máy bận, route bị
+> proxy chặn, ghi hình không tự chạy lại).
 
 1. Đổi IP camera trên router (mô phỏng DHCP cấp lại) → trong vòng ≤ 5 phút hệ thống tự tìm lại, ghi hình tiếp, có dòng `audit_logs` `camera.ip_healed`.
 2. Cắm thêm một camera khác cùng model, cùng subnet → không bị nhận nhầm là camera cũ (khớp MAC, không khớp model/IP).
@@ -183,6 +191,9 @@ Không có bước này thì khi bán cho khách có đường truyền yếu, t
 
 ### 3.5 Nghiệm thu bài toán B
 
+> **Chưa chạy được mục nào** — chưa có VPS thật. Hai hợp đồng kỹ thuật của MediaMTX
+> đã kiểm chứng bằng bản chạy thật: [báo cáo](../reports/E.1-B-mediamtx-hop-dong-2026-09-16.md).
+
 1. Admin ở mạng 4G ngoài kho xem được camera bàn 3, trễ đo được ≤ 1 s.
 2. Rút mạng máy bàn giữa phiên → UI báo mất kết nối trong ≤ 10 s, phiên tự đóng, không còn ffmpeg treo.
 3. Người dùng tổ chức A không mở được camera tổ chức B (test tự động, giống nhóm test đa tenant đang có).
@@ -252,9 +263,36 @@ Một khách vượt hạn mức, nợ phí, hoặc bị lạm dụng tài kho�
 
 Ba câu đã chốt: chỉ admin nội bộ được xem; dùng main-stream; sẽ đóng gói bán. Còn bốn câu:
 
-1. **Mặc định mở ở sub-stream rồi bấm "xem nét" để chuyển main, hay luôn mở thẳng main?** Tôi khuyến nghị cái đầu — tiết kiệm phần lớn băng thông mà vẫn đọc được chữ khi cần. Chỉ khác nhau một nút bấm ở phía người xem.
+1. **Mặc định mở ở sub-stream rồi bấm "xem nét" để chuyển main, hay luôn mở thẳng main?** Tôi khuyến nghị cái đầu — tiết kiệm phần lớn băng thông mà vẫn đọc được chữ khi cần. Chỉ khác nhau một nút bấm ở phía người xem. — **Đã làm theo khuyến nghị:** UI mặc định "Nhẹ", có nút "Nét" chuyển sang main-stream. Đổi lại được nếu anh muốn khác.
 2. **Duyệt VPS relay Singapore ~12 USD/tháng cho node đầu tiên?**
 3. **Bán "xem từ xa" là tính năng kèm trong gói, hay gói cước riêng tính theo giờ-xem?** Ảnh hưởng tới việc có cần làm trang báo cáo sử dụng cho khách hay không.
 4. **Có làm mô hình "relay riêng của khách" ngay không**, hay chỉ thiết kế sẵn chỗ và để dành khi có khách lớn đầu tiên?
 
 Riêng phần A (MAC + tự phục hồi IP) không phụ thuộc câu nào ở trên — anh duyệt là tôi làm được ngay.
+
+---
+
+## 8. Tình trạng thực hiện (cập nhật 16/09/2026)
+
+| Pha (§4) | Nội dung | Tình trạng |
+|---|---|---|
+| 1 | MAC, UUID, lịch sử endpoint, UI | Xong — migration `20260916120000_camera_mac_identity.sql` |
+| 2 | Tự dò lại theo MAC | **Xong, đã nghiệm thu đầu-cuối** — 55 s gồm cả ghi hình chạy lại; [báo cáo](../reports/E.1-A-nghiem-thu-2026-09-16.md) |
+| 3 | `relay_nodes` + `/api/media-auth` + hạn mức + công tắc tenant | **Tạm hoãn** — mã đã viết xong, cất ở `e1-backup-20260916` |
+| 4 | Agent publisher on-demand + lệnh start/stop | **Tạm hoãn** — đã gỡ khỏi `warehouse-agent/src/index.ts` |
+| 5 | UI "Xem từ xa" + nút sub/main + cảnh báo hạn mức | **Tạm hoãn** — đã gỡ khỏi trang Giám sát |
+| 6 | Đo đếm lưu lượng theo tenant + báo cáo sử dụng | Bảng `remote_view_usage_monthly` đã có; **chưa có trang báo cáo cho khách** |
+
+Ngoài kế hoạch gốc: [`infra/relay/`](../../infra/relay/README.md) — cấu hình MediaMTX,
+script cài VPS và runbook, kèm [kiểm chứng hợp đồng kỹ thuật](../reports/E.1-B-mediamtx-hop-dong-2026-09-16.md).
+
+### Còn phải làm trước khi tính năng dùng được thật
+
+1. Thuê VPS Singapore, chạy `infra/relay/install.sh`, trỏ tên miền.
+2. Thêm một dòng vào `relay_nodes` và bật `remote_view_enabled` cho tổ chức (mặc định TẮT).
+3. **Lên lịch `/api/cron/sweep-remote-sessions` chạy mỗi phút** — chưa có thì phiên bỏ quên
+   sống tới hết 10 phút. Cần anh xác nhận hệ thống chạy ở đâu để chọn `vercel.json` hay
+   systemd timer.
+4. Chạy nghiệm thu §3.5, đặc biệt mục 3.5.6 (ghi bằng chứng không bị ảnh hưởng).
+5. Ba nhánh thực địa của Bước A — cần tạm dừng agent kho hoặc chờ giờ không có đơn.
+6. Áp hai migration lên Supabase production (hiện mới áp ở local theo yêu cầu của anh).
