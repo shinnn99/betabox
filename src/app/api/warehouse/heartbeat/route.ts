@@ -7,6 +7,7 @@ import {
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
 import { enqueueCutClip } from "@/lib/agent-commands/enqueue";
+import { forceStopExpiredOrders } from "@/lib/station/force-stop-expired-orders";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -92,6 +93,18 @@ export async function POST(req: Request) {
   if (seenErr) {
     console.warn(
       `[heartbeat] last_seen_at update failed agent=${agent.id} code=${seenErr.code ?? "?"} message=${seenErr.message}`,
+    );
+  }
+
+  // Trần thời gian đóng đơn phải chạy cả khi không ai mở màn hình bàn
+  // (nhân viên tắt tab, máy bàn khoá màn hình). Heartbeat agent là nhịp
+  // duy nhất chắc chắn còn chạy trong ca, nên gắn luật vào đây; màn hình
+  // bàn gọi cùng hàm này mỗi lượt poll để phản hồi nhanh hơn.
+  try {
+    await forceStopExpiredOrders({ admin, organizationId: agent.organization_id });
+  } catch (timeoutError) {
+    console.warn(
+      `[heartbeat] force-stop đơn quá giờ thất bại agent=${agent.id} message=${(timeoutError as Error).message}`,
     );
   }
 
