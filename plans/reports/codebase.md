@@ -490,9 +490,15 @@ pnpm run build:exe
 & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" installer/betacom-agent.iss
 ```
 
-Agent hiện ở version 0.8.9. Nâng version thì nhớ cập nhật
-[warehouse-agent/RELEASES.md](warehouse-agent/RELEASES.md) — khách cài bản nào
-thì chỉ có file đó nói được.
+Agent hiện ở version 0.9.0. Nâng version phải đổi **bốn** chỗ cùng lúc, nếu
+không `OutputBaseFilename` sinh ra tên exe lệch với version thật bên trong:
+
+- `installer/betacom-agent.iss` — `#define AppVersion`
+- `warehouse-agent/package.json`
+- `warehouse-agent/package-lock.json` — **2 chỗ**: root và `packages[""]`
+
+Và cập nhật [warehouse-agent/RELEASES.md](warehouse-agent/RELEASES.md) — khách
+cài bản nào thì chỉ có file đó nói được.
 
 ---
 
