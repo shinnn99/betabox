@@ -57,6 +57,9 @@ interface WatchResponse {
   state: WatchState;
   /** Có cấp URL của clip ready hiện tại (nếu có). */
   signed_url?: string;
+  /** Cùng clip nhưng ép tải xuống với tên `<mã vận đơn>-<ngày>-<giờ>.mp4`. */
+  download_url?: string;
+  file_name?: string;
   expires_at?: string;
   /** True khi có ready + pending song song (regeneration đang chạy). */
   regenerating?: boolean;
@@ -220,6 +223,8 @@ export async function POST(_req: Request, ctx: RouteContext) {
     const base: WatchResponse = {
       state: "ready",
       signed_url: signResult.signedUrl,
+      download_url: signResult.downloadUrl,
+      file_name: signResult.fileName,
       expires_at: signResult.expiresAt,
     };
 

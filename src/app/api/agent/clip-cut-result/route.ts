@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { buildProofClipFileName } from "@/lib/order-proof/clip-file-name";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   readAgentHeaders,
@@ -224,6 +225,20 @@ export async function POST(req: Request) {
   // Guard qua `.in("status", ["pending", "ready"])` + KHÔNG đụng `status`
   // field trong update payload.
   if (body.outcome === "done") {
+    // Tên file giao cho khách do CLOUD quyết định, không tin tên agent gửi
+    // lên: agent không biết mã vận đơn đã chuẩn hoá và không giữ timezone
+    // nghiệp vụ. Xem `src/lib/order-proof/clip-file-name.ts`.
+    const { data: packingEvent } = await admin
+      .from("packing_events")
+      .select("waybill_code, scanned_at")
+      .eq("id", body.packing_event_id)
+      .eq("organization_id", agent.organization_id)
+      .maybeSingle();
+    const clipName = buildProofClipFileName({
+      waybillCode: packingEvent?.waybill_code ?? null,
+      scannedAt: packingEvent?.scanned_at ?? null,
+    });
+
     let coveredRange: string | null = null;
     if (body.covered_range_lower && body.covered_range_upper) {
       coveredRange = `[${body.covered_range_lower},${body.covered_range_upper})`;
@@ -232,7 +247,7 @@ export async function POST(req: Request) {
       .from("order_proof_clips")
       .update({
         clip_path: body.clip_path,
-        clip_name: body.clip_name,
+        clip_name: clipName,
         clip_started_at: body.clip_started_at,
         clip_ended_at: body.clip_ended_at,
         clip_size_bytes: body.file_size_bytes,

@@ -12,6 +12,7 @@ import {
   HardDrive,
   LayoutGrid,
   List,
+  Download,
   Loader2,
   Package,
   Play,
@@ -1543,6 +1544,18 @@ function ModalBody({ watch }: { watch: ReturnType<typeof useWatchClipState> }) {
           preload="metadata"
           className="w-full aspect-video bg-black"
         />
+        {watch.downloadUrl && (
+          // Link tải riêng, KHÔNG dùng chung URL với <video>: URL tải có
+          // `?download=` nên Storage trả Content-Disposition attachment —
+          // đúng cho nút tải, nhưng không nên áp cho thẻ phát inline.
+          <a
+            href={watch.downloadUrl}
+            className="flex items-center justify-center gap-2 border-t border-slate-800 bg-slate-900 px-4 py-2.5 text-xs font-semibold text-slate-100 hover:bg-slate-800"
+          >
+            <Download className="h-4 w-4" />
+            Tải video{watch.fileName ? ` · ${watch.fileName}` : ""}
+          </a>
+        )}
       </div>
     );
   }

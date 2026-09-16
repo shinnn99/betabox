@@ -1,5 +1,6 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { buildProofClipFileName } from "@/lib/order-proof/clip-file-name";
 import { BUCKET_NAME, BUCKET_TTL_HOURS, SIGNED_URL_TTL_SECONDS } from "./config";
 
 /**
@@ -29,6 +30,10 @@ export type ProofClipSignedUrlResult =
   | {
       ok: true;
       signedUrl: string;
+      /** Cùng URL nhưng buộc trình duyệt tải xuống với tên file đẹp. */
+      downloadUrl: string;
+      /** `<mã vận đơn>-<ngày>-<giờ>.mp4`. */
+      fileName: string;
       expiresAt: string;
     }
   | {
@@ -59,7 +64,7 @@ export async function createProofClipSignedUrlByPackingEvent(
   const admin = createAdminClient();
   const { data: clips } = await admin
     .from("order_proof_clips")
-    .select("organization_id, status, bucket_path, bucket_uploaded_at")
+    .select("organization_id, status, bucket_path, bucket_uploaded_at, packing_event_id")
     .eq("packing_event_id", packingEventId)
     .neq("status", "superseded")
     .order("created_at", { ascending: false });
@@ -86,7 +91,7 @@ export async function createProofClipSignedUrlByClipId(
   const admin = createAdminClient();
   const { data: clip } = await admin
     .from("order_proof_clips")
-    .select("organization_id, status, bucket_path, bucket_uploaded_at")
+    .select("organization_id, status, bucket_path, bucket_uploaded_at, packing_event_id")
     .eq("id", clipId)
     .neq("status", "superseded")
     .maybeSingle();
@@ -97,10 +102,30 @@ export async function createProofClipSignedUrlByClipId(
   return signIfBucketValid(clip);
 }
 
+/**
+ * Tên file tải xuống lấy từ `packing_events` chứ không từ
+ * `order_proof_clips.waybill_code`: cột trên clip có row để rỗng (thấy
+ * trong dữ liệu thật), còn packing_event luôn là nguồn đúng của mã đơn và
+ * thời điểm quét.
+ */
+async function resolveDownloadFileName(packingEventId: string | null): Promise<string> {
+  if (!packingEventId) return buildProofClipFileName({ waybillCode: null, scannedAt: null });
+  const { data: event } = await createAdminClient()
+    .from("packing_events")
+    .select("waybill_code, scanned_at")
+    .eq("id", packingEventId)
+    .maybeSingle();
+  return buildProofClipFileName({
+    waybillCode: event?.waybill_code ?? null,
+    scannedAt: event?.scanned_at ?? null,
+  });
+}
+
 async function signIfBucketValid(clip: {
   status: string | null;
   bucket_path: string | null;
   bucket_uploaded_at: string | null;
+  packing_event_id?: string | null;
 }): Promise<ProofClipSignedUrlResult> {
   if (clip.status !== "ready") return { ok: false, reason: "not_ready" };
   if (!clip.bucket_path || !clip.bucket_uploaded_at) {
@@ -123,9 +148,17 @@ async function signIfBucketValid(clip: {
       message: signedErr?.message ?? "unknown",
     };
   }
+  // Hai URL từ cùng một chữ ký: URL trần để `<video>` phát inline, URL kèm
+  // `download` để nút tải xuống nhận Content-Disposition với tên file đẹp.
+  // Không ký lần hai — chỉ thêm query param, đúng cách supabase-js làm khi
+  // truyền option `download`.
+  const fileName = await resolveDownloadFileName(clip.packing_event_id ?? null);
+  const downloadUrl = `${signed.signedUrl}${signed.signedUrl.includes("?") ? "&" : "?"}download=${encodeURIComponent(fileName)}`;
   return {
     ok: true,
     signedUrl: signed.signedUrl,
+    downloadUrl,
+    fileName,
     expiresAt: new Date(Date.now() + SIGNED_URL_TTL_SECONDS * 1000).toISOString(),
   };
 }

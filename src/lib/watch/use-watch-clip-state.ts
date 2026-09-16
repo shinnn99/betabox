@@ -73,6 +73,8 @@ interface WatchApiResponse {
     | "offline_giveup"
     | "order_open";
   signed_url?: string;
+  download_url?: string;
+  file_name?: string;
   expires_at?: string;
   regenerating?: boolean;
   regeneration_state?: RegenerationState;
@@ -85,6 +87,9 @@ interface WatchApiResponse {
 export interface UseWatchClipStateResult {
   state: WatchClipState;
   signedUrl: string | null;
+  /** URL ép tải xuống, tên file `<mã vận đơn>-<ngày>-<giờ>.mp4`. */
+  downloadUrl: string | null;
+  fileName: string | null;
   errorMessage: string | null;
   offlineDurationSeconds: number | null;
   /** Chỉ có khi state=order_open: đơn đã mở bao nhiêu giây. */
@@ -103,6 +108,8 @@ export interface UseWatchClipStateResult {
 export function useWatchClipState(peId: string): UseWatchClipStateResult {
   const [state, setState] = useState<WatchClipState>("idle");
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [fileName, setFileName] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [offlineDurationSeconds, setOfflineDurationSeconds] = useState<
     number | null
@@ -149,6 +156,8 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
 
       if (data.state === "ready" && data.signed_url) {
         setSignedUrl(data.signed_url);
+        setDownloadUrl(data.download_url ?? null);
+        setFileName(data.file_name ?? null);
         setState("ready");
         setErrorMessage(null);
         setOfflineDurationSeconds(null);
@@ -339,6 +348,8 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
   return {
     state,
     signedUrl,
+    downloadUrl,
+    fileName,
     errorMessage,
     offlineDurationSeconds,
     openDurationSeconds,
