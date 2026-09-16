@@ -46,7 +46,7 @@ async function readBody(req: Request): Promise<DiscoverBody> {
 
 // POST: enqueue command; trả command_id để UI poll.
 export async function POST(req: Request) {
-  const ctx = await requirePermission("camera.view");
+  const ctx = await requirePermission("camera.view", req);
   if (isError(ctx)) return ctx;
 
   const body = await readBody(req);

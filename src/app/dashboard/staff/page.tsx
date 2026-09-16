@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "../../../lib/api-fetch";
 import { useEffect, useState, useCallback, useMemo } from "react";
 import QRCode from "qrcode";
 import {
@@ -153,7 +154,7 @@ export default function StaffPage() {
       variant: "danger",
     });
     if (!ok) return;
-    const res = await fetch(`/api/staff/${s.id}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/staff/${s.id}`, { method: "DELETE" });
     const data = await res.json();
     if (!res.ok) {
       toast.error(data.message ?? data.error ?? "Xoá thất bại");
@@ -581,7 +582,7 @@ function LinkUserDialog({
     if (!selectedUserId) return;
     setSaving(true);
     setErr("");
-    const res = await fetch(`/api/staff/${staff.id}/link-user`, {
+    const res = await apiFetch(`/api/staff/${staff.id}/link-user`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: selectedUserId }),
@@ -605,7 +606,7 @@ function LinkUserDialog({
     if (!ok) return;
     setSaving(true);
     setErr("");
-    const res = await fetch(`/api/staff/${staff.id}/link-user`, { method: "DELETE" });
+    const res = await apiFetch(`/api/staff/${staff.id}/link-user`, { method: "DELETE" });
     const data = await res.json();
     setSaving(false);
     if (!res.ok) {
@@ -618,7 +619,7 @@ function LinkUserDialog({
   const doInvite = async () => {
     setSaving(true);
     setErr("");
-    const res = await fetch(`/api/staff/${staff.id}/invite`, {
+    const res = await apiFetch(`/api/staff/${staff.id}/invite`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(inviteForm),
@@ -962,7 +963,7 @@ function QrDialog({ staff, onClose }: { staff: StaffRow; onClose: () => void }) 
     }
     setRegenerating(true);
     setErr("");
-    const res = await fetch(`/api/staff/${staff.id}/qr`, { method: "POST" });
+    const res = await apiFetch(`/api/staff/${staff.id}/qr`, { method: "POST" });
     const data = await res.json();
     setRegenerating(false);
     if (!res.ok) {

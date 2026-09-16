@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "../api-fetch";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
@@ -140,7 +141,7 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
 
   const tick = useCallback(async () => {
     try {
-      const res = await fetch(`/api/order-proof/${peId}/watch`, {
+      const res = await apiFetch(`/api/order-proof/${peId}/watch`, {
         method: "POST",
         cache: "no-store",
       });
@@ -252,7 +253,7 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
     // enqueue generation MỚI song song với ready cũ (nếu có). /watch
     // tick kế sẽ thấy state kép ready + regenerating=true.
     try {
-      const res = await fetch(`/api/order-proof/${peId}/watch/retry`, {
+      const res = await apiFetch(`/api/order-proof/${peId}/watch/retry`, {
         method: "POST",
         cache: "no-store",
       });

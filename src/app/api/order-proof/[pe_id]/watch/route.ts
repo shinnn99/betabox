@@ -101,7 +101,7 @@ async function hasRecentEnqueuedCut(
   return (data ?? []).length > 0;
 }
 
-export async function POST(_req: Request, ctx: RouteContext) {
+export async function POST(req: Request, ctx: RouteContext) {
   const { pe_id: packingEventId } = await ctx.params;
 
   if (!/^[0-9a-f-]{36}$/i.test(packingEventId)) {
@@ -111,7 +111,7 @@ export async function POST(_req: Request, ctx: RouteContext) {
     );
   }
 
-  const authCtx = await requirePermissionStrict("order_proof.view");
+  const authCtx = await requirePermissionStrict("order_proof.view", req);
   if (isError(authCtx)) {
     // requirePermissionStrict trả NextResponse với status thật (401/403). Wrap
     // vào WatchResponse shape để client parse thống nhất — giữ status gốc.

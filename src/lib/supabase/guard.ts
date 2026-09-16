@@ -5,6 +5,7 @@ import { createClient } from "./server";
 import { createAdminClient } from "./admin";
 import { verifyOrgContext } from "@/lib/platform/internal-headers";
 import { checkPlatformAdmin, type PlatformRole } from "@/lib/platform/admin-check";
+import { evaluateRenderOrg } from "./render-org-guard";
 import type { Role } from "@/lib/auth";
 
 const INTERNAL_ORG_CTX_HEADER = "x-internal-org-ctx";
@@ -13,35 +14,71 @@ const RENDER_ORG_ID_HEADER = "x-render-org-id";
 // ============================================================================
 // checkRenderOrgMatch — Vế 4: đóng cửa sổ ghi-nhầm về 0.
 //
-// Header-tín-hiệu: client wrapper gửi `x-render-org-id` CHỈ cho POST/PUT/DELETE
-// (đọc từ data-render-org-id nhúng server-side khi render trang). Guard đọc
-// header — có → so vs ctx.organizationId (org-sau-verify-token, cái sắp ghi);
-// không → GET/read, bỏ qua.
+// Client wrapper `apiFetch` gắn `x-render-org-id` cho mọi request GHI (đọc từ
+// data-render-org-id mà layout dashboard nhúng server-side). Guard so nó với
+// ctx.organizationId — org-sau-verify-token, tức org SẮP BỊ GHI VÀO.
 //
 // Cửa sổ 2-tab (tab A render org X, tab B đổi cookie sang Y, tab A submit trước
-// khi reload): request mang x-render-org-id=X + cookie/token=Y → guard so
-// X vs Y → lệch → 409. Không ghi vào Y. Cửa sổ đóng tại server, không phụ
-// thuộc client kịp reload hay không.
+// khi reload): request mang x-render-org-id=X + cookie/token=Y → lệch → 409.
+// Không ghi vào Y. Cửa sổ đóng tại server, không phụ thuộc client kịp reload.
 //
-// Lỗ khi header vắng (client không dùng wrapper, hoặc wrapper bug): rơi vào
-// non-write hoặc bỏ qua so — hở cửa sổ. Chấp nhận vì:
-//   1. Wrapper là MỘT chỗ (api-fetch.tsx), test được.
-//   2. Guard vẫn verify token → tenant không phải platform-admin không tới đây.
-//   3. Vế 4 chống NHẦM-TAY, không chống tấn công (token gate chống tấn công).
+// ── 2026-09-16: chuyển fail-OPEN → fail-CLOSED ──────────────────────────────
+// Bản cũ bỏ qua kiểm tra khi header vắng, với lý do "vắng header nghĩa là GET".
+// Suy luận đó dùng chính thứ cần chứng minh làm bằng chứng: header vắng cũng có
+// thể là một request GHI từ client không dùng wrapper — và rà soát cho thấy
+// 41/49 điểm ghi trong dashboard gọi `fetch` trần.
+//
+// Nó đã cắn: 2026-09-16 03:20, tab mở sẵn org Đại Kim nhận thao tác nhắm vào
+// org Demo. PUT /api/cameras/{id} không kèm header → guard cho qua → camera
+// `dahua_01` của kho thật bị ghi đè 8 trường, kho mất ghi hình ~24 giờ.
+//
+// Giờ method là tham số tường minh (không suy từ sự có mặt của header), và
+// request GHI thiếu header bị CHẶN. Đánh đổi: mọi client ghi buộc phải đi qua
+// `apiFetch`; quên thì vỡ ngay lúc dev thay vì im lặng ghi nhầm org khách.
+//
+// Quyết định thuần nằm ở `evaluateRenderOrg` (render-org-guard.ts) để test
+// được không cần server — xem tests/render-org-guard.test.ts.
 // ============================================================================
 function checkRenderOrgMatch(
   ctx: ApiContext,
+  method: string | null,
   renderOrgId: string | null
 ): NextResponse | null {
-  if (!renderOrgId) return null; // Không header → GET, bỏ qua
-  if (renderOrgId === ctx.organizationId) return null; // Khớp → OK
-  return NextResponse.json(
-    {
-      error: "org_context_changed",
-      message: "Tổ chức đang xem đã đổi ở tab khác. Vui lòng tải lại trang.",
-    },
-    { status: 409 }
-  );
+  const verdict = evaluateRenderOrg(method, renderOrgId, ctx.organizationId);
+
+  switch (verdict.kind) {
+    case "skip":
+    case "allow":
+      return null;
+
+    case "mismatch":
+      return NextResponse.json(
+        {
+          error: "org_context_changed",
+          message:
+            "Tổ chức đang xem đã đổi ở tab khác. Vui lòng tải lại trang.",
+        },
+        { status: 409 }
+      );
+
+    case "missing":
+      // Không phải lỗi người dùng — là client gọi `fetch` trần thay vì
+      // `apiFetch`. Log đủ để tìm ra đường gọi còn sót; trả cùng mã 409 để
+      // wrapper tự reload (nếu sau này được sửa đúng) thay vì hiện lỗi lạ.
+      console.error("[guard] write request thiếu x-render-org-id", {
+        method,
+        userId: ctx.userId,
+        organizationId: ctx.organizationId,
+      });
+      return NextResponse.json(
+        {
+          error: "org_context_missing",
+          message:
+            "Không xác định được tổ chức của trang. Vui lòng tải lại trang.",
+        },
+        { status: 409 }
+      );
+  }
 }
 
 export interface ApiContext {
@@ -115,7 +152,7 @@ function resolveTenant(jwt: {
 // Lớp B (checkPlatformAdmin) gate trước lớp C (verifyOrgContext) —
 // tenant giả token vô hại (dừng ở B, không tới C).
 // ============================================================================
-async function readClaims(): Promise<ApiContext | NextResponse> {
+async function readClaims(method: string | null): Promise<ApiContext | NextResponse> {
   // LỚP A: JWT
   const jwt = await readJwtClaims();
   if (jwt instanceof NextResponse) return jwt;
@@ -129,9 +166,8 @@ async function readClaims(): Promise<ApiContext | NextResponse> {
   if (!token) {
     const ctx = resolveTenant(jwt);
     if (ctx instanceof NextResponse) return ctx;
-    // Vế 4: header-tín-hiệu — có x-render-org-id nghĩa là request GHI
-    // (client wrapper chỉ gửi cho POST/PUT/DELETE) → so vs ctx.organizationId
-    const mismatch = checkRenderOrgMatch(ctx, renderOrgId);
+    // Vế 4: request GHI phải chứng minh org của trang khớp org sắp ghi vào.
+    const mismatch = checkRenderOrgMatch(ctx, method, renderOrgId);
     if (mismatch) return mismatch;
     return ctx;
   }
@@ -160,7 +196,7 @@ async function readClaims(): Promise<ApiContext | NextResponse> {
     const ctx = resolveTenant(jwt);
     if (ctx instanceof NextResponse) return ctx;
     // Vế 4 áp cho nhánh này (tenant có token bất thường → bỏ token, đường tenant)
-    const mismatch = checkRenderOrgMatch(ctx, renderOrgId);
+    const mismatch = checkRenderOrgMatch(ctx, method, renderOrgId);
     if (mismatch) return mismatch;
     return ctx;
   }
@@ -220,22 +256,29 @@ async function readClaims(): Promise<ApiContext | NextResponse> {
 
   // ═══════ VẾ 4: so x-render-org-id vs org-TRONG-TOKEN (ctx.organizationId) ═══
   // Đặt SAU verifyOrgContext (ctx.organizationId = verify.orgId, org đã-verify
-  // độc-lập-cookie). Client wrapper gửi header CHỈ cho POST/PUT/DELETE →
-  // header có mặt = tín hiệu ghi. Lệch → 409, đóng cửa sổ ghi-nhầm.
-  const mismatch = checkRenderOrgMatch(ctx, renderOrgId);
+  // độc-lập-cookie). Lệch hoặc thiếu → 409, đóng cửa sổ ghi-nhầm.
+  const mismatch = checkRenderOrgMatch(ctx, method, renderOrgId);
   if (mismatch) return mismatch;
 
   return ctx;
 }
 
 // ============================================================================
-// requirePermission — SIGNATURE KHÔNG ĐỔI (backward-compat 51 route)
-// Non-strict: đọc role từ JWT claim, nhanh, chấp nhận token cũ vài phút.
+// requirePermission — Non-strict: đọc role từ JWT claim, nhanh, chấp nhận
+// token cũ vài phút.
+//
+// `req` là TÙY CHỌN nhưng nên truyền: guard lấy method từ đó để biết request
+// này có phải request GHI hay không (vế 4). Không truyền → method = null →
+// evaluateRenderOrg coi là đọc và bỏ qua kiểm tra ngữ cảnh org.
+//
+// Route GHI mà quên truyền `req` sẽ mất lớp chống ghi-nhầm-org. Script
+// scripts/check-write-routes-pass-request.mjs chặn ca đó ở prebuild.
 // ============================================================================
 export async function requirePermission(
-  permission: string
+  permission: string,
+  req?: Request
 ): Promise<ApiContext | NextResponse> {
-  const ctx = await readClaims();
+  const ctx = await readClaims(req?.method ?? null);
   if (ctx instanceof NextResponse) return ctx;
 
   // Platform bypass matrix tenant (Q3.3 — full quyền impersonate)
@@ -252,13 +295,17 @@ export async function requirePermission(
 }
 
 // ============================================================================
-// requirePermissionStrict — SIGNATURE KHÔNG ĐỔI (backward-compat)
-// Strict: re-check role từ DB. Dùng cho create/update/delete nhạy.
+// requirePermissionStrict — Strict: re-check role từ DB. Dùng cho
+// create/update/delete nhạy.
+//
+// `req` tùy chọn — xem ghi chú ở requirePermission. Hàm này gần như luôn được
+// gọi từ route GHI, nên gần như luôn phải truyền.
 // ============================================================================
 export async function requirePermissionStrict(
-  permission: string
+  permission: string,
+  req?: Request
 ): Promise<ApiContext | NextResponse> {
-  const ctx = await readClaims();
+  const ctx = await readClaims(req?.method ?? null);
   if (ctx instanceof NextResponse) return ctx;
 
   if (ctx.isPlatform) return ctx; // Platform bypass strict cũng

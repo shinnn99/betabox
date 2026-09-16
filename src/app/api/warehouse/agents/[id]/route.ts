@@ -17,8 +17,8 @@ interface RouteContext {
  * Ca dùng: khách đóng cửa 1 kho, hoặc thay máy PC hoàn toàn. Không nên
  * dùng cho "reset secret" — có API riêng.
  */
-export async function DELETE(_req: Request, ctx: RouteContext) {
-  const authCtx = await requirePermissionStrict("station_device.create");
+export async function DELETE(req: Request, ctx: RouteContext) {
+  const authCtx = await requirePermissionStrict("station_device.create", req);
   if (isError(authCtx)) return authCtx;
 
   const { id } = await ctx.params;

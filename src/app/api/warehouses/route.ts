@@ -21,7 +21,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const ctx = await requirePermissionStrict("warehouse.create");
+  const ctx = await requirePermissionStrict("warehouse.create", req);
   if (isError(ctx)) return ctx;
 
   const body = await req.json().catch(() => null);

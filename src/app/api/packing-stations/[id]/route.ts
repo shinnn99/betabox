@@ -14,7 +14,7 @@ interface RouteContext {
 export const runtime = "nodejs";
 
 export async function PATCH(req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("packing_station.update");
+  const ctx = await requirePermissionStrict("packing_station.update", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 
@@ -62,8 +62,8 @@ export async function PATCH(req: Request, { params }: RouteContext) {
  * staff_work_sessions / packing_events reference them via FK. The dashboard
  * filters out archived rows where appropriate.
  */
-export async function DELETE(_req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("packing_station.archive");
+export async function DELETE(req: Request, { params }: RouteContext) {
+  const ctx = await requirePermissionStrict("packing_station.archive", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 

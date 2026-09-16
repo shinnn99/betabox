@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "../../../lib/api-fetch";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Wrench,
@@ -193,7 +194,7 @@ export default function PackingStationsPage() {
       variant: "danger",
     });
     if (!ok) return;
-    const res = await fetch(`/api/packing-stations/${st.id}`, {
+    const res = await apiFetch(`/api/packing-stations/${st.id}`, {
       method: "DELETE",
     });
     const data = await res.json();

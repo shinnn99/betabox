@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "../../../lib/api-fetch";
 import { useCallback, useEffect, useState } from "react";
 import {
   Server,
@@ -85,7 +86,7 @@ export default function AgentsPage() {
     if (!ok) return;
     setBusy(row.id);
     try {
-      const res = await fetch(`/api/warehouse/agents/${row.id}/reset-secret`, {
+      const res = await apiFetch(`/api/warehouse/agents/${row.id}/reset-secret`, {
         method: "POST",
       });
       const data = await res.json();
@@ -115,7 +116,7 @@ export default function AgentsPage() {
     if (!ok) return;
     setBusy(row.id);
     try {
-      const res = await fetch(`/api/warehouse/agents/${row.id}`, {
+      const res = await apiFetch(`/api/warehouse/agents/${row.id}`, {
         method: "DELETE",
       });
       if (!res.ok) {
@@ -276,7 +277,7 @@ function CreateAgentModal({
     e.preventDefault();
     setSaving(true);
     try {
-      const res = await fetch("/api/warehouse/agents", {
+      const res = await apiFetch("/api/warehouse/agents", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code, name }),

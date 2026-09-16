@@ -41,7 +41,7 @@ export async function GET() {
 }
 
 export async function PATCH(req: Request) {
-  const ctx = await requirePermissionStrict("organization.update");
+  const ctx = await requirePermissionStrict("organization.update", req);
   if (isError(ctx)) return ctx;
 
   const body = await req.json().catch(() => null);

@@ -54,7 +54,7 @@ export async function GET(req: NextRequest) {
  * Body: { device_id, station_id }
  */
 export async function POST(req: Request) {
-  const ctx = await requirePermissionStrict("station_device_assignment.manage");
+  const ctx = await requirePermissionStrict("station_device_assignment.manage", req);
   if (isError(ctx)) return ctx;
 
   const body = await req.json().catch(() => null);
@@ -225,7 +225,7 @@ export async function POST(req: Request) {
  * unassigned_at = now() but never hard-delete). Body: { device_id }
  */
 export async function DELETE(req: Request) {
-  const ctx = await requirePermissionStrict("station_device_assignment.manage");
+  const ctx = await requirePermissionStrict("station_device_assignment.manage", req);
   if (isError(ctx)) return ctx;
 
   const body = await req.json().catch(() => null);

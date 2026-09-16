@@ -39,7 +39,7 @@ function readTransport(v: unknown): RtspTransport {
 }
 
 export async function POST(req: NextRequest) {
-  const ctx = await requirePermissionStrict("camera.test");
+  const ctx = await requirePermissionStrict("camera.test", req);
   if (isError(ctx)) return ctx;
 
   const body = (await req.json().catch(() => null)) as TestDraftBody | null;

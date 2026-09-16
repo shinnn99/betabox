@@ -483,6 +483,13 @@ export async function createCamera(
 //   - undefined: keep existing password
 //   - "": clear password (set all three columns NULL)
 //   - non-empty string: encrypt and replace
+export interface UpdateCameraResult {
+  camera: CameraPublic | null;
+  /** Giá trị trước/sau của đúng các trường đã đổi — dành cho audit. */
+  auditDiff: Record<string, { from: unknown; to: unknown }>;
+}
+
+/** Giữ chữ ký cũ cho chỗ gọi không cần diff. */
 export async function updateCamera(
   organizationId: string,
   id: string,
@@ -490,6 +497,17 @@ export async function updateCamera(
     status?: "active" | "inactive" | "error";
   },
 ): Promise<CameraPublic | null> {
+  const { camera } = await updateCameraWithAudit(organizationId, id, input);
+  return camera;
+}
+
+export async function updateCameraWithAudit(
+  organizationId: string,
+  id: string,
+  input: Partial<CameraInput> & {
+    status?: "active" | "inactive" | "error";
+  },
+): Promise<UpdateCameraResult> {
   const update: Record<string, unknown> = {};
   if (input.name !== undefined) update.name = input.name.trim();
   if (input.camera_code !== undefined)
@@ -524,7 +542,7 @@ export async function updateCamera(
     }
   }
 
-  if (Object.keys(update).length === 0) return null;
+  if (Object.keys(update).length === 0) return { camera: null, auditDiff: {} };
 
   // HIGH-11: nếu đổi field kết nối (ip/rtsp_port/rtsp_path/username/password),
   // reset codec_detected snapshot cũ + enqueue probe mới. Atomic ở UPDATE
@@ -536,6 +554,25 @@ export async function updateCamera(
   }
 
   const admin = createAdminClient();
+
+  // Chụp giá trị TRƯỚC khi ghi để audit có đường lùi.
+  //
+  // Sự cố 2026-09-16: camera kho Đại Kim bị ghi đè 8 trường. Audit chỉ lưu
+  // TÊN trường (`fields: [...]`) nên không ai biết giá trị cũ là gì —
+  // `camera_code` phải suy ngược từ 18.192 `file_path` đã ghi, còn `ip` thì
+  // không nguồn nào giữ, phải ra tận kho đọc lại. Một SELECT ở đây biến việc
+  // khôi phục từ "truy vết nửa ngày" thành "đọc audit rồi PUT lại".
+  //
+  // Cố ý KHÔNG khoá hàng: đây là bản ghi để người đọc, không phải nguồn chân
+  // lý giao dịch. Hai lượt sửa song song cùng camera là chuyện không xảy ra
+  // trong thực tế vận hành, và nếu có thì audit vẫn kể đúng thứ tự.
+  const { data: before } = await admin
+    .from("cameras")
+    .select(ALL_COLUMNS)
+    .eq("organization_id", organizationId)
+    .eq("id", id)
+    .maybeSingle();
+
   const { data, error } = await admin
     .from("cameras")
     .update(update)
@@ -577,7 +614,52 @@ export async function updateCamera(
     }
   }
 
-  return data ? toPublicCamera(data as CameraRow) : null;
+  return {
+    camera: data ? toPublicCamera(data as CameraRow) : null,
+    auditDiff: buildCameraAuditDiff(
+      before as Record<string, unknown> | null,
+      data as Record<string, unknown> | null,
+    ),
+  };
+}
+
+// Trường được ghi lại nguyên văn trong audit. Cố ý KHÔNG có password —
+// audit là bản ghi để đọc lâu dài, không phải nơi giữ bí mật.
+const AUDITED_CAMERA_FIELDS = [
+  "name",
+  "camera_code",
+  "ip",
+  "rtsp_port",
+  "username",
+  "rtsp_path",
+  "rtsp_substream_path",
+  "location",
+  "status",
+] as const;
+
+/**
+ * Chụp lại giá trị CŨ của đúng những trường vừa bị đổi.
+ *
+ * Trả về `{ ip: { from, to } }` thay vì chỉ `["ip"]`. Khác biệt này là
+ * khoảng cách giữa "PUT lại giá trị cũ trong một phút" và sự cố 2026-09-16,
+ * nơi `ip` gốc của camera kho Đại Kim không còn tồn tại ở bất kỳ đâu trong
+ * hệ thống và phải ra tận kho đọc lại từ thiết bị.
+ *
+ * Chỉ ghi trường THỰC SỰ đổi giá trị — người sửa tên camera không nên tạo ra
+ * một bản ghi kể cả 9 trường không liên quan.
+ */
+export function buildCameraAuditDiff(
+  before: Record<string, unknown> | null | undefined,
+  after: Record<string, unknown> | null | undefined,
+): Record<string, { from: unknown; to: unknown }> {
+  if (!before || !after) return {};
+  const diff: Record<string, { from: unknown; to: unknown }> = {};
+  for (const field of AUDITED_CAMERA_FIELDS) {
+    const from = before[field] ?? null;
+    const to = after[field] ?? null;
+    if (from !== to) diff[field] = { from, to };
+  }
+  return diff;
 }
 
 export class HasProofClipsError extends Error {

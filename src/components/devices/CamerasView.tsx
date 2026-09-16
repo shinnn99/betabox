@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "../../lib/api-fetch";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -825,7 +826,7 @@ function DiscoverTab({
         // hoặc offline → HTTP 400 với message hiện luôn ở banner đỏ.
         const body: Record<string, unknown> = { mode };
         if (cidr) body.cidr = cidr;
-        const enqueueRes = await fetch("/api/cameras/discover", {
+        const enqueueRes = await apiFetch("/api/cameras/discover", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
@@ -1418,7 +1419,7 @@ function DiscoveredDeviceForm({
       // 1) Probe the RTSP endpoint with the supplied credentials. If this
       // fails we do NOT persist the camera — the user gets a precise
       // error and can correct it in place.
-      const testRes = await fetch("/api/cameras/test-draft", {
+      const testRes = await apiFetch("/api/cameras/test-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1438,7 +1439,7 @@ function DiscoveredDeviceForm({
       // 2) Only on a passing probe do we POST to /api/cameras. The DB
       // write path remains the same one the manual form uses, so
       // encryption / RLS / audit are identical.
-      const saveRes = await fetch("/api/cameras", {
+      const saveRes = await apiFetch("/api/cameras", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

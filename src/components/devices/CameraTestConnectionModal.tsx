@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "../../lib/api-fetch";
 import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -58,7 +59,7 @@ export function CameraTestConnectionModal({
     setBusy(true);
     try {
       const preTestedAt = camera.last_tested_at ?? null;
-      const enqRes = await fetch(`/api/cameras/${camera.id}/test-connection`, {
+      const enqRes = await apiFetch(`/api/cameras/${camera.id}/test-connection`, {
         method: "POST",
       });
       if (!enqRes.ok) {

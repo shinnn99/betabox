@@ -19,7 +19,7 @@ async function ensureStaff(staffId: string, orgId: string) {
 }
 
 export async function POST(req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("staff.invite");
+  const ctx = await requirePermissionStrict("staff.invite", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 
@@ -93,8 +93,8 @@ export async function POST(req: Request, { params }: RouteContext) {
   return NextResponse.json({ ok: true });
 }
 
-export async function DELETE(_req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("staff.invite");
+export async function DELETE(req: Request, { params }: RouteContext) {
+  const ctx = await requirePermissionStrict("staff.invite", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 

@@ -55,7 +55,7 @@ export async function GET(_req: Request, { params }: RouteContext) {
 }
 
 export async function PATCH(req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("warehouse.update");
+  const ctx = await requirePermissionStrict("warehouse.update", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 
@@ -180,8 +180,8 @@ export async function PATCH(req: Request, { params }: RouteContext) {
   return NextResponse.json({ ok: true });
 }
 
-export async function DELETE(_req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("warehouse.delete");
+export async function DELETE(req: Request, { params }: RouteContext) {
+  const ctx = await requirePermissionStrict("warehouse.delete", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 

@@ -7,7 +7,7 @@ import { audit } from "@/lib/audit";
 import {
   deleteCamera,
   HasProofClipsError,
-  updateCamera,
+  updateCameraWithAudit,
   validateCameraInput,
   type CameraInput,
 } from "@/lib/camera/service";
@@ -19,7 +19,7 @@ interface RouteContext {
 export const runtime = "nodejs";
 
 export async function PUT(req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("camera.update");
+  const ctx = await requirePermissionStrict("camera.update", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 
@@ -50,7 +50,11 @@ export async function PUT(req: Request, { params }: RouteContext) {
   if (v) return NextResponse.json({ error: "validation", ...v }, { status: 400 });
 
   try {
-    const camera = await updateCamera(ctx.organizationId, id, input);
+    const { camera, auditDiff } = await updateCameraWithAudit(
+      ctx.organizationId,
+      id,
+      input,
+    );
     if (!camera) {
       return NextResponse.json(
         { error: "not_found", message: "Không tìm thấy camera hoặc không có thay đổi." },
@@ -68,6 +72,10 @@ export async function PUT(req: Request, { params }: RouteContext) {
         // never include password in audit metadata
         fields: Object.keys(input).filter((k) => k !== "password"),
         password_changed: input.password !== undefined,
+        // Giá trị trước/sau. `fields` ở trên chỉ nói ĐÃ ĐỔI GÌ; `changes`
+        // nói ĐỔI TỪ GÌ SANG GÌ — thứ duy nhất cho phép khôi phục mà không
+        // phải truy ngược từ dữ liệu khác (sự cố 2026-09-16).
+        changes: auditDiff,
       },
     });
     return NextResponse.json({ camera });
@@ -86,8 +94,8 @@ export async function PUT(req: Request, { params }: RouteContext) {
   }
 }
 
-export async function DELETE(_req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("camera.archive");
+export async function DELETE(req: Request, { params }: RouteContext) {
+  const ctx = await requirePermissionStrict("camera.archive", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 

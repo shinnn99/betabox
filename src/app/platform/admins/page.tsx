@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "../../../lib/api-fetch";
 import { useEffect, useState, useCallback } from "react";
 import {
   Users,
@@ -94,7 +95,7 @@ export default function PlatformAdminsPage() {
     ) {
       return;
     }
-    const res = await fetch(`/api/platform/admins/${a.id}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/platform/admins/${a.id}`, { method: "DELETE" });
     const data = await res.json();
     if (!res.ok) {
       alert(data.message ?? data.error ?? "Xóa lỗi");
@@ -577,7 +578,7 @@ function AddAdminModal({
     e.preventDefault();
     setLoading(true);
     setError("");
-    const res = await fetch("/api/platform/admins", {
+    const res = await apiFetch("/api/platform/admins", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(form),

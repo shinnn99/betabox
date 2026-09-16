@@ -47,7 +47,7 @@ export async function GET() {
 const CODE_RE = /^[A-Z0-9][A-Z0-9_-]{2,63}$/;
 
 export async function POST(req: Request) {
-  const ctx = await requirePermissionStrict("station_device.create");
+  const ctx = await requirePermissionStrict("station_device.create", req);
   if (isError(ctx)) return ctx;
 
   const body = (await req.json().catch(() => null)) as {
