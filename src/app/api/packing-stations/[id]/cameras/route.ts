@@ -8,6 +8,7 @@ import { findCameraStation, type StationCameraRole } from "@/lib/camera/station-
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isError, requirePermissionStrict } from "@/lib/supabase/guard";
 import { readAgentLiveness } from "@/lib/watch/agent-liveness";
+import { normalizeMac } from "@/lib/camera/mac";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,6 +30,11 @@ export async function POST(req: Request, { params }: RouteContext) {
 
   const role = roleFrom(body.role);
   const ip = typeof body.ip === "string" ? body.ip.trim() : "";
+  // MAC lay tu lan quet LAN. Day la dinh danh on dinh cua camera — IP chi
+  // la dia chi hien tai, DHCP doi luc nao cung duoc.
+  const macAddress = normalizeMac(
+    typeof body.mac_address === "string" ? body.mac_address : null,
+  );
   const username = typeof body.username === "string" ? body.username.trim() : "admin";
   const password = typeof body.password === "string" ? body.password : "";
   const rtspPort = Number(body.rtsp_port ?? 554);
@@ -47,13 +53,47 @@ export async function POST(req: Request, { params }: RouteContext) {
   if (liveness.is_offline) return NextResponse.json({ error: "agent_offline", message: "Agent của bàn đang offline." }, { status: 409 });
 
   const requestedCameraId = typeof body.camera_id === "string" ? body.camera_id.trim() : "";
-  let cameraQuery = admin
-    .from("cameras")
-    .select("id, camera_code, name, ip")
-    .eq("organization_id", ctx.organizationId);
-  cameraQuery = requestedCameraId ? cameraQuery.eq("id", requestedCameraId) : cameraQuery.eq("ip", ip);
-  const { data: existingCamera, error: existingError } = await cameraQuery.limit(1).maybeSingle();
-  if (existingError) return NextResponse.json({ error: "camera_lookup_failed", message: existingError.message }, { status: 500 });
+  // Thu tu tra cuu co chu dinh: id (nguoi dung chon ro) -> MAC (dinh danh
+  // on dinh) -> IP (chi con la phong khi database chua co cot MAC). Tra
+  // theo IP truoc se nhan nham khi DHCP vua cap lai dia chi cho may khac.
+  type CameraLookupRow = { id: string; camera_code: string; name: string; ip: string };
+  const CAMERA_COLUMNS = "id, camera_code, name, ip";
+  const orgId = ctx.organizationId;
+
+  let existingCamera: CameraLookupRow | null = null;
+  if (requestedCameraId) {
+    const { data, error } = await admin
+      .from("cameras")
+      .select(CAMERA_COLUMNS)
+      .eq("organization_id", orgId)
+      .eq("id", requestedCameraId)
+      .maybeSingle();
+    if (error) return NextResponse.json({ error: "camera_lookup_failed", message: error.message }, { status: 500 });
+    existingCamera = data;
+  } else {
+    if (macAddress) {
+      const { data, error } = await admin
+        .from("cameras")
+        .select(CAMERA_COLUMNS)
+        .eq("organization_id", orgId)
+        .eq("mac_address", macAddress)
+        .maybeSingle();
+      // Loi o day gan nhu chac chan la database chua ap migration MAC —
+      // khong chan luong, roi xuong tra theo IP.
+      if (!error) existingCamera = data;
+    }
+    if (!existingCamera) {
+      const { data, error } = await admin
+        .from("cameras")
+        .select(CAMERA_COLUMNS)
+        .eq("organization_id", orgId)
+        .eq("ip", ip)
+        .maybeSingle();
+      if (error) return NextResponse.json({ error: "camera_lookup_failed", message: error.message }, { status: 500 });
+      existingCamera = data;
+    }
+  }
+
   if (requestedCameraId && !existingCamera) return NextResponse.json({ error: "camera_not_found" }, { status: 404 });
 
   if (existingCamera) {
@@ -86,6 +126,7 @@ export async function POST(req: Request, { params }: RouteContext) {
         password_tag: encrypted.tag,
         agent_id: agent.id,
         status: "inactive",
+        ...(macAddress ? { mac_address: macAddress } : {}),
       })
       .eq("organization_id", ctx.organizationId)
       .eq("id", existingCamera.id);
@@ -106,6 +147,7 @@ export async function POST(req: Request, { params }: RouteContext) {
         password,
         rtsp_path: typeof body.rtsp_path === "string" && body.rtsp_path.trim() ? body.rtsp_path.trim() : "/Streaming/Channels/101",
         location: station.name,
+        mac_address: macAddress,
       },
       { agentId: agent.id, status: "inactive" },
     );

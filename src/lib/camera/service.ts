@@ -100,7 +100,13 @@ export interface CameraPublic {
     station_code: string;
     station_name: string;
     warehouse_id: string;
+    /**
+     * Giữ lại cho các màn hình cũ. `is_primary` khong phan biet duoc
+     * "camera QR" voi "chua dat vai tro" — dung `role` khi can biet ro.
+     */
     is_primary: boolean;
+    /** proof_primary = toan canh, proof_qr = quet ma. null = chua dat. */
+    role: "proof_primary" | "proof_qr" | null;
   } | null;
   // 1.2: codec onboard-probe. Null nếu chưa probe.
   codec_detected: string | null;
@@ -246,6 +252,10 @@ async function loadCameraStationMap(
       station_name: stn.name,
       warehouse_id: stn.warehouse_id,
       is_primary: role === "proof_primary",
+      role:
+        role === "proof_primary" || role === "proof_qr"
+          ? (role as "proof_primary" | "proof_qr")
+          : null,
     });
   }
   cache.stationMap.set(organizationId, {
@@ -477,6 +487,22 @@ export async function ensureQrVirtualScanners(
     stationId: stationByDevice.get(d.id) ?? null,
   }));
 
+  // Chi ban nao quet bang camera moi can scanner ao. Ban dung sung quet
+  // phan cung thi khong sinh gi — neu khong, moi camera dat o vi tri QR
+  // deu de ra mot `qrcam_*` khong ai dung toi.
+  const stationIds = [...new Set([...stationByDevice.values()])];
+  const cameraScanStations = new Set<string>();
+  if (stationIds.length > 0) {
+    const { data: stationRows } = await admin
+      .from("packing_stations")
+      .select("id, scan_source")
+      .eq("organization_id", organizationId)
+      .in("id", stationIds);
+    for (const row of (stationRows ?? []) as Array<{ id: string; scan_source: string | null }>) {
+      if (row.scan_source === "camera") cameraScanStations.add(row.id);
+    }
+  }
+
   const qrCameraDevices: QrCameraDeviceInput[] = qrCameraRows.map((d) => ({
     deviceId: d.id,
     cameraId: String(d.config_json?.camera_id ?? ""),
@@ -488,6 +514,7 @@ export async function ensureQrVirtualScanners(
     qrCameraDevices,
     virtualScanners,
     cameraCodeById: new Map(cameras.map((c) => [c.id, c.camera_code])),
+    cameraScanStationIds: cameraScanStations,
   });
   cache.qrScannersCheckedAt.set(organizationId, Date.now());
   if (repairs.length === 0) return;
@@ -521,15 +548,42 @@ export async function ensureQrVirtualScanners(
           }
           continue;
         }
-        await admin.from("station_device_assignments").insert({
-          organization_id: organizationId,
-          device_id: created.id,
-          station_id: repair.stationId,
-          assigned_at: now,
-          status: "active",
-        });
+        // 23505 o day = duong gan thiet bi vua chen truoc mot nhip. Ket qua
+        // giong het cai ta muon, nen im lang bo qua thay vi keu loi.
+        const { error: assignErr } = await admin
+          .from("station_device_assignments")
+          .insert({
+            organization_id: organizationId,
+            device_id: created.id,
+            station_id: repair.stationId,
+            assigned_at: now,
+            status: "active",
+          });
+        if (assignErr && (assignErr as { code?: string }).code !== "23505") {
+          console.warn(
+            `[camera] gán scanner ảo ${repair.deviceCode} thất bại: ${assignErr.message}`,
+          );
+        }
         console.warn(
           `[camera] đã tạo scanner ảo ${repair.deviceCode} và gán vào bàn ${repair.stationId} — trước đó mọi lần quét bằng camera đều trả unmapped_scanner`,
+        );
+        continue;
+      }
+
+      if (repair.kind === "detach") {
+        await admin
+          .from("station_device_assignments")
+          .update({ unassigned_at: now, status: "ended" })
+          .eq("organization_id", organizationId)
+          .eq("device_id", repair.deviceId)
+          .is("unassigned_at", null);
+        await admin
+          .from("station_devices")
+          .update({ status: "archived", updated_at: now })
+          .eq("organization_id", organizationId)
+          .eq("id", repair.deviceId);
+        console.warn(
+          `[camera] đã gỡ scanner ảo ${repair.deviceCode} — không còn camera quét mã nào đứng sau nó`,
         );
         continue;
       }
@@ -552,13 +606,20 @@ export async function ensureQrVirtualScanners(
         .eq("organization_id", organizationId)
         .eq("device_id", repair.deviceId)
         .is("unassigned_at", null);
-      await admin.from("station_device_assignments").insert({
-        organization_id: organizationId,
-        device_id: repair.deviceId,
-        station_id: repair.stationId,
-        assigned_at: now,
-        status: "active",
-      });
+      const { error: reassignErr } = await admin
+        .from("station_device_assignments")
+        .insert({
+          organization_id: organizationId,
+          device_id: repair.deviceId,
+          station_id: repair.stationId,
+          assigned_at: now,
+          status: "active",
+        });
+      if (reassignErr && (reassignErr as { code?: string }).code !== "23505") {
+        console.warn(
+          `[camera] gán lại scanner ảo ${repair.deviceCode} thất bại: ${reassignErr.message}`,
+        );
+      }
       console.warn(
         `[camera] đã gán scanner ảo ${repair.deviceCode} vào bàn ${repair.stationId}`,
       );

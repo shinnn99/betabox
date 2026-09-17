@@ -1,7 +1,11 @@
 import { AGENT_API_PATHS } from "./agent-api-paths";
 import { findIpByMac, normalizeMac } from "./lan-arp";
 import { tcpConnect } from "./camera-probe";
-import { scanForCameras, type DiscoveredDevice } from "./lan-discovery";
+import {
+  listCandidateSubnets,
+  scanForCameras,
+  type DiscoveredDevice,
+} from "./lan-discovery";
 import { describeFetchError, fetchWithRetrySigned } from "./fetch-error";
 import { signBodyV2 } from "./signing";
 
@@ -30,6 +34,12 @@ import { signBodyV2 } from "./signing";
 
 export const HEAL_AFTER_CONSECUTIVE_FAILS = 3;
 export const HEAL_COOLDOWN_MS = 10 * 60_000;
+/**
+ * Số subnet tối đa quét trong một lần chữa. Mỗi lần quét /24 mở 254 kết
+ * nối TCP trên chính máy đang ghi hình — quét cả chục mạng ảo của Docker
+ * hay VPN là phá nhiều hơn chữa.
+ */
+export const MAX_HEAL_SUBNETS = 3;
 
 export interface HealCandidate {
   cameraId: string;
@@ -37,6 +47,14 @@ export interface HealCandidate {
   ip: string;
   macAddress: string | null;
   consecutiveFails: number;
+  /**
+   * IP đang lưu KHÔNG thuộc mạng nào máy này đang nối.
+   *
+   * Dấu hiệu chắc chắn của đổi mạng (cài ở wifi này, chạy ở wifi khác).
+   * Probe thêm hai nhịp nữa cũng chỉ hỏng — địa chỉ đó không thể tồn tại
+   * ở đây. Chữa ngay từ nhịp hỏng đầu tiên.
+   */
+  outsideLocalSubnets?: boolean;
 }
 
 /**
@@ -49,7 +67,10 @@ export function shouldAttemptHeal(input: {
 }): boolean {
   const { candidate } = input;
   if (!normalizeMac(candidate.macAddress)) return false;
-  if (candidate.consecutiveFails < HEAL_AFTER_CONSECUTIVE_FAILS) return false;
+  // Đổi mạng thì không cần chờ đủ ba nhịp: chờ để xác nhận một điều đã
+  // chắc chắn chỉ là kéo dài thời gian bàn không có hình.
+  const needFails = candidate.outsideLocalSubnets ? 1 : HEAL_AFTER_CONSECUTIVE_FAILS;
+  if (candidate.consecutiveFails < needFails) return false;
   if (input.lastAttemptAtMs === null) return true;
   return input.nowMs - input.lastAttemptAtMs >= HEAL_COOLDOWN_MS;
 }
@@ -99,6 +120,8 @@ export async function healCameraIp(params: {
   agentSecret: string;
   candidate: HealCandidate;
   scan?: typeof scanForCameras;
+  /** Cho test: thay danh sách subnet của máy. */
+  listSubnets?: typeof listCandidateSubnets;
   /** Cho test: thay bước tra bảng ARP. */
   findIpByMac?: typeof findIpByMac;
   /** Cho test: thay bước xác nhận cổng RTSP. */
@@ -113,37 +136,52 @@ export async function healCameraIp(params: {
     `[camera-heal] camera=${params.candidate.cameraCode} mất kết nối ở ${params.candidate.ip}, quét lại ${cidr} theo MAC ${mac}`,
   );
 
-  const subnetPrefix = `${cidr.slice(0, cidr.lastIndexOf("."))}.`;
   const findInArp = params.findIpByMac ?? findIpByMac;
 
-  // Bước 1: hỏi bảng ARP trước. Rẻ (vài ms) và đáng tin hơn quét cổng,
-  // vì thiết bị trả lời ARP kể cả khi bắt tay TCP 1 giây không kịp.
-  let newIp = await findInArp(mac, { subnetPrefix });
+  // Bước 1: hỏi bảng ARP trước, KHÔNG giới hạn subnet. Rẻ (vài ms) và
+  // đáng tin hơn quét cổng, vì thiết bị trả lời ARP kể cả khi bắt tay TCP
+  // 1 giây không kịp. Không giới hạn subnet là để bắt được trường hợp đổi
+  // mạng: cài ở wifi này, chạy ở wifi khác, IP sang hẳn dải mới.
+  let newIp = await findInArp(mac, {});
 
   // Bước 2: ARP chưa biết IP mới (camera vừa đổi sang IP mà máy này chưa
   // từng nói chuyện) thì mới quét — quét cũng chính là cách đánh thức ARP.
+  //
+  // Quét subnet CŨ của camera trước, rồi tới các subnet máy đang nối. Thứ
+  // tự đó vì phần lớn trường hợp camera chỉ đổi IP trong cùng mạng; còn
+  // đổi mạng hẳn thì subnet mới nằm ở danh sách sau.
   if (!newIp || newIp === params.candidate.ip) {
     const scan = params.scan ?? scanForCameras;
-    let devices: DiscoveredDevice[];
-    try {
-      // Quét nhanh: chỉ cần thấy thiết bị và lấy MAC, không cần dò HTTP.
-      const result = await scan({ cidr, mode: "quick" });
-      devices = result.devices;
-    } catch (error) {
-      console.warn(`[camera-heal] quét thất bại: ${(error as Error).message}`);
-      return null;
+    const localCidrs = (params.listSubnets ?? listCandidateSubnets)()
+      .filter((c) => !c.is_virtual)
+      .map((c) => c.cidr);
+    const cidrs = [...new Set([cidr, ...localCidrs])].slice(0, MAX_HEAL_SUBNETS);
+
+    for (const target of cidrs) {
+      let devices: DiscoveredDevice[];
+      try {
+        // Quét nhanh: chỉ cần thấy thiết bị và lấy MAC, không cần dò HTTP.
+        const result = await scan({ cidr: target, mode: "quick" });
+        devices = result.devices;
+      } catch (error) {
+        console.warn(
+          `[camera-heal] quét ${target} thất bại: ${(error as Error).message}`,
+        );
+        continue;
+      }
+      newIp =
+        pickHealedIp(devices, { macAddress: mac, currentIp: params.candidate.ip }) ??
+        // Quét xong bảng ARP đã ấm: tra lại lần nữa. Đây là lưới hứng cho
+        // đúng trường hợp đã gặp thật — máy bận nên quét bỏ sót host, nhưng
+        // ARP vẫn ghi nhận nó.
+        (await findInArp(mac, {}));
+      if (newIp && newIp !== params.candidate.ip) break;
     }
-    newIp =
-      pickHealedIp(devices, { macAddress: mac, currentIp: params.candidate.ip }) ??
-      // Quét xong bảng ARP đã ấm: tra lại lần nữa. Đây là lưới hứng cho
-      // đúng trường hợp đã gặp thật — máy bận nên quét bỏ sót host, nhưng
-      // ARP vẫn ghi nhận nó.
-      (await findInArp(mac, { subnetPrefix }));
   }
 
   if (!newIp || newIp === params.candidate.ip) {
     console.warn(
-      `[camera-heal] không thấy MAC ${mac} trong ${cidr} — camera có thể đã tắt hoặc chuyển sang subnet khác`,
+      `[camera-heal] không thấy MAC ${mac} trong bất kỳ mạng nào máy đang nối — camera có thể đã tắt hoặc ở LAN khác`,
     );
     return null;
   }

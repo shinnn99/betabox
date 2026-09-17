@@ -50,6 +50,7 @@ import {
   type AgentRow,
   type DeviceIdentity,
 } from "@/components/warehouse-config/DevicesTab";
+import StationAssignCell from "@/components/devices/StationAssignCell";
 
 interface DeviceStation {
   station_id: string;
@@ -57,6 +58,7 @@ interface DeviceStation {
   station_name: string;
   warehouse_id?: string;
   is_primary?: boolean;
+  role?: "proof_primary" | "proof_qr" | null;
 }
 
 interface CameraDevice extends Camera {
@@ -261,6 +263,24 @@ function DevicesPage() {
   const [q, setQ] = useState("");
   const [showPicker, setShowPicker] = useState(false);
   const [assignTarget, setAssignTarget] = useState<Device | null>(null);
+
+  // Camera nao dang chiem vi tri nao o ban nao — de o chon ban canh bao
+  // truoc khi day mot camera dang lam viec ra khoi cho cua no.
+  const cameraOccupants = useMemo(
+    () =>
+      devices
+        .filter((d) => d.kind === "camera" && d.current_station)
+        .map((d) => ({
+          cameraId: d.id,
+          cameraCode: d.kind === "camera" ? d.camera_code : d.device_code,
+          stationId: d.current_station!.station_id,
+          role: (d.current_station!.role ?? null) as
+            | "proof_primary"
+            | "proof_qr"
+            | null,
+        })),
+    [devices],
+  );
   const [scannerDetailId, setScannerDetailId] = useState<string | null>(null);
   const [editingCameraId, setEditingCameraId] = useState<string | null>(null);
   const [testingCameraId, setTestingCameraId] = useState<string | null>(null);
@@ -595,26 +615,18 @@ function DevicesPage() {
                         {d.kind === "camera" ? "Camera" : "Máy quét"}
                       </td>
                       <td className="px-4 py-3">
-                        {d.current_station ? (
-                          <div className="text-xs">
-                            <p className="font-mono font-semibold text-slate-800">
-                              {d.current_station.station_code}
-                            </p>
-                            <p className="text-[11px] text-slate-500">
-                              {d.current_station.station_name}
-                              {d.kind === "camera" &&
-                                d.current_station.is_primary &&
-                                " · chính"}
-                            </p>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => setAssignTarget(d)}
-                            className="text-xs text-emerald-600 hover:text-emerald-700 underline underline-offset-2"
-                          >
-                            Gán bàn
-                          </button>
-                        )}
+                        <StationAssignCell
+                          deviceId={
+                            d.kind === "camera" ? d.station_device_id : d.id
+                          }
+                          isCamera={d.kind === "camera"}
+                          cameraId={d.kind === "camera" ? d.id : undefined}
+                          currentStation={d.current_station}
+                          currentRole={d.current_station?.role ?? null}
+                          stations={stations}
+                          occupants={cameraOccupants}
+                          onSaved={load}
+                        />
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
                         <span
@@ -985,10 +997,12 @@ function AssignStationDialog({
   const [stationId, setStationId] = useState(
     device.current_station?.station_id ?? "",
   );
-  const [primary, setPrimary] = useState(
+  const [role, setRole] = useState<"proof_primary" | "proof_qr">(
     device.kind === "camera"
-      ? Boolean(device.current_station?.is_primary)
-      : false,
+      ? device.current_station?.role === "proof_qr"
+        ? "proof_qr"
+        : "proof_primary"
+      : "proof_primary",
   );
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1010,19 +1024,16 @@ function AssignStationDialog({
     setErr(null);
     try {
       if (device.kind === "camera") {
-        const desiredRole = primary ? "proof_primary" : "";
-        const currentRole = device.current_station?.is_primary
-          ? "proof_primary"
-          : "";
-        if (desiredRole !== currentRole) {
+        // Vai tro luon duoc ghi ro. Truoc day bo trong = "khong phai camera
+        // chinh", ma cho khac lai doc thieu vai tro thanh proof_primary —
+        // nen camera QR sua xong la thanh camera toan canh, im lang.
+        const currentRole = device.current_station?.role ?? null;
+        if (role !== currentRole) {
           const res = await fetch(`/api/station-devices/${deviceId}`, {
             method: "PATCH",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              config_json: {
-                camera_id: device.id,
-                ...(primary ? { role: "proof_primary" } : {}),
-              },
+              config_json: { camera_id: device.id, role },
             }),
           });
           if (!res.ok) {
@@ -1098,18 +1109,46 @@ function AssignStationDialog({
           />
         </div>
         {device.kind === "camera" && (
-          <label
-            className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer"
-            title="Hệ thống sẽ ưu tiên camera này để tạo clip bằng chứng cho các đơn được quét tại bàn."
-          >
-            <input
-              type="checkbox"
-              checked={primary}
-              onChange={(e) => setPrimary(e.target.checked)}
-              className="h-4 w-4 rounded border-slate-300"
-            />
-            Camera chính của bàn
-          </label>
+          <div className="space-y-1.5">
+            <p className="text-[11px] font-semibold text-slate-600">
+              Vị trí camera tại bàn
+            </p>
+            {/* Hai lựa chọn tách bạch. Trước đây chỉ có một ô tích "camera
+                chính": bỏ tích nghĩa là KHÔNG có vai trò, mà chỗ khác lại
+                đọc thiếu vai trò thành camera toàn cảnh — nên không có cách
+                nào khai báo camera quét QR ở đây. */}
+            {(
+              [
+                {
+                  value: "proof_primary" as const,
+                  label: "Camera chính (toàn cảnh)",
+                  hint: "Dùng làm hình nền của clip bằng chứng.",
+                },
+                {
+                  value: "proof_qr" as const,
+                  label: "Camera quét QR",
+                  hint: "Đọc mã vận đơn và chèn vào góc clip.",
+                },
+              ]
+            ).map((opt) => (
+              <label
+                key={opt.value}
+                className="flex items-start gap-2 text-xs text-slate-700 cursor-pointer"
+                title={opt.hint}
+              >
+                <input
+                  type="checkbox"
+                  checked={role === opt.value}
+                  onChange={() => setRole(opt.value)}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300"
+                />
+                <span>
+                  {opt.label}
+                  <span className="block text-[11px] text-slate-400">{opt.hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
         )}
         {err && <p className="text-sm text-rose-600">{err}</p>}
         <div className="flex justify-end gap-2 pt-2">

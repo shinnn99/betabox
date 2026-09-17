@@ -7,6 +7,7 @@ import {
   shouldAttemptHeal,
   slash24Of,
   healCameraIp,
+  MAX_HEAL_SUBNETS,
   type HealCandidate,
 } from "../src/camera-heal";
 import type { DiscoveredDevice } from "../src/lan-discovery";
@@ -222,4 +223,111 @@ test("IP khớp MAC nhưng không mở RTSP thì không báo cloud", async () =>
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Đổi mạng: cài ở wifi này, chạy ở wifi khác. Camera nhận IP ở dải hoàn
+// toàn mới, nên tìm theo subnet cũ là không bao giờ thấy. MAC đã lưu trong
+// database từ lần đăng nhập đầu, và đó là thứ duy nhất không đổi.
+// ---------------------------------------------------------------------------
+
+/** Ghi lại các subnet đã quét để kiểm thứ tự và số lượng. */
+function scanRecorder(byCidr: Record<string, DiscoveredDevice[]>) {
+  const scanned: string[] = [];
+  const scan = async (opts: { cidr: string }) => {
+    scanned.push(opts.cidr);
+    return { devices: byCidr[opts.cidr] ?? [], subnets: [], duration_ms: 1 };
+  };
+  return { scan: scan as never, scanned };
+}
+
+const localSubnets = (...cidrs: string[]) =>
+  (() =>
+    cidrs.map((cidr) => ({
+      cidr,
+      interface_name: "Wi-Fi",
+      is_virtual: false,
+    }))) as never;
+
+test("camera sang mạng khác: ARP biết thì chữa ngay, không cần quét", async () => {
+  const spy = scanRecorder({});
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as never;
+  try {
+    const result = await healCameraIp({
+      ...HEAL_DEPS,
+      candidate: { ...CANDIDATE, ip: "192.168.1.50" }, // IP cũ ở wifi 1
+      scan: spy.scan,
+      listSubnets: localSubnets("192.168.31.0/24"),
+      findIpByMac: async () => "192.168.31.77", // wifi 2
+      checkRtsp: async () => ({ ok: true, latencyMs: 5 }),
+    });
+    assert.equal(result?.newIp, "192.168.31.77");
+    assert.deepEqual(spy.scanned, [], "ARP đã trả lời thì không được quét");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("ARP chưa biết thì quét subnet cũ trước, rồi tới mạng máy đang nối", async () => {
+  const spy = scanRecorder({
+    "192.168.31.0/24": [device("192.168.31.77", CANDIDATE.macAddress!)],
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as never;
+  try {
+    const result = await healCameraIp({
+      ...HEAL_DEPS,
+      candidate: { ...CANDIDATE, ip: "192.168.1.50" },
+      scan: spy.scan,
+      listSubnets: localSubnets("192.168.31.0/24"),
+      findIpByMac: async () => null,
+      checkRtsp: async () => ({ ok: true, latencyMs: 5 }),
+    });
+    assert.equal(result?.newIp, "192.168.31.77");
+    assert.deepEqual(spy.scanned, ["192.168.1.0/24", "192.168.31.0/24"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("không quét quá số subnet cho phép, dù máy nối nhiều mạng", async () => {
+  const spy = scanRecorder({});
+  const result = await healCameraIp({
+    ...HEAL_DEPS,
+    candidate: { ...CANDIDATE, ip: "192.168.1.50" },
+    scan: spy.scan,
+    listSubnets: localSubnets(
+      "192.168.31.0/24",
+      "10.0.0.0/24",
+      "172.16.5.0/24",
+      "192.168.99.0/24",
+    ),
+    findIpByMac: async () => null,
+    checkRtsp: async () => ({ ok: true, latencyMs: 5 }),
+  });
+  assert.equal(result, null);
+  assert.equal(
+    spy.scanned.length,
+    MAX_HEAL_SUBNETS,
+    "mỗi lần quét /24 mở 254 kết nối trên máy đang ghi hình — phải có trần",
+  );
+});
+
+test("IP cũ không thuộc mạng nào máy đang nối thì chữa ngay từ nhịp hỏng đầu", () => {
+  const ok = shouldAttemptHeal({
+    candidate: { ...CANDIDATE, consecutiveFails: 1, outsideLocalSubnets: true },
+    lastAttemptAtMs: null,
+    nowMs: Date.now(),
+  });
+  assert.equal(ok, true, "chờ thêm hai nhịp chỉ kéo dài thời gian bàn không có hình");
+});
+
+test("cùng mạng thì vẫn phải đủ ba nhịp hỏng mới chữa", () => {
+  const ok = shouldAttemptHeal({
+    candidate: { ...CANDIDATE, consecutiveFails: 1, outsideLocalSubnets: false },
+    lastAttemptAtMs: null,
+    nowMs: Date.now(),
+  });
+  assert.equal(ok, false, "một nhịp hỏng trong cùng mạng có thể chỉ là nhiễu");
 });

@@ -44,7 +44,9 @@ export interface Camera {
     station_name: string;
     warehouse_id: string;
     is_primary: boolean;
-  } | null;
+      /** proof_primary = toàn cảnh, proof_qr = quét mã. */
+    role?: "proof_primary" | "proof_qr" | null;
+} | null;
   // 1.2: codec onboard-probe. Optional để tương thích với payload cũ.
   codec_detected?: string | null;
   codec_warning?: string | null;
@@ -933,6 +935,7 @@ function DiscoverTab({
     return (
       <DiscoveredDeviceForm
         device={selected}
+        existingCamera={camerasByIp.get(selected.ip) ?? null}
         onBack={() => setSelected(null)}
         onSwitchToManual={() =>
           onSwitchToManual({
@@ -1311,6 +1314,12 @@ function DeviceRow({
   const d = device;
   const { visible, technical } = describeDevice(d);
   const alreadyAdded = !!existingCamera || !!d.already_added;
+  // Quét ra MAC mà bản ghi chưa có (hoặc khác) = camera chưa được định
+  // danh theo MAC. Đây là việc cần làm, nên nút được tô nổi.
+  const needsMac =
+    !!d.mac_address &&
+    (!existingCamera?.mac_address ||
+      existingCamera.mac_address.toUpperCase() !== d.mac_address.toUpperCase());
   const recState = deriveRecState(recording);
 
   return (
@@ -1333,6 +1342,11 @@ function DeviceRow({
           {alreadyAdded && (
             <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">
               <CheckCircle2 className="h-3 w-3" /> Đã thêm vào hệ thống
+            </span>
+          )}
+          {alreadyAdded && needsMac && (
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700">
+              Chưa lưu MAC
             </span>
           )}
           {/* Recording badge only when we have one — reuses the parent's
@@ -1380,9 +1394,25 @@ function DeviceRow({
         </p>
       </div>
       {alreadyAdded ? (
-        <span className="h-8 px-3 rounded-lg border border-slate-200 text-slate-500 text-xs font-semibold inline-flex items-center shrink-0">
-          Đã thêm
-        </span>
+        // Camera đã có trong hệ thống vẫn phải bấm được. Trước đây chỗ này
+        // là một nhãn chết, nên camera thêm từ trước khi có tính năng MAC
+        // không còn đường nào để gắn MAC — mà thiếu MAC thì không tự dò
+        // lại được khi DHCP đổi IP.
+        <button
+          onClick={onSelect}
+          className={`h-8 px-3 rounded-lg text-xs font-semibold shrink-0 ${
+            needsMac
+              ? "bg-amber-500 hover:bg-amber-600 text-white"
+              : "border border-slate-200 text-slate-600 hover:bg-slate-50"
+          }`}
+          title={
+            needsMac
+              ? "Camera này chưa lưu MAC — kết nối lại để gắn MAC vào hệ thống"
+              : "Nhập lại tài khoản camera để kiểm tra kết nối"
+          }
+        >
+          {needsMac ? "Gắn MAC" : "Kết nối lại"}
+        </button>
       ) : (
         <button
           onClick={onSelect}
@@ -1397,12 +1427,15 @@ function DeviceRow({
 
 function DiscoveredDeviceForm({
   device,
+  existingCamera,
   onBack,
   onSwitchToManual,
   onClose,
   onSaved,
 }: {
   device: DiscoveredDevice;
+  /** Camera đã có trong hệ thống ứng với IP này; null = thiết bị mới. */
+  existingCamera: Camera | null;
   onBack: () => void;
   onSwitchToManual: () => void;
   onClose: () => void;
@@ -1410,12 +1443,13 @@ function DiscoveredDeviceForm({
 }) {
   const toast = useToast();
   const [form, setForm] = useState({
-    name: "",
-    camera_code: "",
-    username: "admin",
+    name: existingCamera?.name ?? "",
+    camera_code: existingCamera?.camera_code ?? "",
+    username: existingCamera?.username ?? "admin",
     password: "",
-    rtsp_path: device.suggested_rtsp_paths[0] ?? "/ch1/main",
-    location: "",
+    rtsp_path:
+      existingCamera?.rtsp_path ?? device.suggested_rtsp_paths[0] ?? "/ch1/main",
+    location: existingCamera?.location ?? "",
   });
   const [busy, setBusy] = useState<"test" | null>(null);
   const [err, setErr] = useState("");
@@ -1448,32 +1482,58 @@ function DiscoveredDeviceForm({
         return;
       }
 
-      // 2) Only on a passing probe do we POST to /api/cameras. The DB
-      // write path remains the same one the manual form uses, so
-      // encryption / RLS / audit are identical.
-      const saveRes = await fetch("/api/cameras", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: form.name,
-          camera_code: form.camera_code,
-          ip: device.ip,
-          rtsp_port: rtspPort,
-          username: form.username,
-          password: form.password,
-          rtsp_path: form.rtsp_path,
-          location: form.location,
-          // MAC lay tu chinh lan quet nay. Day la thu giup camera tu tim
-          // lai duoc khi DHCP doi IP — khong luu o day thi mat luon.
-          mac_address: device.mac_address ?? null,
-        }),
-      });
+      // 2) Only on a passing probe do we persist. The DB write path
+      // remains the same one the manual form uses, so encryption / RLS /
+      // audit are identical.
+      //
+      // Camera đã có thì CẬP NHẬT chứ không tạo mới: tạo mới sẽ đẻ ra bản
+      // ghi trùng IP và làm hỏng liên kết bàn/thiết bị đang chạy.
+      const saveRes = await fetch(
+        existingCamera ? `/api/cameras/${existingCamera.id}` : "/api/cameras",
+        {
+          method: existingCamera ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: form.name,
+            camera_code: form.camera_code,
+            ip: device.ip,
+            rtsp_port: rtspPort,
+            username: form.username,
+            password: form.password,
+            rtsp_path: form.rtsp_path,
+            location: form.location,
+            // MAC lay tu chinh lan quet nay. Day la thu giup camera tu tim
+            // lai duoc khi DHCP doi IP — khong luu o day thi mat luon.
+            mac_address: device.mac_address ?? null,
+          }),
+        },
+      );
       const saveData = await saveRes.json().catch(() => ({}));
       if (!saveRes.ok) {
         setErr(saveData.message ?? saveData.error ?? "Lưu thất bại.");
         return;
       }
-      toast.success(`Đã thêm camera ${form.camera_code}`);
+      // Không bao giờ báo "đã gắn MAC" mà không kiểm lại: database chưa áp
+      // migration MAC thì tầng dưới lặng lẽ bỏ cột đó đi, và một thông báo
+      // thành công sai còn tệ hơn không có tính năng — người dùng tin là
+      // camera đã định danh được, tới lúc DHCP đổi IP mới biết là không.
+      const savedMac = (saveData?.camera?.mac_address ?? null) as string | null;
+      const macRequested = device.mac_address ?? null;
+      const macMissing = !!macRequested && !savedMac;
+
+      if (macMissing) {
+        toast.info(
+          `Đã lưu ${form.camera_code}, nhưng CHƯA lưu được MAC — database chưa có cột MAC (cần áp migration camera_mac_identity).`,
+        );
+      } else {
+        toast.success(
+          existingCamera
+            ? savedMac
+              ? `Đã kết nối lại ${form.camera_code} và gắn MAC ${savedMac}`
+              : `Đã kết nối lại ${form.camera_code}`
+            : `Đã thêm camera ${form.camera_code}`,
+        );
+      }
       onSaved();
     } finally {
       setBusy(null);

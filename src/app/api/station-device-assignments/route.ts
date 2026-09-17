@@ -194,26 +194,89 @@ export async function POST(req: Request) {
     }
   }
 
-  const { data, error } = await admin
-    .from("station_device_assignments")
-    .insert({
-      organization_id: ctx.organizationId,
-      device_id: deviceId,
-      station_id: stationId,
-      assigned_at: now,
-      status: "active",
-    })
-    .select("id, device_id, station_id, assigned_at, status")
-    .single();
+  // Chen phan cong moi. Chi so `uniq_active_assignment_per_device` bao dam
+  // mot thiet bi chi co MOT phan cong dang mo — dung, nhung no bien mot
+  // cuoc dua thanh loi 23505 nem thang ra man hinh.
+  //
+  // Cuoc dua co that: nguoi dung bam gan trong khi trang dang nap lai, ma
+  // `/api/devices` (qua listCameras) cung tu sua scanner ao va ghi phan
+  // cong. Hai ben cung dong-roi-chen, ben cham hon dam vao chi so.
+  const insertAssignment = () =>
+    admin
+      .from("station_device_assignments")
+      .insert({
+        organization_id: ctx.organizationId,
+        device_id: deviceId,
+        station_id: stationId,
+        assigned_at: now,
+        status: "active",
+      })
+      .select("id, device_id, station_id, assigned_at, status")
+      .single();
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+  let { data, error } = await insertAssignment();
+
+  if (error && (error as { code?: string }).code === "23505") {
+    const { data: existing } = await admin
+      .from("station_device_assignments")
+      .select("id, device_id, station_id, assigned_at, status")
+      .eq("organization_id", ctx.organizationId)
+      .eq("device_id", deviceId)
+      .is("unassigned_at", null)
+      .maybeSingle();
+
+    if (existing && existing.station_id === stationId) {
+      // Ben kia vua gan dung cai ta dinh gan. Ket qua da nhu y — bao thanh
+      // cong thay vi bat nguoi dung bam lai mot viec da xong.
+      data = existing;
+      error = null;
+    } else {
+      // Con phan cong cu o ban khac: dong lai roi chen mot lan nua.
+      await admin
+        .from("station_device_assignments")
+        .update({ unassigned_at: now, status: "ended" })
+        .eq("organization_id", ctx.organizationId)
+        .eq("device_id", deviceId)
+        .is("unassigned_at", null);
+      ({ data, error } = await insertAssignment());
+    }
+  }
+
+  if (error || !data) {
+    return NextResponse.json(
+      {
+        error: "assignment_insert_failed",
+        message:
+          "Thiết bị vừa được gán ở nơi khác cùng lúc. Tải lại trang rồi thử lại.",
+      },
+      { status: 409 },
+    );
   }
 
   // A QR camera participates in the existing scanner resolver through a
   // virtual scanner device. Keep the physical scanner assignment intact so
   // admins can switch scan_source without rewiring devices.
+  //
+  // CHI tao scanner ao khi ban thuc su quet bang camera. Ban dung sung
+  // quet roi ma van sinh `qrcam_*` la de ra thiet bi ma o kho khong co,
+  // rac trong danh sach va lam nguoi van hanh tuong ban co hai nguon quet.
+  // Camera o vi tri QR van giu nguyen y nghia cho clip bang chung (goc
+  // quay doc ma), khong phu thuoc no co phai nguon tao scan hay khong.
+  let stationScansByCamera = false;
   if (dev.device_type === "camera" && String(dev.config_json?.role) === "proof_qr") {
+    const { data: stationRow } = await admin
+      .from("packing_stations")
+      .select("scan_source")
+      .eq("organization_id", ctx.organizationId)
+      .eq("id", stationId)
+      .maybeSingle();
+    stationScansByCamera = stationRow?.scan_source === "camera";
+  }
+  if (
+    dev.device_type === "camera" &&
+    String(dev.config_json?.role) === "proof_qr" &&
+    stationScansByCamera
+  ) {
     const cameraId = String(dev.config_json?.camera_id ?? "");
     const { data: camera } = await admin
       .from("cameras")
@@ -266,7 +329,10 @@ export async function POST(req: Request) {
     const { error: virtualAssignErr } = await admin
       .from("station_device_assignments")
       .insert({ organization_id: ctx.organizationId, device_id: virtualId, station_id: stationId, assigned_at: now, status: "active" });
-    if (virtualAssignErr) {
+    // 23505 = lop tu sua trong `/api/devices` vua gan xong scanner ao nay.
+    // Ket qua giong het cai ta dinh lam, nen khong coi la loi — bat nguoi
+    // dung lam lai mot viec da xong la vo ly.
+    if (virtualAssignErr && (virtualAssignErr as { code?: string }).code !== "23505") {
       return NextResponse.json({ error: "virtual_scanner_assign_failed", message: virtualAssignErr.message }, { status: 500 });
     }
   }

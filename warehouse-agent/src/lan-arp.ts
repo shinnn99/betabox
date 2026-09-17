@@ -146,10 +146,16 @@ export async function readSystemArpTable(): Promise<Map<string, string>> {
 export async function findIpByMac(
   macAddress: string,
   options: {
-    /** Chỉ chấp nhận IP thuộc tiền tố này, ví dụ "192.168.31." */
-    subnetPrefix: string;
+    /**
+     * Chỉ chấp nhận IP thuộc tiền tố này, ví dụ "192.168.31.".
+     *
+     * Bỏ trống = chấp nhận mọi IP LAN riêng. Đó là trường hợp đổi mạng:
+     * camera cài ở wifi này, chạy ở wifi khác, IP sang hẳn dải mới — khoá
+     * theo tiền tố cũ thì không bao giờ tìm thấy.
+     */
+    subnetPrefix?: string;
     readArpTable?: () => Promise<Map<string, string>>;
-  },
+  } = {},
 ): Promise<string | null> {
   const wanted = normalizeMac(macAddress);
   if (!wanted) return null;
@@ -158,9 +164,30 @@ export async function findIpByMac(
   );
   const hits: string[] = [];
   for (const [ip, mac] of table) {
-    if (mac === wanted && ip.startsWith(options.subnetPrefix)) hits.push(ip);
+    if (mac !== wanted) continue;
+    if (options.subnetPrefix) {
+      if (ip.startsWith(options.subnetPrefix)) hits.push(ip);
+    } else if (isPrivateIpv4(ip)) {
+      hits.push(ip);
+    }
   }
   return hits.length === 1 ? hits[0] : null;
+}
+
+/**
+ * RFC1918. Camera nằm trong LAN kho; một IP công cộng trong bảng ARP là
+ * dấu hiệu bất thường, không phải thiết bị để tự nối vào.
+ */
+export function isPrivateIpv4(ip: string): boolean {
+  const parts = ip.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+    return false;
+  }
+  const [a, b] = parts;
+  if (a === 10) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
 }
 
 /**

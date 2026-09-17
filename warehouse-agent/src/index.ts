@@ -11,6 +11,7 @@ tls.DEFAULT_MAX_VERSION = "TLSv1.2";
 import { resolve, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadConfig, type AgentConfig, type ScannerPin } from "./config";
+import { resolveBackendUrl, isLocalBackend } from "./backend-url";
 import { sendScan, type ScanPayload } from "./sender";
 import { ScanQueue, type QueuedScan } from "./queue";
 import { ScannerSession, type ScannerBinding } from "./scanner";
@@ -123,6 +124,22 @@ import {
 async function main(): Promise<void> {
   installFatalHandlers();
   const config = loadConfig();
+
+  // Cloud chay dev tren cung may thi cong khong co dinh: Next chi UU TIEN
+  // 3000, cong ban la nhay sang 3001/3002. Agent go cua dung cong cu thi
+  // moi bao cao dung im trong khi ghi hinh van chay — nhin ben ngoai nhu
+  // he thong song, thuc ra khong co gi len cloud. Dò truoc khi dung.
+  const resolved = await resolveBackendUrl({ configured: config.backendUrl });
+  if (resolved.url !== config.backendUrl) {
+    console.warn(
+      `[backend-url] cloud khong o ${config.backendUrl}, dung ${resolved.url} (nguon: ${resolved.source})`,
+    );
+    config.backendUrl = resolved.url;
+  } else if (resolved.source === "unreachable") {
+    console.warn(
+      `[backend-url] chua goi duoc cloud o ${config.backendUrl} — van thu lai theo nhip binh thuong`,
+    );
+  }
 
   // Remote logger — install SỚM sau loadConfig để bắt mọi console.warn/error
   // của mọi module boot phía sau. Đặt trước dataDir/queue/lifecycle vì các
@@ -1943,6 +1960,27 @@ async function main(): Promise<void> {
   const discoveryTimer = setInterval(() => {
     swallow(reconcile(config), "reconcile");
   }, config.discoveryIntervalMs);
+  // Cloud dev khoi dong lai o cong khac giua chung thi bam theo. Chi chay
+  // khi backend la localhost — production co URL co dinh, khong dò.
+  //
+  // Luu y: cac module nhan backendUrl luc KHOI TAO (remote logger, relay
+  // hub...) van giu URL cu cho toi khi agent chay lai; moi thu goi theo
+  // nhip (probe, poll-commands, credentials, heartbeat, bao segment) doc
+  // config.backendUrl tai cho nen bam theo ngay.
+  const backendUrlTimer = isLocalBackend(config.backendUrl)
+    ? setInterval(() => {
+        void (async () => {
+          const again = await resolveBackendUrl({ configured: config.backendUrl });
+          if (again.url !== config.backendUrl && again.source !== "unreachable") {
+            console.warn(
+              `[backend-url] cloud da chuyen sang ${again.url} (nguon: ${again.source}) — chuyen huong bao cao`,
+            );
+            config.backendUrl = again.url;
+          }
+        })();
+      }, 60_000)
+    : null;
+
   const heartbeatTimer = setInterval(ping, config.heartbeatIntervalMs);
   const pollTimer = setInterval(() => {
     swallow(pollOnce(), "pollOnce");
@@ -2022,12 +2060,20 @@ async function main(): Promise<void> {
       }
       if (!host) continue;
 
+      // IP dang luu co con thuoc mang nao may nay dang noi khong. Neu
+      // khong, do la doi mang chu khong phai camera hong — chua ngay.
+      const localPrefixes = listCandidateSubnets()
+        .filter((c) => !c.is_virtual)
+        .map((c) => `${c.cidr.slice(0, c.cidr.lastIndexOf("."))}.`);
       const candidate: HealCandidate = {
         cameraId: camera.camera_id,
         cameraCode: camera.camera_code,
         ip: host,
         macAddress: camera.mac_address ?? null,
         consecutiveFails: probeFailStreak.get(result.camera_id) ?? 0,
+        outsideLocalSubnets:
+          localPrefixes.length > 0 &&
+          !localPrefixes.some((prefix) => host.startsWith(prefix)),
       };
       if (
         !shouldAttemptHeal({
@@ -2224,6 +2270,7 @@ async function main(): Promise<void> {
     clearInterval(flushTimer);
     clearInterval(heartbeatTimer);
     clearInterval(discoveryTimer);
+    if (backendUrlTimer) clearInterval(backendUrlTimer);
     clearInterval(pollTimer);
     clearInterval(cameraProbeTimer);
     clearInterval(clipOutboxTimer);

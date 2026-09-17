@@ -18,6 +18,10 @@
  *
  * Nên việc sửa chữa nằm ở đây, chạy cùng nhịp tự liên kết thiết bị của
  * `ensureCameraSoftLinks`, thay vì chờ ai đó bấm đúng nút.
+ *
+ * Phạm vi: CHỈ những bàn có `scan_source = 'camera'`. Bàn dùng súng quét
+ * phần cứng vẫn có thể có camera ở vị trí QR (để lấy góc đọc mã cho clip),
+ * nhưng không được sinh scanner ảo — thiết bị đó không tồn tại ngoài kho.
  */
 
 export interface QrCameraDeviceInput {
@@ -53,7 +57,9 @@ export type VirtualScannerRepair =
       deviceId: string;
       deviceCode: string;
       stationId: string;
-    };
+    }
+  /** Gỡ khỏi bàn và cho nghỉ: không còn camera QR nào đứng sau nó. */
+  | { kind: "detach"; deviceId: string; deviceCode: string };
 
 /** Tên thiết bị ảo cho một camera. Phải khớp với `POST /api/station-device-assignments`. */
 export function virtualScannerCode(cameraCode: string): string {
@@ -66,8 +72,9 @@ export function virtualScannerCode(cameraCode: string): string {
  * Ba ràng buộc cố ý:
  *   - Camera chưa gán vào bàn nào thì KHÔNG tạo gì. Không có bàn để soi
  *     chiếu thì tạo scanner ảo chỉ là rác.
- *   - Không bao giờ gỡ scanner ảo. Sai lệch được sửa bằng cách gán lại
- *     đúng bàn; gỡ là mất dấu vết vận hành.
+ *   - Chỉ gỡ scanner ảo khi KHÔNG còn camera QR nào đứng sau nó. Gỡ ở
+ *     đây là bỏ gán + cho nghỉ, không xoá: bản ghi vẫn còn để truy vết, và
+ *     lần sau cần thì chính hàm này bật lại.
  *   - Camera không có `camera_code` (không tra được) thì bỏ qua, vì tên
  *     thiết bị ảo phải suy ra được từ mã camera.
  */
@@ -75,6 +82,11 @@ export function planVirtualScannerRepairs(input: {
   qrCameraDevices: QrCameraDeviceInput[];
   virtualScanners: VirtualScannerInput[];
   cameraCodeById: Map<string, string>;
+  /**
+   * Bàn quét mã bằng CAMERA. Bàn dùng súng quét phần cứng không nằm trong
+   * đây và sẽ không sinh scanner ảo nào.
+   */
+  cameraScanStationIds: Set<string>;
 }): VirtualScannerRepair[] {
   const byCode = new Map(
     input.virtualScanners.map((scanner) => [
@@ -84,8 +96,33 @@ export function planVirtualScannerRepairs(input: {
   );
   const repairs: VirtualScannerRepair[] = [];
 
+  // Tên thiết bị ảo ĐƯỢC PHÉP tồn tại: ứng với một camera QR đang gán vào
+  // một bàn quét bằng camera.
+  const wanted = new Set<string>();
   for (const device of input.qrCameraDevices) {
     if (!device.stationId) continue;
+    if (!input.cameraScanStationIds.has(device.stationId)) continue;
+    const code = input.cameraCodeById.get(device.cameraId);
+    if (code) wanted.add(virtualScannerCode(code));
+  }
+
+  // Scanner ảo còn sót: camera của nó đã chuyển sang vị trí toàn cảnh, đã
+  // rời bàn, hoặc bàn đã chuyển sang dùng súng quét. Để nguyên thì danh
+  // sách thiết bị có một thứ không tồn tại ngoài kho — và người vận hành
+  // tưởng bàn đang có hai nguồn quét.
+  for (const scanner of input.virtualScanners) {
+    const code = scanner.deviceCode.toLowerCase();
+    if (wanted.has(code)) continue;
+    if (scanner.status !== "active" && scanner.stationId === null) continue;
+    repairs.push({ kind: "detach", deviceId: scanner.deviceId, deviceCode: code });
+  }
+
+  for (const device of input.qrCameraDevices) {
+    if (!device.stationId) continue;
+    // Bàn dùng súng quét riêng thì camera ở vị trí QR chỉ đóng vai trò góc
+    // quay cho clip bằng chứng, KHÔNG phải nguồn tạo scan — sinh scanner ảo
+    // ở đây là đẻ ra một thiết bị không có thật trong kho.
+    if (!input.cameraScanStationIds.has(device.stationId)) continue;
     const cameraCode = input.cameraCodeById.get(device.cameraId);
     if (!cameraCode) continue;
 
