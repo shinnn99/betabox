@@ -11,14 +11,21 @@ export function isStaffQrShape(rawValue: string): boolean {
   return STAFF_QR_RE.test(rawValue.trim());
 }
 
+/**
+ * Camera cần ghi khi bàn mở ca: MỌI camera gắn bàn, cả góc toàn cảnh lẫn góc QR.
+ *
+ * Không xét `scan_source`. Nó chỉ quyết định ai được TẠO lượt quét (súng hay
+ * camera); video bằng chứng thì luôn ghép cả góc QR nếu bàn có
+ * (cut-clip-planning.ts). Trước đây bàn dùng súng bỏ qua camera QR, nên lúc
+ * ghép không có segment góc QR để cắt.
+ */
 export function camerasForShiftStart(
   cameras: CredentialItem[],
 ): CredentialItem[] {
   return cameras.filter(
     (camera) =>
       camera.station_id !== null &&
-      (camera.role === "proof_primary" ||
-        (camera.role === "proof_qr" && camera.scan_source === "camera")),
+      (camera.role === "proof_primary" || camera.role === "proof_qr"),
   );
 }
 

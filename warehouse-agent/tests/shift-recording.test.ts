@@ -32,12 +32,17 @@ test("staff QR shape matches production token format without exposing token", ()
   assert.equal(isStaffQrShape("STAFF_CHECKIN:legacy"), false);
 });
 
-test("scanner mode starts only overview camera", () => {
+test("scanner mode still records the QR camera — final clip needs that angle", () => {
   const selected = camerasForShiftStart([
     camera("proof_primary", "scanner"),
     camera("proof_qr", "scanner"),
   ]);
-  assert.deepEqual(selected.map((item) => item.role), ["proof_primary"]);
+  assert.deepEqual(selected.map((item) => item.role), ["proof_primary", "proof_qr"]);
+});
+
+test("station with only a QR camera still records it", () => {
+  const selected = camerasForShiftStart([camera("proof_qr", "scanner")]);
+  assert.deepEqual(selected.map((item) => item.role), ["proof_qr"]);
 });
 
 test("camera mode starts overview and QR cameras", () => {

@@ -40,6 +40,17 @@ interface StationEventResponse {
 /** Ngưỡng đọc cảnh báo sắp hết giờ — khớp ORDER_WARNING_LEAD_SECONDS ở server. */
 const WARNING_LEAD_SECONDS = 30;
 
+/**
+ * Câu thông báo trễ quá mức này thì bỏ, không đọc nữa.
+ *
+ * Trình duyệt có thể giữ câu lại thay vì đọc ngay: âm thanh chưa được mở
+ * khoá, tab bị tắt tiếng, hay tab nằm nền. Tới lúc được phát, nó xả hết cả
+ * hàng đợi — nhân viên nghe một tràng "bắt đầu quay video… mở ca thành
+ * công…" của những việc đã qua từ lâu, rồi mới tới việc đang xảy ra. Tin
+ * cũ đọc ra lúc đó còn hại hơn im lặng: người nghe tưởng là chuyện vừa xảy ra.
+ */
+const SPEECH_STALE_MS = 4000;
+
 function formatRemaining(totalSeconds: number): string {
   const safe = Math.max(0, totalSeconds);
   const minutes = Math.floor(safe / 60);
@@ -55,6 +66,12 @@ export default function StationLivePanel({ stationId }: { stationId: string }) {
   const [currentOrder, setCurrentOrder] = useState<StationEventResponse["current_order"]>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [audioReady, setAudioReady] = useState(false);
+  // Ý muốn của người dùng: có nghe thông báo tiếng hay không. Tách khỏi
+  // `audioReady` (trình duyệt đã cho phát chưa) — trước đây chỉ có cái sau,
+  // nên không có cách nào TẮT tiếng, mà cũng không phân biệt được "chưa mở
+  // khoá" với "không muốn nghe".
+  const [soundOn, setSoundOn] = useState(true);
+  const soundOnRef = useRef(true);
   const lastEventId = useRef<string | null>(null);
   const warnedOrderId = useRef<string | null>(null);
   const audioContext = useRef<AudioContext | null>(null);
@@ -96,9 +113,17 @@ export default function StationLivePanel({ stationId }: { stationId: string }) {
    */
   const speak = useCallback((text: string) => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    const createdAt = Date.now();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = "vi-VN";
     utterance.rate = 1;
+    // Lưới cuối: câu bị trình duyệt giữ lại quá lâu, hoặc người dùng đã tắt
+    // tiếng trong lúc câu còn chờ, thì huỷ ngay khi nó sắp phát.
+    utterance.onstart = () => {
+      if (!soundOnRef.current || Date.now() - createdAt > SPEECH_STALE_MS) {
+        window.speechSynthesis.cancel();
+      }
+    };
     const vietnameseVoice = window.speechSynthesis
       .getVoices()
       .find((voice) => voice.lang?.toLowerCase().startsWith("vi"));
@@ -109,14 +134,44 @@ export default function StationLivePanel({ stationId }: { stationId: string }) {
 
   const announce = useCallback(
     (level: AnnouncementLevel, message: string, speech: string) => {
+      // Thông báo chữ luôn hiện — tắt tiếng không có nghĩa là không muốn biết.
       if (level === "success") toast.success(message);
       else if (level === "warning") toast.info(message);
       else toast.error(message);
+      // Đang tắt tiếng hoặc trình duyệt chưa cho phát: BỎ QUA hẳn, không
+      // xếp hàng. Bật tiếng lại thì chỉ nghe những gì xảy ra từ lúc đó.
+      if (!soundOnRef.current) return;
+      if (audioContext.current?.state !== "running") return;
       playTone(level);
       speak(speech);
     },
     [playTone, speak, toast],
   );
+
+  useEffect(() => {
+    soundOnRef.current = soundOn;
+  }, [soundOn]);
+
+  /**
+   * Bật/tắt thông báo tiếng. Cú bấm cũng là thao tác người dùng mà trình
+   * duyệt đòi để mở khoá âm thanh.
+   *
+   * Cả hai chiều đều xoá hàng đợi đọc của trình duyệt: tắt thì dừng câu
+   * đang đọc; bật thì vứt những câu trình duyệt lỡ giữ lại lúc đang tắt.
+   */
+  const toggleSound = useCallback(() => {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    const next = !(soundOnRef.current && audioReady);
+    soundOnRef.current = next;
+    setSoundOn(next);
+    if (next) {
+      const context = audioContext.current ?? new window.AudioContext();
+      audioContext.current = context;
+      void context.resume().then(() => setAudioReady(context.state === "running"));
+    }
+  }, [audioReady]);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -289,14 +344,34 @@ export default function StationLivePanel({ stationId }: { stationId: string }) {
           </span>
         )}
 
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold ${
-            audioReady ? "bg-slate-100 text-slate-600" : "bg-amber-100 text-amber-700"
+        <button
+          type="button"
+          onClick={toggleSound}
+          aria-pressed={soundOn && audioReady}
+          title={
+            soundOn && audioReady
+              ? "Bấm để tắt thông báo tiếng. Thông báo lúc tắt sẽ bị bỏ qua, không đọc lại."
+              : "Bấm để bật thông báo tiếng"
+          }
+          className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+            !audioReady
+              ? "bg-amber-100 text-amber-700 hover:bg-amber-200"
+              : soundOn
+                ? "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                : "bg-slate-200 text-slate-500 hover:bg-slate-300"
           }`}
         >
-          {audioReady ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
-          {audioReady ? "Đã bật thông báo tiếng" : "Bấm vào màn hình để bật thông báo tiếng"}
-        </span>
+          {soundOn && audioReady ? (
+            <Volume2 className="h-3.5 w-3.5" />
+          ) : (
+            <VolumeX className="h-3.5 w-3.5" />
+          )}
+          {!audioReady
+            ? "Bấm để bật thông báo tiếng"
+            : soundOn
+              ? "Đang bật thông báo tiếng"
+              : "Đã tắt thông báo tiếng"}
+        </button>
       </div>
 
       <p className="text-[11px] text-slate-500">
