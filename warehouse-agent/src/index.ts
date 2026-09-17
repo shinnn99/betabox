@@ -448,7 +448,9 @@ async function main(): Promise<void> {
       device_identity_snapshot:
         Object.keys(binding.identity).length > 0 ? binding.identity : null,
     };
-    swallow(shiftRecording.onLocalStaffQr(rawValue), "shiftRecording.onLocalStaffQr[serial]");
+    // Sung quet serial: agent khong biet sung gan ban nao -> null. Xem
+    // pickShiftCameras de biet vi sao khong doan.
+    swallow(shiftRecording.onLocalStaffQr(rawValue, null), "shiftRecording.onLocalStaffQr[serial]");
     void (async () => {
       const ok = await tryDeliver(payload, { fromQueue: false });
       if (!ok) {
@@ -480,7 +482,8 @@ async function main(): Promise<void> {
       },
     };
     swallow(
-      shiftRecording.onLocalStaffQr(emission.text),
+      // QR doc tu camera cua mot ban cu the -> chi bat ghi ban do.
+      shiftRecording.onLocalStaffQr(emission.text, camera.station_id),
       "shiftRecording.onLocalStaffQr[camera]",
     );
     const ok = await tryDeliver(payload, { fromQueue: false });

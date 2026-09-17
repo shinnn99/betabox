@@ -18,16 +18,51 @@ interface TestCollector {
   values: Map<string, DecodedQr>;
 }
 
+/** Nguồn khung hình tối thiểu mà dịch vụ cần — tách ra để test được. */
+export interface QrSource {
+  start(): void;
+  stop(): Promise<void>;
+}
+
+type SourceFactory = (
+  pathName: string,
+  onFrame: (frame: Uint8Array, capturedAt: Date) => void,
+) => QrSource;
+
+/** Một camera QR đang được đọc. Mỗi bàn một cái, độc lập nhau hoàn toàn. */
+interface QrTarget {
+  camera: CredentialItem;
+  pathName: string;
+  source: QrSource | null;
+  zone: QrZone;
+  decoderBusy: boolean;
+  lastMultipleWarningAt: number;
+}
+
+/**
+ * Đọc mã QR từ camera — MỖI BÀN MỘT LUỒNG, chạy song song.
+ *
+ * Vì sao nhiều luồng: kho dùng một agent cho mọi bàn (chốt với chủ dự án
+ * 17/09/2026). Trước đây dịch vụ này chỉ giữ MỘT camera — `find` lấy phần tử
+ * đầu tiên — nên agent phục vụ hai bàn quét bằng camera thì chỉ một bàn đọc
+ * được mã, bàn kia quét gì cũng im lặng.
+ *
+ * Mỗi camera có vùng khử trùng (`QrZone`) riêng: dùng chung một vùng thì
+ * cùng một mã giơ lên ở hai bàn cách nhau vài giây sẽ bị coi là quét trùng
+ * và nuốt mất lần thứ hai.
+ *
+ * Chi phí: mỗi luồng là một ffmpeg đọc 10 hình/giây ở 640x360 xám cộng một
+ * lần giải mã mỗi hình. Chỉ bàn `scan_source = 'camera'` mới có luồng; bàn
+ * dùng súng quét không tốn gì.
+ */
 export class QrScanService {
   private cameras: CredentialItem[] = [];
-  private target: CredentialItem | null = null;
-  private source: QrFrameSource | null = null;
-  private sourcePath: string | null = null;
-  private decoderBusy = false;
-  private zone: QrZone;
-  private normalEnabled = false;
+  private readonly targets = new Map<string, QrTarget>();
   private readonly testCollectors = new Set<TestCollector>();
-  private lastMultipleWarningAt = 0;
+  /** Camera đang được thử giải mã tạm thời dù bàn không quét bằng camera. */
+  private testCameraId: string | null = null;
+  private readonly createSource: SourceFactory;
+  private readonly decode: typeof decodeGrayFrame;
 
   constructor(
     private readonly options: {
@@ -37,42 +72,86 @@ export class QrScanService {
       absenceMs: number;
       onScan: (scan: CameraQrScan) => Promise<void> | void;
       onWarning?: (warning: "multiple_qr") => void;
+      /** Cho test: thay nguồn khung hình ffmpeg. */
+      createSource?: SourceFactory;
+      /** Cho test: thay bộ giải mã. */
+      decode?: typeof decodeGrayFrame;
     },
   ) {
-    this.zone = new QrZone(options.confirmFrames, options.absenceMs);
+    this.createSource =
+      options.createSource ??
+      ((pathName, onFrame) =>
+        new QrFrameSource(options.ffmpegBin, pathName, options.frameRate, onFrame));
+    this.decode = options.decode ?? decodeGrayFrame;
+  }
+
+  /** Camera QR đang thực sự tạo scan: gắn bàn và bàn quét bằng camera. */
+  static scanningCameras(cameras: CredentialItem[]): CredentialItem[] {
+    return cameras.filter(
+      (camera) =>
+        camera.role === "proof_qr" &&
+        camera.station_id !== null &&
+        camera.scan_source === "camera",
+    );
+  }
+
+  /** Đang đọc camera nào — dùng cho log và test. */
+  activeCameraIds(): string[] {
+    return [...this.targets.keys()];
   }
 
   async reconcile(cameras: CredentialItem[]): Promise<void> {
     this.cameras = [...cameras];
-    const next = this.cameras.find(
-      (camera) => camera.role === "proof_qr" && camera.station_id !== null,
-    ) ?? null;
-    const nextEnabled = next?.scan_source === "camera";
-    const nextPath = next ? this.relayPath(next) : null;
-    const changed = next?.camera_id !== this.target?.camera_id || nextPath !== this.sourcePath;
-    this.target = next;
-    this.normalEnabled = nextEnabled;
+    const desired = new Map(
+      QrScanService.scanningCameras(this.cameras).map((camera) => [camera.camera_id, camera]),
+    );
 
-    if (changed) {
-      await this.stopSource();
-      this.zone = new QrZone(this.options.confirmFrames, this.options.absenceMs);
+    // Dừng luồng không còn cần: camera rời bàn, đổi vị trí, hoặc bàn chuyển
+    // sang súng quét. Đường relay đổi (thêm/bớt luồng phụ) cũng dựng lại.
+    for (const [cameraId, target] of [...this.targets]) {
+      const next = desired.get(cameraId);
+      const keepForTest = cameraId === this.testCameraId && this.testCollectors.size > 0;
+      if ((next && this.relayPath(next) === target.pathName) || keepForTest) continue;
+      await this.stopTarget(cameraId);
     }
-    if (next && (nextEnabled || this.testCollectors.size > 0)) {
-      this.startSource(next);
-    } else if (!nextEnabled && this.testCollectors.size === 0) {
-      await this.stopSource();
+
+    for (const [cameraId, camera] of desired) {
+      const existing = this.targets.get(cameraId);
+      if (existing) {
+        // Giữ nguyên luồng, chỉ cập nhật bản ghi (bàn có thể vừa đổi).
+        existing.camera = camera;
+        continue;
+      }
+      this.startTarget(camera);
     }
   }
 
-  async testDecode(durationMs = 10_000): Promise<DecodedQr[]> {
-    if (!this.target) return [];
+  /**
+   * Giải mã thử trong một khoảng thời gian. `cameraId` bỏ trống thì lấy
+   * camera QR đầu tiên, kể cả bàn đang dùng súng quét — đúng như trước.
+   */
+  async testDecode(durationMs = 10_000, cameraId?: string): Promise<DecodedQr[]> {
+    const camera =
+      (cameraId && this.cameras.find((c) => c.camera_id === cameraId)) ||
+      this.cameras.find((c) => c.role === "proof_qr" && c.station_id !== null) ||
+      null;
+    if (!camera) return [];
+
     const collector: TestCollector = { values: new Map() };
     this.testCollectors.add(collector);
-    this.startSource(this.target);
+    const startedForTest = !this.targets.has(camera.camera_id);
+    this.testCameraId = camera.camera_id;
+    if (startedForTest) this.startTarget(camera);
+
     await new Promise((resolve) => setTimeout(resolve, durationMs));
+
     this.testCollectors.delete(collector);
-    if (!this.normalEnabled && this.testCollectors.size === 0) {
-      await this.stopSource();
+    if (this.testCollectors.size === 0) this.testCameraId = null;
+    const stillScanning = QrScanService.scanningCameras(this.cameras).some(
+      (c) => c.camera_id === camera.camera_id,
+    );
+    if (startedForTest && !stillScanning && this.testCollectors.size === 0) {
+      await this.stopTarget(camera.camera_id);
     }
     return [...collector.values.values()];
   }
@@ -81,64 +160,77 @@ export class QrScanService {
     return relayPathName(camera.camera_code, camera.rtsp_substream_url ? "sub" : "main");
   }
 
-  private startSource(camera: CredentialItem): void {
+  private startTarget(camera: CredentialItem): void {
     const pathName = this.relayPath(camera);
-    if (this.source && this.sourcePath === pathName) return;
-    if (this.source) swallow(this.stopSource(), "qrScanService.stopChangedSource");
-    this.sourcePath = pathName;
-    this.source = new QrFrameSource(
-      this.options.ffmpegBin,
+    const target: QrTarget = {
+      camera,
       pathName,
-      this.options.frameRate,
-      (frame, capturedAt) => this.onFrame(frame, capturedAt),
+      source: null,
+      zone: new QrZone(this.options.confirmFrames, this.options.absenceMs),
+      decoderBusy: false,
+      lastMultipleWarningAt: 0,
+    };
+    this.targets.set(camera.camera_id, target);
+    target.source = this.createSource(pathName, (frame, capturedAt) =>
+      this.onFrame(target, frame, capturedAt),
     );
-    this.source.start();
+    target.source.start();
   }
 
-  private onFrame(frame: Uint8Array, capturedAt: Date): void {
-    if (this.decoderBusy) return;
-    this.decoderBusy = true;
-    void decodeGrayFrame(frame, QR_FRAME_WIDTH, QR_FRAME_HEIGHT)
-      .then((decoded) => this.onDecoded(decoded, capturedAt))
+  private async stopTarget(cameraId: string): Promise<void> {
+    const target = this.targets.get(cameraId);
+    if (!target) return;
+    this.targets.delete(cameraId);
+    const source = target.source;
+    target.source = null;
+    if (source) await source.stop();
+  }
+
+  private onFrame(target: QrTarget, frame: Uint8Array, capturedAt: Date): void {
+    // Mỗi camera tự giữ cờ bận: một bàn giải mã chậm không được làm bàn
+    // khác bỏ khung hình.
+    if (target.decoderBusy) return;
+    target.decoderBusy = true;
+    void this.decode(frame, QR_FRAME_WIDTH, QR_FRAME_HEIGHT)
+      .then((decoded) => this.onDecoded(target, decoded, capturedAt))
       .catch((error) => {
-        console.warn(`[qr-scan-service] decode failed: ${(error as Error).message}`);
+        console.warn(
+          `[qr-scan-service] camera=${target.camera.camera_code} decode failed: ${(error as Error).message}`,
+        );
       })
       .finally(() => {
-        this.decoderBusy = false;
+        target.decoderBusy = false;
       });
   }
 
-  private onDecoded(decoded: DecodedQr[], capturedAt: Date): void {
-    for (const collector of this.testCollectors) {
-      for (const value of decoded) collector.values.set(value.text, value);
+  private onDecoded(target: QrTarget, decoded: DecodedQr[], capturedAt: Date): void {
+    if (target.camera.camera_id === this.testCameraId) {
+      for (const collector of this.testCollectors) {
+        for (const value of decoded) collector.values.set(value.text, value);
+      }
     }
-    if (!this.normalEnabled || !this.target) return;
-    const result = this.zone.ingest(decoded, capturedAt);
+    // Luồng mở tạm để thử giải mã thì không phát scan thật.
+    if (target.camera.scan_source !== "camera" || target.camera.station_id === null) return;
+
+    const result = target.zone.ingest(decoded, capturedAt);
     if (result.warning === "multiple_qr") {
       const now = Date.now();
-      if (now - this.lastMultipleWarningAt >= this.options.absenceMs) {
-        this.lastMultipleWarningAt = now;
+      if (now - target.lastMultipleWarningAt >= this.options.absenceMs) {
+        target.lastMultipleWarningAt = now;
         this.options.onWarning?.("multiple_qr");
       }
     }
     if (result.emission) {
       swallow(
-        Promise.resolve(this.options.onScan({ camera: this.target, emission: result.emission })),
+        Promise.resolve(this.options.onScan({ camera: target.camera, emission: result.emission })),
         "qrScanService.onScan",
       );
     }
   }
 
-  private async stopSource(): Promise<void> {
-    const source = this.source;
-    this.source = null;
-    this.sourcePath = null;
-    if (source) await source.stop();
-  }
-
   async stop(): Promise<void> {
-    this.normalEnabled = false;
     this.testCollectors.clear();
-    await this.stopSource();
+    this.testCameraId = null;
+    await Promise.all([...this.targets.keys()].map((cameraId) => this.stopTarget(cameraId)));
   }
 }

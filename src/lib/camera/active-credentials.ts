@@ -3,6 +3,7 @@ import type { createAdminClient } from "@/lib/supabase/admin";
 import { decryptPassword } from "@/lib/camera/crypto";
 import { buildRtspUrl } from "@/lib/camera/rtsp";
 import { selectCamerasWithMacFallback } from "./mac-columns";
+import { resolveCameraStations, type CameraStationInfo } from "./camera-stations";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
@@ -87,73 +88,70 @@ export async function listCameraCredentials(
   });
   if (error) return { error: error.message ?? "không đọc được danh sách camera" };
 
-  let stationId: string | null = null;
-  let scanSource: "scanner" | "camera" = "scanner";
-  let stationHasOpenSession = false;
-  const roleByCameraId = new Map<string, "proof_primary" | "proof_qr">();
-
-  if (agentId) {
-    const { data: agent, error: agentError } = await admin
-      .from("warehouse_agents")
-      .select("station_id")
+  // Bàn / vị trí / nguồn quét / ca mở — tính THEO TỪNG CAMERA, không lấy
+  // chung một bàn của agent. Một agent phục vụ mọi bàn trong kho; xem
+  // `camera-stations.ts` để biết vì sao.
+  const cameraIdList = (cams ?? []).map((c) => c.id);
+  let stationInfo = new Map<string, CameraStationInfo>();
+  if (cameraIdList.length > 0) {
+    const { data: deviceRows, error: devicesError } = await admin
+      .from("station_devices")
+      .select("id, config_json")
       .eq("organization_id", orgId)
-      .eq("id", agentId)
-      .maybeSingle();
-    if (agentError) return { error: agentError.message };
-    stationId = typeof agent?.station_id === "string" ? agent.station_id : null;
+      .eq("device_type", "camera")
+      .neq("status", "archived");
+    if (devicesError) return { error: devicesError.message };
 
-    if (stationId) {
-      const [{ data: station, error: stationError }, { count, error: sessionsError }, devicesResult] =
-        await Promise.all([
-          admin
-            .from("packing_stations")
-            .select("scan_source")
-            .eq("organization_id", orgId)
-            .eq("id", stationId)
-            .maybeSingle(),
-          admin
-            .from("staff_work_sessions")
-            .select("id", { count: "exact", head: true })
-            .eq("organization_id", orgId)
-            .eq("station_id", stationId)
-            .eq("status", "active"),
-          admin
-            .from("station_devices")
-            .select("id, config_json")
-            .eq("organization_id", orgId)
-            .eq("device_type", "camera")
-            .neq("status", "archived"),
-        ]);
-      if (stationError) return { error: stationError.message };
-      if (sessionsError) return { error: sessionsError.message };
-      if (devicesResult.error) return { error: devicesResult.error.message };
-      scanSource = station?.scan_source === "camera" ? "camera" : "scanner";
-      stationHasOpenSession = (count ?? 0) > 0;
+    const wanted = new Set(cameraIdList);
+    const cameraDevices = ((deviceRows ?? []) as Array<{
+      id: string;
+      config_json: Record<string, unknown> | null;
+    }>).filter((d) => wanted.has(String(d.config_json?.camera_id ?? "")));
 
-      const deviceRows = (devicesResult.data ?? []).flatMap((device) => {
-        const cameraId = String(device.config_json?.camera_id ?? "");
-        const role = device.config_json?.role;
-        return cameraId && (role === "proof_primary" || role === "proof_qr")
-          ? [{ deviceId: device.id, cameraId, role }]
-          : [];
-      });
-      if (deviceRows.length > 0) {
-        const { data: assignments, error: assignmentsError } = await admin
-          .from("station_device_assignments")
-          .select("device_id")
+    let assignments: Array<{ device_id: string; station_id: string }> = [];
+    if (cameraDevices.length > 0) {
+      const { data: assignmentRows, error: assignmentsError } = await admin
+        .from("station_device_assignments")
+        .select("device_id, station_id")
+        .eq("organization_id", orgId)
+        .is("unassigned_at", null)
+        .in("device_id", cameraDevices.map((d) => d.id));
+      if (assignmentsError) return { error: assignmentsError.message };
+      assignments = (assignmentRows ?? []) as Array<{ device_id: string; station_id: string }>;
+    }
+
+    const stationIds = [...new Set(assignments.map((a) => a.station_id))];
+    let stations: Array<{ id: string; scan_source: string | null }> = [];
+    const openSessionStationIds = new Set<string>();
+    if (stationIds.length > 0) {
+      const [stationsResult, sessionsResult] = await Promise.all([
+        admin
+          .from("packing_stations")
+          .select("id, scan_source")
           .eq("organization_id", orgId)
-          .eq("station_id", stationId)
-          .is("unassigned_at", null)
-          .in("device_id", deviceRows.map((device) => device.deviceId));
-        if (assignmentsError) return { error: assignmentsError.message };
-        const assignedDeviceIds = new Set((assignments ?? []).map((row) => row.device_id));
-        for (const device of deviceRows) {
-          if (assignedDeviceIds.has(device.deviceId)) {
-            roleByCameraId.set(device.cameraId, device.role);
-          }
-        }
+          .in("id", stationIds),
+        admin
+          .from("staff_work_sessions")
+          .select("station_id")
+          .eq("organization_id", orgId)
+          .eq("status", "active")
+          .in("station_id", stationIds),
+      ]);
+      if (stationsResult.error) return { error: stationsResult.error.message };
+      if (sessionsResult.error) return { error: sessionsResult.error.message };
+      stations = (stationsResult.data ?? []) as Array<{ id: string; scan_source: string | null }>;
+      for (const row of (sessionsResult.data ?? []) as Array<{ station_id: string | null }>) {
+        if (row.station_id) openSessionStationIds.add(row.station_id);
       }
     }
+
+    stationInfo = resolveCameraStations({
+      cameraIds: cameraIdList,
+      devices: cameraDevices,
+      assignments,
+      stations,
+      openSessionStationIds,
+    });
   }
 
   const items = (cams ?? []).map((c) => {
@@ -185,7 +183,8 @@ export async function listCameraCredentials(
           path: c.rtsp_substream_path,
         })
       : null;
-    const role = roleByCameraId.get(c.id) ?? null;
+    const info = stationInfo.get(c.id);
+    const role = info?.role ?? null;
     return {
       camera_id: c.id,
       camera_code: c.camera_code,
@@ -193,12 +192,12 @@ export async function listCameraCredentials(
       rtsp_substream_url: rtspSubstreamUrl,
       transport: "tcp" as const,
       segment_seconds: 60,
-      station_id: stationId,
+      station_id: info?.stationId ?? null,
       role,
-      scan_source: scanSource,
+      scan_source: info?.scanSource ?? "scanner",
       scanner_device_code:
         role === "proof_qr" ? `qrcam_${c.camera_code}`.toLowerCase() : null,
-      station_has_open_session: stationHasOpenSession,
+      station_has_open_session: info?.stationHasOpenSession ?? false,
       // MAC KHÔNG phải bí mật (nó nằm sẵn trên mọi gói tin trong LAN) nên
       // gửi kèm credential là an toàn, và đây là kênh duy nhất agent đã
       // biết chắc "camera này thuộc về mình".

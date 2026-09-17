@@ -121,6 +121,8 @@ export interface CameraPublic {
   last_probe_latency_ms: number | null;
   // E.1: dinh danh on dinh cua camera. IP chi la dia chi hien tai.
   mac_address: string | null;
+  /** Agent phục vụ camera. null = không máy nào dựng luồng/ghi hình cho nó. */
+  agent_id: string | null;
   ip_auto_healed_count: number;
 }
 
@@ -144,7 +146,7 @@ import {
 } from "./qr-virtual-scanner";
 
 const SAFE_COLUMNS =
-  "id, name, camera_code, ip, rtsp_port, username, rtsp_path, location, status, last_tested_at, last_test_result, created_at, updated_at, codec_detected, codec_warning, codec_probed_at, codec_probe_error, last_probe_at, last_probe_ok, last_probe_latency_ms, mac_address, ip_auto_healed_count";
+  "id, name, camera_code, ip, rtsp_port, username, rtsp_path, location, status, last_tested_at, last_test_result, created_at, updated_at, codec_detected, codec_warning, codec_probed_at, codec_probe_error, last_probe_at, last_probe_ok, last_probe_latency_ms, mac_address, ip_auto_healed_count, agent_id";
 
 const ALL_COLUMNS = `${SAFE_COLUMNS}, password_ciphertext, password_iv, password_tag`;
 
@@ -173,6 +175,7 @@ export function toPublicCamera(row: CameraRow): CameraPublic {
     last_probe_ok: row.last_probe_ok,
     last_probe_latency_ms: row.last_probe_latency_ms,
     mac_address: row.mac_address,
+    agent_id: row.agent_id ?? null,
     ip_auto_healed_count: row.ip_auto_healed_count ?? 0,
   };
 }

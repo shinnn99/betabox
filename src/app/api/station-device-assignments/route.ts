@@ -7,6 +7,10 @@ import {
   isError,
 } from "@/lib/supabase/guard";
 import { audit } from "@/lib/audit";
+import {
+  startRecordingIfShiftOpen,
+  stopRecordingForCamera,
+} from "@/lib/camera/station-recording";
 import { invalidateCameraCaches } from "@/lib/camera/service";
 
 export const runtime = "nodejs";
@@ -154,6 +158,8 @@ export async function POST(req: Request) {
     );
   }
 
+  // Camera bi day khoi vi tri — phai dung ghi cua no sau khi gan xong.
+  const evictedCameraIds: string[] = [];
   const sameTypeIds = ((stationActive ?? []) as Array<{
     id: string;
     device_id: string;
@@ -172,7 +178,12 @@ export async function POST(req: Request) {
       }
       return true;
     })
-    .map((r) => r.id);
+    .map((r) => {
+      const sd = Array.isArray(r.station_devices) ? r.station_devices[0] : r.station_devices;
+      const evictedCameraId = String(sd?.config_json?.camera_id ?? "");
+      if (sd?.device_type === "camera" && evictedCameraId) evictedCameraIds.push(evictedCameraId);
+      return r.id;
+    });
 
   if (sameTypeIds.length > 0) {
     // Cross-tenant guard: sameTypeIds đã lọc org qua stationActive query,
@@ -341,6 +352,28 @@ export async function POST(req: Request) {
   // cache must be discarded.
   invalidateCameraCaches(ctx.organizationId);
 
+  // Ghi segment di theo viec gan ban (xem station-recording.ts).
+  let recording: string | null = null;
+  if (dev.device_type === "camera") {
+    for (const evictedId of evictedCameraIds) {
+      await stopRecordingForCamera({ organizationId: ctx.organizationId, cameraId: evictedId });
+    }
+    const cameraId = String(dev.config_json?.camera_id ?? "");
+    if (cameraId) {
+      recording = await startRecordingIfShiftOpen({
+        organizationId: ctx.organizationId,
+        stationId,
+        cameraId,
+        requestedBy: ctx.userId,
+      });
+      // Chuyen sang ban khong co ca: neu dang ghi cho ban cu thi dung lai,
+      // khong de no ghi tiep duoi ten ban moi.
+      if (recording === "no_open_shift") {
+        await stopRecordingForCamera({ organizationId: ctx.organizationId, cameraId });
+      }
+    }
+  }
+
   await audit({
     organizationId: ctx.organizationId,
     actorUserId: ctx.userId,
@@ -348,10 +381,15 @@ export async function POST(req: Request) {
     action: "station_device_assignment.assign",
     targetType: "station_device_assignment",
     targetId: data.id,
-    metadata: { device_id: deviceId, station_id: stationId },
+    metadata: {
+      device_id: deviceId,
+      station_id: stationId,
+      recording,
+      evicted_camera_ids: evictedCameraIds,
+    },
   });
 
-  return NextResponse.json({ assignment: data }, { status: 201 });
+  return NextResponse.json({ assignment: data, recording }, { status: 201 });
 }
 
 /**
@@ -391,6 +429,22 @@ export async function DELETE(req: Request) {
   }
 
   invalidateCameraCaches(ctx.organizationId);
+
+  // Camera ve hang doi van thuoc agent (de con xem livestream), nen agent
+  // khong tu thu hoi lenh ghi. Phai dung tuong minh.
+  const { data: unassignedDevice } = await admin
+    .from("station_devices")
+    .select("device_type, config_json")
+    .eq("organization_id", ctx.organizationId)
+    .eq("id", deviceId)
+    .maybeSingle();
+  const unassignedCameraId = String(unassignedDevice?.config_json?.camera_id ?? "");
+  if (unassignedDevice?.device_type === "camera" && unassignedCameraId) {
+    await stopRecordingForCamera({
+      organizationId: ctx.organizationId,
+      cameraId: unassignedCameraId,
+    });
+  }
 
   await audit({
     organizationId: ctx.organizationId,

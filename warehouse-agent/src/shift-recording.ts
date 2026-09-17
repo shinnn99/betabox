@@ -23,6 +23,32 @@ export function camerasForShiftStart(
 }
 
 /**
+ * Chọn camera cần bật ghi khi quét được QR nhân viên — CHỈ của bàn đã quét.
+ *
+ * Kho dùng một agent cho mọi bàn (chốt với chủ dự án 17/09/2026). Trước
+ * đây hàm này bật ghi MỌI camera đủ điều kiện của agent: đúng khi agent chỉ
+ * phục vụ một bàn, nhưng khi phục vụ nhiều bàn thì quét QR ở BAN_01 sẽ bật
+ * ghi cả BAN_03 — trộn bằng chứng của hai bàn vào nhau.
+ *
+ * `stationId`:
+ *   - biết bàn (QR đọc được từ camera của bàn đó) → chỉ bàn đó;
+ *   - không biết bàn (súng quét qua cổng serial — agent không biết súng đó
+ *     gắn bàn nào) và agent chỉ có camera của ĐÚNG MỘT bàn → vẫn bật bàn đó,
+ *     vì không có gì để nhầm; giữ nguyên hành vi kho một bàn;
+ *   - không biết bàn mà agent có camera của NHIỀU bàn → không bật gì. Cloud
+ *     sẽ quy mã về đúng bàn và mở ca; chậm vài giây còn hơn ghi nhầm bàn.
+ */
+export function pickShiftCameras(
+  cameras: CredentialItem[],
+  stationId: string | null,
+): CredentialItem[] {
+  const eligible = camerasForShiftStart(cameras);
+  if (stationId) return eligible.filter((camera) => camera.station_id === stationId);
+  const stations = new Set(eligible.map((camera) => camera.station_id));
+  return stations.size === 1 ? eligible : [];
+}
+
+/**
  * Điều phối ghi hình tại máy bàn. Cache chỉ sống trong RAM nên URL RTSP có
  * credential không bị ghi xuống ổ. QR nhân viên hợp lệ về hình dạng sẽ bật
  * ghi trước khi request cloud chạy; cloud vẫn là nơi xác thực token và cấp
@@ -37,7 +63,11 @@ export class ShiftRecording {
     this.cameras = [...cameras];
   }
 
-  async onLocalStaffQr(rawValue: string): Promise<{
+  async onLocalStaffQr(
+    rawValue: string,
+    /** Bàn nơi mã được quét; null khi không biết (súng quét serial). */
+    stationId: string | null,
+  ): Promise<{
     matched: boolean;
     requested: number;
     started: number;
@@ -45,7 +75,7 @@ export class ShiftRecording {
     if (!isStaffQrShape(rawValue)) {
       return { matched: false, requested: 0, started: 0 };
     }
-    const targets = camerasForShiftStart(this.cameras);
+    const targets = pickShiftCameras(this.cameras, stationId);
     const results = await Promise.allSettled(
       targets.map((camera) => this.lifecycle.startLocalOne(camera)),
     );
@@ -53,7 +83,7 @@ export class ShiftRecording {
       (result) => result.status === "fulfilled" && result.value,
     ).length;
     console.log(
-      `[shift-recording] staff QR detected; requested=${targets.length} active=${started}`,
+      `[shift-recording] staff QR detected; station=${stationId ?? "khong ro"} requested=${targets.length} active=${started}`,
     );
     return { matched: true, requested: targets.length, started };
   }

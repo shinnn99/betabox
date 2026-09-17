@@ -4,6 +4,8 @@ import {
   requirePermissionStrict,
 } from "@/lib/supabase/guard";
 import { audit } from "@/lib/audit";
+import { bindCameraToDiscoveringAgent } from "@/lib/camera/discovering-agent";
+import { createAdminClient } from "@/lib/supabase/admin";
 import {
   deleteCamera,
   HasProofClipsError,
@@ -52,13 +54,21 @@ export async function PUT(req: Request, { params }: RouteContext) {
   if (v) return NextResponse.json({ error: "validation", ...v }, { status: 400 });
 
   try {
-    const camera = await updateCamera(ctx.organizationId, id, input);
-    if (!camera) {
+    const updated = await updateCamera(ctx.organizationId, id, input);
+    if (!updated) {
       return NextResponse.json(
         { error: "not_found", message: "Không tìm thấy camera hoặc không có thay đổi." },
         { status: 404 },
       );
     }
+    // "Gắn MAC" / "Kết nối lại" cho camera chưa thuộc agent nào: cho agent
+    // đã quét thấy nó nhận luôn. Camera đã có agent thì giữ nguyên máy.
+    const agentId = await bindCameraToDiscoveringAgent(
+      createAdminClient(),
+      ctx.organizationId,
+      updated,
+    );
+    const camera = { ...updated, agent_id: agentId };
     await audit({
       organizationId: ctx.organizationId,
       actorUserId: ctx.userId,
