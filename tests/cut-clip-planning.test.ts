@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { planQrCameraForProofClip } from "../src/lib/agent-commands/cut-clip-planning.ts";
+import { isSeparateQrAngle, planQrCameraForProofClip } from "../src/lib/agent-commands/cut-clip-planning.ts";
 
 test("proof clip uses immutable QR camera snapshot when present", () => {
   const plan = planQrCameraForProofClip({
@@ -36,4 +36,28 @@ test("proof clip does not try station fallback without a station", () => {
     cameraId: null,
     shouldResolveStationAssignment: false,
   });
+});
+
+// Bàn chỉ có một camera: cả hai góc cùng camera → không ghép PiP với chính nó.
+test("QR angle is skipped when it is the same camera as the overview", () => {
+  const cam = "33333333-3333-4333-8333-333333333333";
+  assert.equal(isSeparateQrAngle(cam, cam), false);
+});
+
+test("QR angle is used when it is a different camera", () => {
+  assert.equal(
+    isSeparateQrAngle(
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+    ),
+    true,
+  );
+});
+
+test("QR angle is used when the overview camera is unknown", () => {
+  assert.equal(isSeparateQrAngle(null, "44444444-4444-4444-8444-444444444444"), true);
+});
+
+test("no QR camera means no QR angle", () => {
+  assert.equal(isSeparateQrAngle("33333333-3333-4333-8333-333333333333", null), false);
 });

@@ -1,3 +1,4 @@
+import { AgentInstanceConflictError } from "./agent-instance";
 import { signBodyV2 } from "./signing";
 import { AGENT_API_PATHS } from "./agent-api-paths";
 import { fetchWithRetrySigned } from "./fetch-error";
@@ -73,10 +74,13 @@ export async function pollCommandsWithState(params: {
   agentSecret: string;
   activeRecordings: ActiveRecordingReport[];
   encodingBusy?: boolean;
+  /** Mã phiên máy này — cloud chỉ cấp lệnh cho một phiên mỗi mã agent. */
+  instanceId?: string;
 }): Promise<AgentCommand[]> {
   const body = JSON.stringify({
     agent_state: { active_recordings: params.activeRecordings },
     encoding_busy: params.encodingBusy ?? false,
+    ...(params.instanceId ? { agent_instance_id: params.instanceId } : {}),
   });
   const res = await fetchWithRetrySigned(
     `${params.backendUrl}${AGENT_API_PATHS.pollCommands}`,
@@ -93,6 +97,12 @@ export async function pollCommandsWithState(params: {
       redirect: "manual",
     }),
   );
+  if (res.status === 409) {
+    const conflict = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
+    if (conflict?.error === "agent_instance_conflict") {
+      throw new AgentInstanceConflictError(conflict.message ?? "agent_instance_conflict");
+    }
+  }
   if (!res.ok) {
     throw new Error(`poll-commands ${res.status}`);
   }

@@ -42,6 +42,7 @@ import {
 } from "./camera-heal";
 import { ShiftRecording } from "./shift-recording";
 import { QrScanService, type CameraQrScan } from "./qr/qr-scan-service";
+import { AgentInstanceConflictError, loadAgentInstanceId } from "./agent-instance";
 import { SegmentIndex } from "./segment-index";
 import {
   checkSegmentsExist,
@@ -189,6 +190,7 @@ async function main(): Promise<void> {
   // CRIT-1 (B2): PID registry persist ffmpeg PID + boot recovery kill
   // zombie sau kill -9 agent.
   const pidRegistry = new PidRegistry(resolve(dataDir, "ffmpeg-pids.json"));
+  const agentInstanceId = loadAgentInstanceId(resolve(dataDir, "agent-instance-id"));
   // Outbox callback clip-cut-result (2026-08-11). Nằm cạnh các queue
   // khác trong dataDir để installer/backup gom một chỗ.
   const clipResultOutbox = new ClipResultOutbox(
@@ -1659,8 +1661,20 @@ async function main(): Promise<void> {
         agentSecret: config.agentSecret,
         activeRecordings: lifecycle.snapshotActive(),
         encodingBusy: encodeGate.isBusy(),
+        instanceId: agentInstanceId,
       });
     } catch (err) {
+      if (err instanceof AgentInstanceConflictError) {
+        // Máy khác đang chạy cùng mã agent. Không nhận lệnh nào cho tới khi
+        // máy kia tắt; log thưa để không ngập nhật ký.
+        const verdict = fetchLogLimiter.tick("poll-commands:instance-conflict");
+        if (verdict.kind === "log_first" || verdict.kind === "log_summary") {
+          console.error(
+            `[AGENT-TRUNG-MA] ${config.agentCode} đang chạy ở máy khác — máy này KHÔNG nhận lệnh ghi/cắt clip. ${err.message}`,
+          );
+        }
+        return;
+      }
       // pollCommandsWithState nội bộ chưa có retry — nhưng poll chạy mỗi
       // 3s, tự nó là "retry loop tự nhiên". Không cần retry nội bộ vì
       // sẽ chồng lên lần poll kế. Log qua rate limiter cho gọn.

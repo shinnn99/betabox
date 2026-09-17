@@ -65,6 +65,28 @@ export function computeRevokedCameraIds(
 }
 
 const EARLY_EXIT_WATCHDOG_MS = 20000;
+/**
+ * Lần spawn ffmpeg thất bại LOẠI TẠM THỜI thì làm gì.
+ *
+ * - "retry": giữ state, lên lịch thử lại (long-retry + fast recovery).
+ * - "drop":  xoá state, không thử lại.
+ *
+ * Local start (QR tại bàn, chưa có session cloud) → drop: lệnh
+ * start_recording của cloud theo sau sẽ vào lại đây với isFreshStart.
+ * Mọi đường còn lại, KỂ CẢ lần ghi đầu theo lệnh cloud → retry. Cloud không
+ * gửi lại start_recording; bỏ cuộc ở lần đầu là mất video cả ca.
+ */
+export function planStartFailure(args: {
+  kind: "permanent" | "transient";
+  isFreshStart: boolean;
+  isLocalStart: boolean;
+}): "retry" | "drop" {
+  if (args.kind !== "transient") {
+    throw new Error("planStartFailure chỉ dành cho lỗi transient");
+  }
+  return args.isLocalStart ? "drop" : "retry";
+}
+
 const SHORT_RETRY_BACKOFFS_MS = [2000, 5000, 10000];
 const LONG_RETRY_INTERVAL_MS = 5 * 60 * 1000;
 const LONG_RETRY_ERROR_THRESHOLD = 12;
@@ -634,18 +656,30 @@ export class RecordingLifecycle {
         // sau boot fail transient, desired vẫn có camera → agent muốn
         // ghi nhưng không có ai kích lại.
         //
-        // Với ca fresh-start (startOne từ cloud command) transient:
-        // KHÔNG schedule long-retry (câu trả lời trả cloud là "fail
-        // transient", cloud/user quyết retry hay không). Trước đây
-        // state cũng bị delete → OK. Giờ giữ state nhưng KHÔNG schedule
-        // → state mồ côi. Xóa state cho ca này để tránh mồ côi.
-        if (!isFreshStart && !isLocalStart) {
+        // Fresh-start (startOne từ lệnh cloud) transient: CŨNG phải tự
+        // thử lại. Trước đây bỏ cho "cloud/user quyết retry", nhưng cloud
+        // không bao giờ gửi lại start_recording — lệnh do trigger mở ca
+        // bắn đúng một lần. Camera chập chờn đúng lúc mở ca (EZVIZ wifi,
+        // 17/09/2026 16:21) là mất video CẢ CA tới khi có người mở lại ca.
+        //
+        // Ghi desired luôn: ca đang mở = ý định ghi đã có, kể cả khi lần
+        // spawn đầu hỏng. Long-retry + fast recovery (probe OK 2 nhịp) +
+        // notifyEndpointHealed lo phần dậy lại; stopOne dọn sạch khi ca
+        // đóng. Local start (QR tại bàn) giữ như cũ — lệnh cloud theo sau
+        // sẽ vào đúng nhánh này.
+        if (planStartFailure({ kind, isFreshStart, isLocalStart }) === "retry") {
+          if (isFreshStart) {
+            this.desired.set(spec.cameraId, {
+              camera_id: spec.cameraId,
+              session_id: spec.sessionId,
+              desired_since: new Date().toISOString(),
+            });
+            await this.deps.desiredStore.save(this.desired);
+          }
           await this.reportStatus(spec, "degraded", outcome.reason);
           this.scheduleLongRetry(spec);
           // State giữ. scheduleLongRetry đã set state.pendingTimer.
         } else {
-          // Fresh-start transient: không có retry pending → xóa state
-          // để lần startOne kế tiếp bắt đầu clean.
           this.states.delete(spec.cameraId);
         }
       }

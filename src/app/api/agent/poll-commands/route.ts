@@ -4,6 +4,7 @@ import {
   readAgentHeaders,
   verifyAgentRequest,
 } from "@/lib/warehouse/agent-auth";
+import { decideAgentInstance, leaseExpiredBefore } from "@/lib/warehouse/agent-instance-lease";
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
 import { decryptPassword } from "@/lib/camera/crypto";
@@ -60,6 +61,13 @@ function parseEncodingBusy(raw: unknown): boolean {
   if (!raw || typeof raw !== "object") return false;
   const v = (raw as Record<string, unknown>).encoding_busy;
   return v === true;
+}
+
+/** Mã phiên agent (bản mới gửi, bản cũ không có). Sai dạng coi như không có. */
+function parseInstanceId(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const v = (raw as Record<string, unknown>).agent_instance_id;
+  return typeof v === "string" && UUID_RE.test(v) ? v : null;
 }
 
 function parseAgentState(raw: unknown): ActiveRecordingReport[] {
@@ -156,11 +164,25 @@ export async function POST(req: Request) {
   const rawBody = await req.text();
 
   const admin = createAdminClient();
-  const { data: agent, error: agentErr } = await admin
+  // Cột thuê phiên (migration 20260917110000) có thể chưa có trên DB đang
+  // chạy — thiếu thì đọc lại không có cột, bỏ qua chốt chạy trùng.
+  let leaseSupported = true;
+  let agentLookup = await admin
     .from("warehouse_agents")
-    .select("id, organization_id, status, secret, hmac_v2_enforced_at")
+    .select(
+      "id, organization_id, status, secret, hmac_v2_enforced_at, active_instance_id, active_instance_seen_at",
+    )
     .eq("code", headers.code)
     .maybeSingle();
+  if (agentLookup.error?.code === "42703") {
+    leaseSupported = false;
+    agentLookup = (await admin
+      .from("warehouse_agents")
+      .select("id, organization_id, status, secret, hmac_v2_enforced_at")
+      .eq("code", headers.code)
+      .maybeSingle()) as typeof agentLookup;
+  }
+  const { data: agent, error: agentErr } = agentLookup;
 
   if (agentErr) {
     return NextResponse.json({ error: "lookup_failed" }, { status: 500 });
@@ -222,6 +244,61 @@ export async function POST(req: Request) {
   }
   const encodingBusy = parseEncodingBusy(parsedBody);
 
+  // Chốt chạy trùng mã agent — xem agent-instance-lease.ts. Đặt TRƯỚC claim:
+  // phiên bị từ chối tuyệt đối không được giữ lệnh 'taken'.
+  const now = new Date();
+  const instanceId = parseInstanceId(parsedBody);
+  let ownsLease = false;
+  if (leaseSupported) {
+    const decision = decideAgentInstance({
+      instanceId,
+      activeInstanceId: (agent.active_instance_id as string | null) ?? null,
+      activeSeenAt: (agent.active_instance_seen_at as string | null) ?? null,
+      now,
+    });
+    if (decision.kind === "legacy_blocked") {
+      // Agent bản cũ (không gửi mã phiên) trong lúc một agent mới đang giữ
+      // quyền. Trả rỗng thay vì lỗi để bản cũ không rơi vào vòng thử lại ồn.
+      return NextResponse.json({ ok: true, commands: [] });
+    }
+    if (decision.kind === "conflict") {
+      return NextResponse.json(
+        {
+          error: "agent_instance_conflict",
+          message:
+            "Mã agent này đang chạy ở một máy khác. Tắt agent ở máy kia (hoặc chờ nó ngừng hẳn 30 giây) rồi mới nhận lệnh được.",
+        },
+        { status: 409 },
+      );
+    }
+    if (decision.kind === "claim") {
+      // Giành có điều kiện: hai máy cùng giành một lúc thì chỉ một ghi được.
+      const { data: claimedLease, error: leaseErr } = await admin
+        .from("warehouse_agents")
+        .update({
+          active_instance_id: instanceId,
+          active_instance_seen_at: now.toISOString(),
+          last_seen_at: now.toISOString(),
+        })
+        .eq("id", agent.id)
+        .or(
+          `active_instance_id.is.null,active_instance_seen_at.is.null,active_instance_seen_at.lt.${leaseExpiredBefore(now)}`,
+        )
+        .select("id")
+        .maybeSingle();
+      if (leaseErr) {
+        return NextResponse.json({ error: "lease_failed", message: leaseErr.message }, { status: 500 });
+      }
+      if (!claimedLease) {
+        return NextResponse.json(
+          { error: "agent_instance_conflict", message: "Máy khác vừa nhận quyền mã agent này." },
+          { status: 409 },
+        );
+      }
+    }
+    ownsLease = decision.kind === "owner" || decision.kind === "claim";
+  }
+
   const excludeTypes = encodingBusy ? ["cut_clip"] : [];
   const typeLimits = encodingBusy ? {} : { cut_clip: 1 };
 
@@ -244,7 +321,11 @@ export async function POST(req: Request) {
   const nowIso = new Date().toISOString();
   const { error: seenErr } = await admin
     .from("warehouse_agents")
-    .update({ last_seen_at: nowIso })
+    .update(
+      ownsLease
+        ? { last_seen_at: nowIso, active_instance_seen_at: nowIso }
+        : { last_seen_at: nowIso },
+    )
     .eq("id", agent.id);
   if (seenErr) {
     console.warn(

@@ -1,7 +1,7 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { resolveClipBounds, type SegmentFile } from "@/lib/order-proof/clip-resolver";
-import { planQrCameraForProofClip } from "@/lib/agent-commands/cut-clip-planning";
+import { isSeparateQrAngle, planQrCameraForProofClip } from "@/lib/agent-commands/cut-clip-planning";
 
 // GOP pad bù keyframe snap khi `-c copy`. Cùng con số với code cũ
 // (clip-cutter.ts GOP_PAD_BEFORE/AFTER_SECONDS=3). Tính ở cloud, gửi
@@ -631,10 +631,15 @@ export async function enqueueCutClip(
     },
   });
 
-  const qrResolved = qrCameraId
+  // Chỉ lấy góc QR khi nó là camera khác góc toàn cảnh; cùng một camera thì
+  // xuất video một góc (xem isSeparateQrAngle).
+  const qrResolved = isSeparateQrAngle(
+    overviewResolved.cameraId ?? overviewCameraId,
+    qrCameraId,
+  )
     ? await resolveClipBounds({
         organizationId: args.organizationId,
-        cameraIdOverride: qrCameraId,
+        cameraIdOverride: qrCameraId ?? undefined,
         agentId: args.agentId,
         packingEvent: {
           id: pe.id,
@@ -643,7 +648,7 @@ export async function enqueueCutClip(
           staff_id: pe.staff_id,
           work_session_id: pe.work_session_id,
           scanned_at: pe.scanned_at,
-          proof_camera_id: qrCameraId,
+          proof_camera_id: qrCameraId ?? null,
           work_ended_at: pe.work_ended_at,
           work_duration_seconds: pe.work_duration_seconds,
           timing_status: pe.timing_status,
@@ -812,7 +817,7 @@ export async function enqueueCutClip(
       before_next_seconds: resolved.beforeNextSeconds,
       default_post_seconds: resolved.defaultPostSeconds,
       replaces_clip_id: args.replacesClipId ?? null,
-      compose_mode: "pip",
+      compose_mode: qrResolved?.ok ? "pip" : "single",
       layout: "live_pip_1_9_top_right",
       angles_present: [
         ...(overviewResolved.ok ? ["overview"] : []),
@@ -830,7 +835,7 @@ export async function enqueueCutClip(
     before_next_seconds: resolved.beforeNextSeconds,
     default_post_seconds: resolved.defaultPostSeconds,
     replaces_clip_id: args.replacesClipId ?? null,
-    compose_mode: "pip",
+    compose_mode: qrResolved?.ok ? "pip" : "single",
     layout: "live_pip_1_9_top_right",
     angles_present: [
       ...(overviewResolved.ok ? ["overview"] : []),
