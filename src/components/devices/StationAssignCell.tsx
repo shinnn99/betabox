@@ -35,6 +35,8 @@ export interface AssignStation {
   id: string;
   code: string;
   name: string;
+  /** Bàn nhận lượt quét từ súng hay từ camera ở vị trí QR. */
+  scan_source?: "scanner" | "camera" | null;
 }
 
 /** Camera đang chiếm một vị trí ở một bàn. */
@@ -181,6 +183,42 @@ export default function StationAssignCell({
     ? stations.find((s) => s.id === pending.stationId)
     : null;
 
+  /**
+   * Camera ở vị trí QR chỉ ĐỌC MÃ khi bàn đặt nguồn quét = camera; còn lại
+   * nó chỉ ghi hình góc QR cho clip. Trước đây không có chỗ nào cho thấy
+   * điều này — camera nhìn rõ mã mà không quét được, người dùng không biết
+   * vì sao (gặp thật 18/09/2026 ở BAN_04).
+   */
+  const station = currentStation ? stations.find((s) => s.id === currentStation.station_id) : null;
+  const readsQr = station?.scan_source === "camera";
+
+  const setScanSource = async (next: "scanner" | "camera") => {
+    if (!currentStation) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/packing-stations/${currentStation.station_id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scan_source: next }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.message ?? j.error ?? "Không đổi được nguồn quét.");
+      }
+      toast.success(
+        next === "camera"
+          ? `${currentStation.station_code} giờ đọc mã bằng camera này. Súng quét ở bàn sẽ bị bỏ qua.`
+          : `${currentStation.station_code} quay về đọc mã bằng súng quét. Camera này chỉ còn ghi hình.`,
+      );
+      onSaved();
+    } catch (scanError) {
+      setErr((scanError as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-1.5">
@@ -319,6 +357,32 @@ export default function StationAssignCell({
               <span className="text-amber-600"> · chưa đặt vị trí</span>
             ))}
         </p>
+      )}
+
+      {isCamera && !pending && currentStation && currentRole === "proof_qr" && station && (
+        <div
+          className={`rounded-lg border p-1.5 space-y-1 ${
+            readsQr ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-slate-50"
+          }`}
+        >
+          <p className={`text-[11px] ${readsQr ? "text-emerald-800" : "text-slate-600"}`}>
+            {readsQr
+              ? "Đang đọc mã QR cho bàn (súng quét ở bàn bị bỏ qua)."
+              : "Chỉ ghi hình — bàn đang đọc mã bằng súng quét."}
+          </p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void setScanSource(readsQr ? "scanner" : "camera")}
+            className={`h-6 px-2 rounded-md text-[11px] font-semibold disabled:opacity-50 ${
+              readsQr
+                ? "bg-white border border-slate-300 text-slate-700 hover:bg-slate-100"
+                : "bg-emerald-600 hover:bg-emerald-700 text-white"
+            }`}
+          >
+            {readsQr ? "Chuyển về súng quét" : "Dùng camera này để quét mã"}
+          </button>
+        </div>
       )}
 
       {isCamera && !pending && currentStation && (

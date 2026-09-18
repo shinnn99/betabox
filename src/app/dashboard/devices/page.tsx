@@ -234,6 +234,7 @@ interface Station {
   name: string;
   warehouse_id: string;
   status: string;
+  scan_source?: "scanner" | "camera" | null;
 }
 
 export default function DevicesPageWrapper() {

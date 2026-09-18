@@ -4,6 +4,39 @@ Ghi từ 0.8.6 trở đi. Mỗi mục nêu: sửa gì, vì sao, và người đi
 
 ---
 
+## 0.9.1 — 2026-09-18
+
+**Ô Góc QR trong video bằng chứng đứng dọc (360×640) thay vì nằm ngang
+(640×360).** Camera QR đặt chế độ hình dọc để nhìn trọn nhãn vận đơn; ô
+ngang cũ chỉ cắt được một dải giữa của nhãn. Cùng diện tích, vẫn ở góc
+trên phải, hình không bị xoay. Livestream đổi khung giống hệt.
+
+Người đi cài cần biết: cài đè như thường lệ.
+
+---
+
+## 0.9.0 — 2026-09-18
+
+**Một agent phục vụ mọi bàn trong kho, mỗi bàn tối đa hai camera (toàn cảnh
++ góc QR), video bằng chứng ghép hình-trong-hình.**
+
+- Camera gắn vào bàn nào thì ghi theo ca của bàn đó; mở ca bàn nào chỉ bật
+  camera của bàn đó.
+- Camera nhận theo địa chỉ MAC: đổi IP (DHCP, đổi wifi) agent tự tìm lại.
+- Camera rớt mạng đúng lúc mở ca: agent tự thử ghi lại, không bỏ cả ca.
+- Bàn chỉ có một camera: clip một góc, không ghép camera với chính nó.
+- Hai máy chạy cùng mã agent: chỉ một máy nhận lệnh, máy kia log
+  `[AGENT-TRUNG-MA]` (cần migration `20260917110000` trên cloud).
+
+**Đi kèm bản cloud nhánh `2-camera`** — cloud cũ thiếu các route mới
+(báo IP camera đã đổi, credential theo bàn). Chưa deploy cloud thì trỏ
+`BACKEND_URL` vào máy chạy bản cloud mới.
+
+Người đi cài cần biết: cài đè như thường lệ; dịch vụ tự khởi động lại.
+Bản agent cũ trên máy khác cùng mã phải tắt — hai bản cùng mã giành lệnh.
+
+---
+
 ## 0.8.9 — 2026-08-11
 
 **Đơn không còn kẹt "Đang cắt" vĩnh viễn khi agent báo kết quả không tới

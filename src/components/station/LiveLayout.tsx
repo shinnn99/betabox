@@ -26,7 +26,10 @@ export default function LiveLayout({
 
   // Keep this visual contract in sync with the proof composer:
   // `warehouse-agent/src/compose/clip-composer.ts` renders the final MP4 with
-  // the same overview-full-frame + QR-top-right-PiP layout.
+  // the same overview-full-frame + QR-top-right-PiP layout. Góc QR đứng dọc
+  // (camera QR xuất hình dọc để thấy trọn nhãn): cùng diện tích ô ngang cũ
+  // 1/3 × 1/3 khung 16:9 nhưng đổi chiều → rộng 18,75%, cao 59,26%
+  // (clip: 360×640). Hình không xoay.
   useEffect(() => {
     const syncFullscreenState = () => {
       setIsFullscreen(document.fullscreenElement === frameRef.current);
@@ -69,10 +72,10 @@ export default function LiveLayout({
           key={qr.id}
           endpoint={qr.whep_url}
           label={`Góc QR · ${qr.name}`}
-          className="absolute right-3 top-3 z-10 h-1/3 w-1/3 rounded-lg border border-white shadow-xl"
+          className="absolute right-3 top-3 z-10 h-[59.26%] w-[18.75%] rounded-lg border border-white shadow-xl"
         />
       ) : (
-        <div className="absolute right-3 top-3 flex h-1/3 w-1/3 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-white/50 bg-slate-900/85 px-2 text-center text-white shadow-xl">
+        <div className="absolute right-3 top-3 flex h-[59.26%] w-[18.75%] flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-white/50 bg-slate-900/85 px-2 text-center text-white shadow-xl">
           <ScanLine className="h-5 w-5 text-slate-300" />
           <span className="text-[10px] sm:text-xs">Chưa có camera QR</span>
         </div>

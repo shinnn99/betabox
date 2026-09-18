@@ -791,7 +791,8 @@ export async function enqueueCutClip(
     layout: {
       mode: "pip",
       canvas: { width: 1920, height: 1080 },
-      qr: { x: 1280, y: 0, width: 640, height: 360, border: 2 },
+      // Agent vẽ cố định theo layout này (clip-composer.ts); ghi lại để đối soát.
+      qr: { x: 1560, y: 0, width: 360, height: 640, border: 2 },
       information_strip: "bottom",
     },
     information_strip: [

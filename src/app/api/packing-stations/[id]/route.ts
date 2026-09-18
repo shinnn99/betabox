@@ -5,7 +5,7 @@ import {
   isError,
 } from "@/lib/supabase/guard";
 import { audit } from "@/lib/audit";
-import { invalidateCameraCaches } from "@/lib/camera/service";
+import { invalidateCameraCaches, listCameras } from "@/lib/camera/service";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -25,6 +25,17 @@ export async function PATCH(req: Request, { params }: RouteContext) {
   if (typeof body.name === "string") update.name = body.name.trim();
   if (typeof body.code === "string") update.code = body.code.trim().toUpperCase();
   if (typeof body.status === "string") update.status = body.status;
+  // Nguồn tạo lượt quét của bàn: súng quét hay camera ở vị trí QR. Chỉ một
+  // nguồn được nhận — lượt quét từ nguồn kia bị từ chối (scan_source_disabled).
+  if (body.scan_source !== undefined) {
+    if (body.scan_source !== "scanner" && body.scan_source !== "camera") {
+      return NextResponse.json(
+        { error: "invalid_scan_source", message: "Nguồn quét chỉ là 'scanner' hoặc 'camera'." },
+        { status: 400 },
+      );
+    }
+    update.scan_source = body.scan_source;
+  }
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: "no_fields" }, { status: 400 });
   }
@@ -42,6 +53,21 @@ export async function PATCH(req: Request, { params }: RouteContext) {
         ? "Mã bàn đã tồn tại trong kho này."
         : error.message;
     return NextResponse.json({ error: error.code ?? "update_failed", message: msg }, { status: 400 });
+  }
+
+  if (update.scan_source !== undefined) {
+    // Đổi nguồn quét phải có hiệu lực NGAY: bật/gỡ máy quét ảo của camera
+    // QR ở bàn này (ensureQrVirtualScanners chạy trong listCameras). Không
+    // làm ở đây thì máy quét ảo nằm im tới lần kế có người mở trang thiết
+    // bị — camera không đọc mã dù bàn đã chuyển sang quét bằng camera.
+    invalidateCameraCaches(ctx.organizationId);
+    try {
+      await listCameras(ctx.organizationId);
+    } catch (repairError) {
+      console.warn(
+        `[packing-stations] sua may quet ao sau khi doi nguon quet that bai station=${id}: ${(repairError as Error).message}`,
+      );
+    }
   }
 
   await audit({

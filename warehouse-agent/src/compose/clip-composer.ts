@@ -144,10 +144,15 @@ export async function composeProofClip(options: ComposeClipOptions): Promise<voi
     ];
     let composedLabel = "base";
     if (overviewInput >= 0 && qrInput >= 0) {
+      // Ô Góc QR đứng dọc 360×640 (cùng diện tích ô ngang cũ 640×360).
+      // Camera QR đặt chế độ hình dọc để nhìn trọn nhãn vận đơn; ô ngang cũ
+      // cắt mất gần hết nhãn. KHÔNG xoay hình — camera đã xuất đúng chiều.
+      // Vẫn sát góc trên phải, trên dải thông tin (y ≥ 900). Khớp khung
+      // Góc QR của livestream (LiveLayout.tsx).
       filters.push(
-        `[${qrInput}:v]scale=640:360:force_original_aspect_ratio=increase,crop=640:360[qr]`,
-        "[base][qr]overlay=1280:0:eof_action=pass[pip]",
-        "[pip]drawbox=x=1278:y=0:w=642:h=362:color=white@0.95:t=2[framed]",
+        `[${qrInput}:v]scale=360:640:force_original_aspect_ratio=increase,crop=360:640[qr]`,
+        "[base][qr]overlay=1560:0:eof_action=pass[pip]",
+        "[pip]drawbox=x=1558:y=0:w=362:h=642:color=white@0.95:t=2[framed]",
       );
       composedLabel = "framed";
     }
