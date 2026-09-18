@@ -1,0 +1,13 @@
+# Bộ cài Betacom Agent
+
+File `BetacomAgentSetup-vX.Y.Z.exe` ở đây lưu qua **Git LFS** (mỗi file ~116 MB,
+vượt giới hạn 100 MB của GitHub). Clone repo cần có Git LFS mới tải được file
+thật; không có LFS thì chỉ nhận được file con trỏ vài trăm byte.
+
+- Tải: `git lfs pull --include "warehouse-agent/releases/*"`
+- Cài: chuột phải file `.exe` → Run as administrator. Hướng dẫn đầy đủ:
+  [../CACH-CAI-KHACH.md](../CACH-CAI-KHACH.md).
+- Thay đổi từng bản: [../RELEASES.md](../RELEASES.md).
+
+Mỗi bản mới chiếm thêm ~116 MB dung lượng LFS của GitHub (gói miễn phí 1 GB);
+chỉ giữ bản đang dùng, xoá bản cũ khi không cần.

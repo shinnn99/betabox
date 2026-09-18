@@ -593,3 +593,10 @@ docs([Module]):     Cập nhật tài liệu
 - **Chi tiet thay doi:** Composer: o QR `scale=360:640 ... crop=360:640`, `overlay=1560:0`, vien `drawbox x=1558 w=362 h=642` — cung dien tich, sat goc tren phai, tren dai thong tin; KHONG xoay (ban dau lam `transpose=clock` theo lua chon, trich khung goc thay camera da xuat hinh doc, xoay them lam chu nam nghieng → bo). Livestream: khung Goc QR `w-[18.75%] h-[59.26%]` (dung dien tich 1/3 x 1/3 khung 16:9, doi chieu). Metadata layout trong payload cut_clip khop. Agent nang 0.9.0 (mot agent nhieu ban, hai camera) va 0.9.1 (o QR doc); da build bo cai va cai de dich vu tren may dev: `BACKEND_URL=https://localhost:3000` (production chua co code 2-camera), dich vu tin CA goc mkcert qua `AppEnvironmentExtra NODE_EXTRA_CA_CERTS` (khong tat kiem tra chung chi).
 - **Ket qua kiem tra:** Ghep thu bang ffmpeg tu segment that hik_3 + dahua_3: nhan van don dung thang, hien tron trong o doc. `pnpm typecheck` + agent `tsc` dat. Dich vu 0.9.1 Running/Automatic, heartbeat lien tuc, 3 tien trinh ffmpeg (ghi hik_3, ghi dahua_3, doc QR dahua_3) chay lai sau nang cap.
 - **Trang thai:** Da hoan thanh. Luu y: dich vu phu thuoc dev server `localhost:3000`; khi deploy 2-camera len production thi doi `BACKEND_URL` trong `BetacomAgent\.env`.
+
+### [BO-CAI-AGENT-0.9.1-LEN-GIT] - Dua bo cai agent 0.9.1 len nhanh 2-camera qua Git LFS
+
+- **Muc tieu:** Chu du an muon bo cai agent moi co tren nhanh `2-camera`.
+- **Files tao/sua:** `.gitattributes`, `warehouse-agent/releases/BetacomAgentSetup-v0.9.1.exe` (LFS), `warehouse-agent/releases/README.md` (moi), `change.md`.
+- **Chi tiet thay doi:** Bo cai 116 MB vuot gioi han 100 MB/file cua GitHub nen luu qua Git LFS (`git lfs install --local`, rule `warehouse-agent/releases/*.exe`). De o thu muc rieng `releases/`, khong dung `dist-installer/` (van bi .gitignore). README ghi cach tai (`git lfs pull`), cach cai va luu y dung luong LFS (goi mien phi 1 GB, moi ban ~116 MB).
+- **Trang thai:** Da hoan thanh.
