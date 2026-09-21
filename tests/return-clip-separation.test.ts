@@ -112,3 +112,17 @@ test("mọi loại lệnh agent trong code đều có trong ràng buộc databas
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// Tải lên chậm: agent gặp "object đã tồn tại" thì báo thẳng upload-complete.
+// Cloud là chốt duy nhất xác minh object đó đúng bản agent đang giữ.
+// ---------------------------------------------------------------------------
+
+test("upload-complete đối chiếu kích thước object với file agent cắt", () => {
+  const src = readFileSync("src/app/api/agent/clip-upload-complete/route.ts", "utf8");
+  assert.ok(src.includes("bucket_size_mismatch"));
+  assert.ok(
+    src.includes(`clip.status === "pending"`),
+    "chỉ đối chiếu khi clip chưa promote — bản cắt lại của clip đã ready được phép lệch",
+  );
+});

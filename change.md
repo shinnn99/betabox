@@ -761,3 +761,19 @@ docs([Module]):     Cập nhật tài liệu
 - **Ket qua kiem tra:** Migration chay thu tren ban sao: giu nguyen 14 loai lenh cu, them `set_return_capture`, chen duoc lenh moi, loai la van bi chan; the QR mo ky ghi `card`, giao dien ghi `module`. `pnpm test` 481/481, `pnpm build` dat. Don di: duong dan / ten file / dai chu KHONG doi.
 - **Chua lam:** (4) can sua agent (nhan "da ton tai" la da tai len xong, hoac thoi gian cho theo toc do do duoc) — de xuat, chua lam; kho that (mang nhanh, clip 69 MB len trong 6-8 giay) chua gap. Chay lai toan bo kich ban de xac nhan gan nhan doan video + clip len Supabase can chu du an ap migration dot 6 va 7 len production truoc.
 - **Trang thai:** Dang cho chu du an ap migration. Ca test BAN_04 va camera ao van dang chay (to chuc thu). Chua push.
+
+### [AGENT-0.10.1] - Clip không kẹt "thất bại" khi mạng tải lên chậm
+
+- **Mục tiêu:** Sửa lỗi 4 của lần chạy thử đầu-cuối (chủ dự án đồng ý): uplink ~180 KB/s làm clip hết giờ chờ trong khi file vẫn lên xong; lần thử lại bị Supabase báo "object đã tồn tại" nên clip bị đánh thất bại.
+- **Nguyên nhân gốc thứ hai:** lệnh `cut_clip` chạy quá 2 phút (ghép PiP + tải chậm) thì reaper trả về `pending`. Poll mỗi 3 giây không chờ lượt trước, nên nhận lại cùng id trong khi bản đầu vẫn chạy, dẫn tới hai bản cắt + tải cùng một clip.
+- **Files sửa:**
+  - `warehouse-agent/src/upload.ts`: loại lỗi mới `already_exists`; thời gian chờ gấp đôi mỗi lần thử, kẹp 5 phút.
+  - `warehouse-agent/src/index.ts`: gặp `already_exists` thì đi tiếp báo upload-complete; bỏ qua lệnh trùng id đang chạy.
+  - `src/app/api/agent/clip-upload-complete/route.ts`: đối chiếu kích thước object với `file_size_bytes` khi clip còn `pending`.
+  - `warehouse-agent/tests/upload-already-exists.test.ts` (mới), `tests/return-clip-separation.test.ts`.
+  - Phiên bản 0.10.1: `warehouse-agent/package.json`, `installer/betacom-agent.iss`, `RELEASES.md`.
+- **Kết quả kiểm tra:**
+  - Cloud `pnpm test` 482/482.
+  - Agent 148/149: test còn lại là MediaMTX smoke, lỗi do cổng 8554 đang bị agent đang chạy chiếm, không liên quan.
+  - `tsc` agent đạt. Bộ cài `BetacomAgentSetup-v0.10.1.exe` build xong (116 MB, không vào git).
+- **Trạng thái:** Chưa push.

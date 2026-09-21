@@ -162,6 +162,30 @@ export async function POST(req: Request) {
     );
   }
 
+  // Kích thước phải khớp file agent vừa cắt. Agent gặp "object đã tồn
+  // tại" (lần thử trước hết giờ nhưng thực ra đã lên, hoặc lệnh chạy lại)
+  // sẽ báo thẳng bước này thay vì PUT lại — đây là chốt duy nhất chứng
+  // minh object trên bucket đúng là bản agent đang giữ.
+  const bucketSize = Number((found.metadata as { size?: unknown } | null)?.size);
+  // Clip đã promote rồi (bản chạy trước lên xong + báo xong) thì bỏ qua:
+  // bản cắt lại có thể lệch vài byte, và object trên bucket đã được xác
+  // minh ở lần promote đó — RPC trả 'already_promoted'.
+  if (
+    clip.status === "pending" &&
+    Number.isFinite(bucketSize) &&
+    bucketSize > 0 &&
+    bucketSize !== body.file_size_bytes
+  ) {
+    return NextResponse.json(
+      {
+        error: "bucket_size_mismatch",
+        bucket_size: bucketSize,
+        file_size_bytes: body.file_size_bytes,
+      },
+      { status: 409 },
+    );
+  }
+
   // Đọc replaces_clip_id từ generation_params (resolver đã lưu ở
   // enqueue). RPC chấp nhận NULL cho lần cắt đầu.
   const genParams = (clip.generation_params as Record<string, unknown> | null) ?? {};

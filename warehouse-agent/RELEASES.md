@@ -4,6 +4,26 @@ Ghi từ 0.8.6 trở đi. Mỗi mục nêu: sửa gì, vì sao, và người đi
 
 ---
 
+## 0.10.1 — 2026-09-21
+
+**Clip không còn kẹt "thất bại" khi mạng tải lên chậm.**
+
+Chạy thử đầu-cuối trên uplink ~180 KB/s: clip 34 MB hết giờ chờ trong khi
+file vẫn đang lên và lên xong; lần thử lại bị Supabase từ chối "object đã tồn
+tại" nên clip bị đánh thất bại dù đã nằm trên bucket.
+
+- Gặp "object đã tồn tại" thì không fail nữa mà báo cloud xác minh: cloud đối
+  chiếu kích thước object với file vừa cắt, khớp mới chốt clip.
+- Thời gian chờ tải lên gấp đôi sau mỗi lần thử (kẹp 5 phút) thay vì thử lại
+  với đúng thời gian vừa thua.
+- Lệnh cắt clip chạy quá 2 phút bị cloud trả về hàng đợi và nhận lại cùng id
+  trong lúc bản đầu còn chạy: agent bỏ qua bản trùng thay vì cắt + tải song
+  song hai lần cùng một clip.
+
+Người đi cài cần biết: cài đè như thường lệ. Cloud cần bản có kiểm kích thước
+ở `clip-upload-complete` (cùng đợt); cloud cũ vẫn chạy được, chỉ thiếu bước
+đối chiếu kích thước.
+
 ## 0.10.0 — 2026-09-21
 
 **Luồng hàng hoàn: agent nhận tín hiệu phiên nhận hoàn và đánh dấu đoạn

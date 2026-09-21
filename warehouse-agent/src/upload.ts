@@ -27,7 +27,16 @@ export type UploadErrorKind =
   | "network"
   | "http_4xx"
   | "http_5xx"
-  | "aborted";
+  | "aborted"
+  /**
+   * Bucket đã có object ở đúng path (Supabase trả "The resource already
+   * exists" vì signed upload URL không cho ghi đè). Gặp khi một lần thử
+   * trước bị agent hết giờ chờ nhưng thực ra đã lên xong, hoặc lệnh cắt
+   * bị thu hồi rồi chạy lại. KHÔNG tự coi là thành công ở đây — agent
+   * không đọc được bucket; caller báo upload-complete để cloud tự kiểm
+   * object + kích thước.
+   */
+  | "already_exists";
 
 export interface UploadResult {
   ok: boolean;
@@ -95,6 +104,31 @@ function computeTimeoutMs(
   return Math.max(min, Math.min(max, raw));
 }
 
+/**
+ * Supabase Storage trả trùng object dưới dạng HTTP 400 (hoặc 409) với body
+ * `{"statusCode":"409","error":"Duplicate","message":"The resource already exists"}`.
+ */
+export function isAlreadyExistsResponse(status: number, body: string): boolean {
+  if (status !== 400 && status !== 409) return false;
+  return /already exists|"Duplicate"|"statusCode"\s*:\s*"409"/i.test(body);
+}
+
+/**
+ * Timeout cho lần thử thứ `attempt` (bắt đầu từ 1): gấp đôi sau mỗi lần
+ * hết giờ, kẹp ở max. Công thức gốc giả định uplink >= ~330 KB/s; kho đo
+ * thật 21/09/2026 chỉ ~180 KB/s nên lần đầu hết giờ dù mạng vẫn chạy —
+ * thử lại với cùng timeout là thua lần nữa theo đúng cách cũ.
+ */
+export function attemptTimeoutMs(
+  bodySize: number,
+  attempt: number,
+  opts: UploadWithTimeoutOptions = {},
+): number {
+  const first = computeTimeoutMs(bodySize, opts);
+  const max = Math.max(first, opts.maxTimeoutMs ?? 300_000);
+  return Math.min(max, first * 2 ** Math.max(0, attempt - 1));
+}
+
 function jitter(ms: number): number {
   // ±25%
   const spread = ms * 0.25;
@@ -110,7 +144,6 @@ export async function uploadWithTimeout(
   const initialBackoffMs = opts.initialBackoffMs ?? 1000;
   const backoffFactor = opts.backoffFactor ?? 2;
   const contentType = opts.contentType ?? "application/octet-stream";
-  const timeoutMs = computeTimeoutMs(body.byteLength, opts);
   const start = Date.now();
 
   let backoff = initialBackoffMs;
@@ -130,6 +163,7 @@ export async function uploadWithTimeout(
       };
     }
 
+    const timeoutMs = attemptTimeoutMs(body.byteLength, attempt, opts);
     const attemptCtrl = new AbortController();
     const timer = setTimeout(() => attemptCtrl.abort(), timeoutMs);
     const externalListener = () => attemptCtrl.abort();
@@ -163,6 +197,16 @@ export async function uploadWithTimeout(
         // Bỏ qua — không log stream đọc dở.
       }
       lastErrorMessage = `http_${res.status}: ${bodySnippet}`;
+      if (isAlreadyExistsResponse(res.status, bodySnippet)) {
+        return {
+          ok: false,
+          attempts: attempt,
+          totalElapsedMs: Date.now() - start,
+          errorKind: "already_exists",
+          errorMessage: lastErrorMessage,
+          httpStatus: res.status,
+        };
+      }
       if (res.status >= 400 && res.status < 500) {
         // 4xx = backend refuse. Retry vô nghĩa.
         lastErrorKind = "http_4xx";

@@ -367,6 +367,8 @@ async function main(): Promise<void> {
   // 3b-2: 1-in-flight encode gate. Chỉ 1 flag, dùng cho poll body
   // (encoding_busy) + wrap runCutClip. Không có queue local.
   const encodeGate = new EncodeGate();
+  // id các lệnh đang xử lý — chặn chạy trùng khi reaper trả lệnh dài về pending.
+  const inFlightCommandIds = new Set<string>();
 
   const lifecycle = new RecordingLifecycle({
     backendUrl: config.backendUrl,
@@ -1187,7 +1189,16 @@ async function main(): Promise<void> {
       const uploadResult = await uploadWithTimeout(urlResult.signedUrl, fileBuf, {
         contentType: "video/mp4",
       });
-      if (!uploadResult.ok) {
+      if (!uploadResult.ok && uploadResult.errorKind === "already_exists") {
+        // Object đã nằm đúng path (lần thử trước hết giờ nhưng thực ra đã
+        // lên, hoặc lệnh bị thu hồi rồi chạy lại). Không PUT lại được —
+        // signed URL không cho ghi đè — nên đi tiếp báo upload-complete:
+        // cloud kiểm object + kích thước, lệch thì trả lỗi và lệnh fail
+        // như thường. Trước đây nhánh này fail luôn dù clip đã trên bucket.
+        console.warn(
+          `[clip-cutter] object da co tren bucket clip=${p.clip_id} — de cloud xac minh kich thuoc`,
+        );
+      } else if (!uploadResult.ok) {
         await failCommand(
           `upload_put_failed[${uploadResult.errorKind}]: ${uploadResult.errorMessage ?? "unknown"} attempts=${uploadResult.attempts} elapsed=${uploadResult.totalElapsedMs}ms`,
         );
@@ -1784,6 +1795,16 @@ async function main(): Promise<void> {
       return;
     }
     for (const cmd of commands) {
+      // Poll chạy mỗi vài giây và không chờ lượt trước xong. Lệnh cắt clip
+      // chạy lâu (ghép PiP + tải lên mạng chậm) quá hạn 2 phút thì reaper
+      // trả về pending, lượt poll sau nhận lại CÙNG id trong khi bản đầu
+      // vẫn đang chạy → hai bản cắt + tải cùng một clip. Bản đang chạy sẽ
+      // tự báo kết quả; bản trùng bỏ qua.
+      if (inFlightCommandIds.has(cmd.id)) {
+        console.warn(`[COMMAND-DUP] ${cmd.id} type=${cmd.type} dang chay — bo qua lan nhan lai`);
+        continue;
+      }
+      inFlightCommandIds.add(cmd.id);
       try {
         await handleCommand(cmd);
       } catch (err) {
@@ -1798,6 +1819,8 @@ async function main(): Promise<void> {
           status: "failed",
           error: (err as Error).message.slice(0, 500),
         }).catch(() => undefined);
+      } finally {
+        inFlightCommandIds.delete(cmd.id);
       }
     }
   }
