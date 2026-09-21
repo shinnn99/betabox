@@ -1,6 +1,6 @@
 # Hàng hoàn — kế hoạch triển khai (kỹ thuật)
 
-**Cập nhật:** 21/09/2026 · **Trạng thái:** đã viết xong code cả 4 đợt trên nhánh `2-camera`; **chưa áp migration lên production** nên chưa chạy được 7 kịch bản đầu-cuối ở mục 6 · **Nhánh nền:** `2-camera`
+**Cập nhật:** 21/09/2026 · **Trạng thái:** xong code cả 4 đợt trên nhánh `2-camera`; 7 kịch bản đầu-cuối ở mục 6 đã chạy đạt trên **bản sao local** (transaction + ROLLBACK). Còn lại: áp 4 migration lên production rồi chạy lại trên hệ thống thật · **Nhánh nền:** `2-camera`
 **Luồng nghiệp vụ (đọc trước):** [LUONG-DON-DI-DON-HOAN.md](LUONG-DON-DI-DON-HOAN.md). Tài liệu này chỉ nói **làm thế nào**; **luồng chạy ra sao** nằm ở tài liệu kia.
 
 ---
