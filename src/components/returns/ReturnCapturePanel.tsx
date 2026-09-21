@@ -52,9 +52,7 @@ export default function ReturnCapturePanel() {
         <div>
           <p className="text-sm font-semibold text-slate-800">Phiên nhận hoàn</p>
           <p className="text-xs text-slate-500">
-            {stations.length} bàn · {heldIds.length} đang nhận hoàn từ màn hình này. Camera của
-            bàn vẫn ghi liên tục cho đơn đi — bật phiên để đánh dấu đoạn video nào thuộc hàng
-            hoàn; đoạn đang ghi dở lúc thoát vẫn được lưu nốt.
+            {stations.length} bàn · {heldIds.length} đang nhận hoàn
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

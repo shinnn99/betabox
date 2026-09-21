@@ -4,6 +4,31 @@ Ghi từ 0.8.6 trở đi. Mỗi mục nêu: sửa gì, vì sao, và người đi
 
 ---
 
+## 0.10.0 — 2026-09-21
+
+**Luồng hàng hoàn: agent nhận tín hiệu phiên nhận hoàn và đánh dấu đoạn
+video thuộc hàng hoàn; mọi bàn chạy song song, lai với đóng hàng.**
+
+- Nhận lệnh `set_return_capture` từ cloud. Chỉ khi có tín hiệu mới đánh dấu
+  đoạn video là hàng hoàn — không có tín hiệu thì không làm gì. Camera vẫn
+  ghi liên tục cho đóng hàng như cũ.
+- Chuyển module giữa chừng: đoạn 60 giây đang ghi dở ghi nốt và thuộc module
+  cũ; module mới nhận từ đoạn kế tiếp — cả hai chiều.
+- Giữ nhiều phiên cùng lúc: bàn 1-2 đóng hàng trong khi bàn 3-4 nhận hoàn,
+  một agent điều khiển mọi bàn và mọi camera. Trạng thái phiên lưu ở
+  `return-capture.json`, sống qua khởi động lại.
+- Segment thuần hàng hoàn giữ 7 ngày: agent tải danh sách từ cloud mỗi 6 giờ
+  vào `retention-plan.json`; `cleanup-segments.ps1` thêm bước xoá sớm, lịch
+  dọn ổ đĩa đổi từ hằng tuần sang **hằng ngày**. Thiếu danh sách thì chỉ xoá
+  theo hạn chung — không bao giờ xoá rộng hơn.
+- Clip hoàn hết hạn báo "quá hạn lưu trữ" thay vì báo động giả "mất file".
+
+Người đi cài cần biết: cài đè như thường lệ, bấm Next qua các ô đã điền sẵn.
+Cloud cần đủ migration hàng hoàn đợt 1–5 (đợt 6 khuyến nghị). Bộ cài tự đăng
+ký lại lịch dọn ổ đĩa theo ngày.
+
+---
+
 ## 0.9.1 — 2026-09-18
 
 **Ô Góc QR trong video bằng chứng đứng dọc (360×640) thay vì nằm ngang
