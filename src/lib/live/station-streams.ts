@@ -9,8 +9,19 @@ export function resolveStationLiveScope(input: {
   isPlatform: boolean;
   requestedStationId: string;
   assignedStationId: string | null;
+  /**
+   * Vai trò có quyền `live.view_remote` (bảng quyền) — xem camera mọi bàn.
+   * Owner/admin vẫn được giữ cứng để database chưa áp migration phân quyền
+   * mới không làm họ mất hình.
+   */
+  canViewRemote?: boolean;
 }): StationLiveScope {
-  if (input.isPlatform || input.role === "owner" || input.role === "admin") {
+  if (
+    input.isPlatform ||
+    input.canViewRemote ||
+    input.role === "owner" ||
+    input.role === "admin"
+  ) {
     return "admin";
   }
   if (

@@ -37,6 +37,7 @@ import {
   formatOfflineDuration,
   type WatchClipState,
 } from "@/lib/watch/use-watch-clip-state";
+import { useCan } from "@/lib/usePermissions";
 
 /**
  * Bằng chứng hoàn hàng.
@@ -1385,6 +1386,9 @@ function BulkActionBar({
   onDismissed: () => void;
   onClear: () => void;
 }) {
+  // Viewer chỉ xem và tải video — không đổi trạng thái khiếu nại.
+  const can = useCan();
+  if (!can("return.operate")) return null;
   return (
     <div className="sticky top-2 z-30 bg-white rounded-2xl border border-rose-200 shadow-md px-4 py-2.5 flex items-center gap-3 flex-wrap">
       <div className="flex items-center gap-2 text-sm text-slate-700 flex-1 min-w-0">

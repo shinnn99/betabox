@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { isError, requirePermission } from "@/lib/supabase/guard";
+import { isError, requirePermission, roleHasPermission } from "@/lib/supabase/guard";
 import {
   buildWhepUrl,
   relayPathName,
@@ -89,6 +89,8 @@ export async function GET(_request: Request, context: RouteContext) {
     isPlatform: ctx.isPlatform,
     requestedStationId: stationId,
     assignedStationId,
+    canViewRemote:
+      !ctx.isPlatform && (await roleHasPermission(ctx.role, "live.view_remote")),
   });
   if (scope === "forbidden") {
     return NextResponse.json(

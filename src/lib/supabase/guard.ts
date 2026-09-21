@@ -379,6 +379,47 @@ async function checkPermission(
   return !!data;
 }
 
+/**
+ * Vai trò có quyền `permission` không — cùng nguồn `role_permission_matrix`
+ * với requirePermission, dùng khi route cần hỏi thêm một quyền phụ (VD xem
+ * camera trực tiếp) sau khi đã qua cửa chính.
+ */
+export async function roleHasPermission(
+  role: Role,
+  permission: string
+): Promise<boolean> {
+  return checkPermission(role, permission);
+}
+
+/**
+ * Toàn bộ quyền của người đang đăng nhập — cho giao diện ẩn menu / nút mà
+ * người đó không dùng được. Chỉ để HIỂN THỊ: mọi API vẫn tự kiểm quyền.
+ * Platform admin đang xem một tổ chức = full quyền (khớp requirePermission).
+ */
+export async function getEffectivePermissions(): Promise<
+  | { role: Role; isPlatform: boolean; permissions: string[] | "all" }
+  | NextResponse
+> {
+  const ctx = await readClaims();
+  if (ctx instanceof NextResponse) return ctx;
+  if (ctx.isPlatform) {
+    return { role: ctx.role, isPlatform: true, permissions: "all" };
+  }
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("role_permission_matrix")
+    .select("permission_code")
+    .eq("role", ctx.role);
+  if (error) {
+    return NextResponse.json({ error: "permissions_unavailable" }, { status: 503 });
+  }
+  return {
+    role: ctx.role,
+    isPlatform: false,
+    permissions: (data ?? []).map((r) => r.permission_code as string).sort(),
+  };
+}
+
 // ============================================================================
 // isError — KHÔNG ĐỔI
 // ============================================================================

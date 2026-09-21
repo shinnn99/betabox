@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { X, ChevronLeft, ChevronRight } from "lucide-react";
 import { NAV_SECTIONS } from "@/lib/nav";
+import { canSeeHref, type CanFn } from "@/lib/nav-access";
 import { useImpersonatingOrgId } from "@/lib/api-fetch";
 import OrgSwitcherCard from "./OrgSwitcherCard";
 
@@ -13,6 +14,8 @@ interface Props {
   onMobileClose: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  /** Quyền người dùng — mục không có quyền bị ẩn, nhóm trống bị ẩn theo. */
+  can: CanFn;
 }
 
 export default function DashboardSidebar({
@@ -20,6 +23,7 @@ export default function DashboardSidebar({
   onMobileClose,
   collapsed,
   onToggleCollapse,
+  can,
 }: Props) {
   const pathname = usePathname();
   const impersonatingOrgId = useImpersonatingOrgId();
@@ -41,7 +45,15 @@ export default function DashboardSidebar({
     [pathname]
   );
 
-  const allItems = NAV_SECTIONS.flatMap((s) => s.children);
+  const sections = useMemo(
+    () =>
+      NAV_SECTIONS.map((s) => ({
+        ...s,
+        children: s.children.filter((c) => canSeeHref(c.href, can)),
+      })).filter((s) => s.children.length > 0),
+    [can],
+  );
+  const allItems = useMemo(() => sections.flatMap((s) => s.children), [sections]);
 
   useEffect(() => {
     const compute = () => {
@@ -169,7 +181,7 @@ export default function DashboardSidebar({
             style={{ top: 0, height: 0, opacity: 0, left: 12, right: 12 }}
           />
 
-          {NAV_SECTIONS.map((section, idx) => (
+          {sections.map((section, idx) => (
             <div key={section.id}>
               <div className={`px-3 pb-2 ${idx === 0 ? "pt-1" : "pt-4"}`}>
                 {!collapsed && (

@@ -793,3 +793,28 @@ docs([Module]):     Cập nhật tài liệu
   - Camera ảo đã tắt.
   - Xoá script tạm.
 - **Trạng thái:** Hoàn tất.
+
+### [PHAN-QUYEN] - Phân lại quyền: Admin full, Trưởng kho không setup camera, Viewer chỉ xem và tải video
+
+- **Mục tiêu:** Chủ dự án chốt ngày 21/09/2026:
+  - Admin và Chủ sở hữu: full quyền.
+  - Trưởng kho: full quyền trừ setup (camera, gán camera/thiết bị vào bàn, thiết bị kho khác, máy trạm/agent).
+  - Viewer: chỉ thấy 4 trang video (Giám sát đóng/hoàn hàng, Bằng chứng giao/hoàn hàng), xem và tải video.
+  - Trưởng ca và Nhân viên đóng gói giữ nguyên.
+  - Áp chung mọi tổ chức; tài khoản test chỉ ở tổ chức Betacom.
+- **Files tạo/sửa:**
+  - `supabase/migrations/20260921160000_role_permission_redesign.sql` (mới): đọc tập mã từ chính bảng quyền. Owner, admin, trưởng kho có mọi mã; trưởng kho bị gỡ 9 mã setup; viewer đúng 8 mã. Thêm quyền `return.operate` cho mọi vai trò trừ viewer.
+  - `src/lib/supabase/guard.ts`: thêm `roleHasPermission`, `getEffectivePermissions`.
+  - `src/app/api/session-permissions/route.ts` (mới), `src/lib/usePermissions.ts` (mới), `src/lib/nav-access.ts` (mới: quyền của từng mục menu).
+  - `src/components/layout/DashboardSidebar.tsx`, `DashboardLayout.tsx`: menu ẩn mục không có quyền; vào URL bị cấm thì báo "không có quyền"; trang chủ bị cấm thì đưa tới trang đầu tiên được vào.
+  - `src/app/api/cameras/discover/route.ts`: POST dò camera đòi `camera.create` thay vì `camera.view`.
+  - `src/app/api/returns/capture/route.ts`, `src/app/api/returns/claims/bulk/route.ts`: thao tác ghi đòi `return.operate`.
+  - `src/lib/live/station-streams.ts`, `src/lib/live/station-access.ts`, `src/app/api/live/[stationId]/route.ts`: xem camera trực tiếp theo quyền `live.view_remote` thay vì viết cứng owner/admin.
+  - `src/components/returns/ReturnCapturePanel.tsx`, `src/app/dashboard/videos/page.tsx`, `src/app/dashboard/(return-module)/return-videos/page.tsx`: ẩn nút thao tác khi không có quyền.
+  - `tests/role-permissions.test.ts` (mới).
+- **Kết quả kiểm tra:**
+  - Dry-run migration trên database cục bộ: owner/admin 45 mã, trưởng kho 36 mã (0 mã setup), viewer 8 mã, `return.operate` đủ 5 vai trò.
+  - `pnpm test` 492/492, `tsc` đạt.
+  - Chạy thật với 3 tài khoản test trên web: trước khi áp migration, kết quả khớp đúng ma trận cũ (18 dòng lệch như dự đoán). Chờ áp migration để chạy lại.
+- **Sự cố phát hiện:** lỗi 404 ở trang giám sát ("chưa có bàn nào") là do bộ nhớ đệm `.next` của web dev đã cũ. Xoá `.next` rồi khởi động lại là hết.
+- **Trạng thái:** Chờ chủ dự án áp migration. Thứ tự bắt buộc: migration trước, code sau; nếu ngược lại thì không ai mở được phiên nhận hoàn.

@@ -1,12 +1,15 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, ShieldOff } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
 import type { LucideIcon } from "lucide-react";
 import DashboardSidebar from "./DashboardSidebar";
 import DashboardNavbar from "./DashboardNavbar";
 import CodecWarningBanner from "@/components/camera/CodecWarningBanner";
 import { useSession } from "@/lib/useSession";
+import { PermissionsContext, usePermissions } from "@/lib/usePermissions";
+import { canSeeHref, firstAllowedHref, navHrefForPath } from "@/lib/nav-access";
 
 interface Props {
   children: ReactNode;
@@ -24,6 +27,20 @@ export default function DashboardLayout({
   headerExtras,
 }: Props) {
   const { session, loading } = useSession(true);
+  const { can, ready: permsReady } = usePermissions(session?.userId);
+  const pathname = usePathname() ?? "";
+  const router = useRouter();
+  const pageHref = navHrefForPath(pathname);
+  const pageAllowed = !pageHref || canSeeHref(pageHref, can);
+  // Trang chủ bị cấm (VD Viewer chỉ xem video) thì đưa thẳng tới trang đầu
+  // tiên được vào, thay vì dừng ở màn "không có quyền" ngay sau đăng nhập.
+  const redirectTo =
+    permsReady && !pageAllowed && pathname === "/dashboard"
+      ? firstAllowedHref(can)
+      : null;
+  useEffect(() => {
+    if (redirectTo) router.replace(redirectTo);
+  }, [redirectTo, router]);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [isImpersonating, setIsImpersonating] = useState(false);
@@ -55,7 +72,7 @@ export default function DashboardLayout({
     localStorage.setItem("sidebar-collapsed", collapsed ? "1" : "0");
   }, [collapsed]);
 
-  if (loading || !session) {
+  if (loading || !session || !permsReady || redirectTo) {
     return (
       <div className="h-screen flex items-center justify-center bg-slate-100">
         <div className="flex items-center gap-2 text-slate-500">
@@ -78,6 +95,7 @@ export default function DashboardLayout({
           onMobileClose={() => setMobileOpen(false)}
           collapsed={collapsed}
           onToggleCollapse={() => setCollapsed((v) => !v)}
+          can={can}
         />
 
         <div className="flex-1 flex flex-col gap-0 lg:gap-3 overflow-hidden min-w-0">
@@ -89,8 +107,18 @@ export default function DashboardLayout({
             extras={headerExtras}
           />
           <main className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-3 lg:px-0 lg:py-0 [scrollbar-gutter:stable] pb-6">
-            <CodecWarningBanner />
-            {children}
+            {pageAllowed ? (
+              <PermissionsContext.Provider value={can}>
+                <CodecWarningBanner />
+                {children}
+              </PermissionsContext.Provider>
+            ) : (
+              <div className="h-full min-h-[320px] flex flex-col items-center justify-center gap-3 text-center px-6">
+                <ShieldOff className="h-10 w-10 text-slate-300" />
+                <p className="text-base font-semibold text-slate-700">Bạn không có quyền xem trang này</p>
+                <p className="text-sm text-slate-500">Liên hệ quản trị viên nếu bạn cần được cấp quyền.</p>
+              </div>
+            )}
           </main>
         </div>
       </div>

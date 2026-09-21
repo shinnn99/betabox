@@ -46,7 +46,9 @@ async function readBody(req: Request): Promise<DiscoverBody> {
 
 // POST: enqueue command; trả command_id để UI poll.
 export async function POST(req: Request) {
-  const ctx = await requirePermission("camera.view");
+  // Dò camera là bước setup (ra lệnh cho agent quét mạng) — cùng quyền thêm
+  // camera, không phải quyền xem. Trưởng kho / Viewer không setup camera.
+  const ctx = await requirePermission("camera.create");
   if (isError(ctx)) return ctx;
 
   const body = await readBody(req);

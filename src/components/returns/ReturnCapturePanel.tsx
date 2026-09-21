@@ -5,6 +5,7 @@ import {
   useReturnCapture,
   type StationOption,
 } from "@/components/returns/ReturnCaptureProvider";
+import { useCan } from "@/lib/usePermissions";
 
 /**
  * Bật / tắt nhận hoàn cho TỪNG BÀN hoặc CẢ KHO trên trang Giám sát hoàn hàng.
@@ -42,9 +43,13 @@ function statusOf(s: StationOption): { text: string; tone: string } {
 
 export default function ReturnCapturePanel() {
   const { stations, heldIds, busyIds, start, stop } = useReturnCapture();
+  // Mở phiên nhận hoàn là thao tác kho — Viewer chỉ xem nên không thấy bảng.
+  const can = useCan();
 
   const notHeld = stations.filter((s) => !s.capture.heldByMe).map((s) => s.id);
   const anyBusy = busyIds.size > 0;
+
+  if (!can("return.operate")) return null;
 
   return (
     <div className="bg-white rounded-2xl border border-slate-100 p-4 lg:p-5 shadow-sm">

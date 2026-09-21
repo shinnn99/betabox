@@ -36,6 +36,7 @@ import {
   formatOfflineDuration,
   type WatchClipState,
 } from "@/lib/watch/use-watch-clip-state";
+import { useCan } from "@/lib/usePermissions";
 
 /**
  * Lát 3d list migration + UX một-cửa-thật-sự (2026-07-03):
@@ -1243,6 +1244,9 @@ function BulkActionBar({
   onUnmarkError: () => void;
   onClear: () => void;
 }) {
+  // Viewer chỉ xem và tải video — không đánh dấu lỗi.
+  const can = useCan();
+  if (!can("order_proof.generate")) return null;
   const allFlagged = flaggedSelectedCount === selectedCount;
   const noneFlagged = flaggedSelectedCount === 0;
   return (

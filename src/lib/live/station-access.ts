@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import {
   isError,
   requirePermission,
+  roleHasPermission,
   type ApiContext,
 } from "@/lib/supabase/guard";
 import {
@@ -76,6 +77,8 @@ export async function requireStationLiveAccess(
     isPlatform: ctx.isPlatform,
     requestedStationId: stationId,
     assignedStationId,
+    canViewRemote:
+      !ctx.isPlatform && (await roleHasPermission(ctx.role, "live.view_remote")),
   });
   if (scope === "forbidden") {
     return NextResponse.json({ error: "station_live_forbidden" }, { status: 403 });
