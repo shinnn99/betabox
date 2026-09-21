@@ -43,6 +43,16 @@ export type FinalizedEndReason =
   | "work_ended_extended_to_min"
   | "default_post_invalid_work_ended";
 
+/**
+ * Trần riêng cho clip của KIỆN HOÀN (chốt 18/09/2026: kiện tự dừng sau 5
+ * phút). Cộng thêm đoạn đệm hai đầu nên file dài nhất ~5 phút 10 giây.
+ *
+ * Vì sao không dùng chung trần 180s của đơn đi: mở kiện hoàn là công việc
+ * dài hơn đóng gói, và video phải thấy trọn từ lúc kiện còn nguyên niêm
+ * phong tới lúc lấy hết hàng ra — cắt giữa chừng là mất giá trị khiếu nại.
+ */
+export const MAX_RETURN_CLIP_DURATION_SECONDS = 310;
+
 export interface FinalizedWindowInput {
   /** `packing_events.scanned_at`. */
   scannedAt: Date;
@@ -56,6 +66,8 @@ export interface FinalizedWindowInput {
   preSeconds: number;
   /** `video_default_post_seconds` của kho — chỉ dùng ở nhánh phòng thủ. */
   defaultPostSeconds: number;
+  /** `packing_events.event_kind` — kiện hoàn có trần dài hơn đơn đi. */
+  eventKind?: string | null;
 }
 
 export interface ClipWindow {
@@ -80,6 +92,10 @@ export function computeFinalizedClipWindow(
   input: FinalizedWindowInput,
 ): ClipWindow {
   const { scannedAt, preSeconds, defaultPostSeconds } = input;
+  const maxDurationSeconds =
+    input.eventKind === "return"
+      ? MAX_RETURN_CLIP_DURATION_SECONDS
+      : MAX_CLIP_DURATION_SECONDS;
   const scannedMs = scannedAt.getTime();
   const clipStart = new Date(scannedMs - preSeconds * 1000);
 
@@ -96,20 +112,20 @@ export function computeFinalizedClipWindow(
   const isCapped = input.timingStatus === "capped_timeout";
   const dur = input.workDurationSeconds;
   const durValid =
-    typeof dur === "number" && dur > 0 && dur <= MAX_CLIP_DURATION_SECONDS;
+    typeof dur === "number" && dur > 0 && dur <= maxDurationSeconds;
 
   let candidateMs: number;
   if (isCapped) {
     candidateMs = durValid
       ? scannedMs + dur * 1000 + WORK_ENDED_POST_BUFFER_SECONDS * 1000
-      : clipStart.getTime() + MAX_CLIP_DURATION_SECONDS * 1000;
+      : clipStart.getTime() + maxDurationSeconds * 1000;
   } else {
     candidateMs = workEndedMs + WORK_ENDED_POST_BUFFER_SECONDS * 1000;
   }
 
   // Trần cứng bất kể nhánh nào — phòng ca work_ended_at vượt max (scan
   // kế đến rất muộn với timing_status='finalized_by_next_scan').
-  const maxEndMs = clipStart.getTime() + MAX_CLIP_DURATION_SECONDS * 1000;
+  const maxEndMs = clipStart.getTime() + maxDurationSeconds * 1000;
   if (candidateMs > maxEndMs) {
     return finish(clipStart, new Date(maxEndMs), "capped_at_max_duration");
   }

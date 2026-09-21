@@ -9,6 +9,7 @@ import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
 import { enqueueCutClip } from "@/lib/agent-commands/enqueue";
 import { forceStopExpiredOrders } from "@/lib/station/force-stop-expired-orders";
 import { revertIdleReturnModes } from "@/lib/station/station-mode";
+import { requestClipsForOpenReturnClaims } from "@/lib/station/return-clip-requests";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -106,6 +107,9 @@ export async function POST(req: Request) {
     // Cùng nhịp: đưa bàn kẹt ở chế độ nhận hoàn về đóng hàng. Heartbeat là
     // nhịp duy nhất chắc chắn còn chạy khi không ai mở màn hình bàn.
     await revertIdleReturnModes({ admin, organizationId: agent.organization_id });
+    // Hồ sơ kiện hoàn: hết hạn thì tự đóng, còn mở thì xin cắt clip sẵn.
+    await admin.rpc("expire_return_claims", { p_organization_id: agent.organization_id });
+    await requestClipsForOpenReturnClaims({ admin, organizationId: agent.organization_id });
   } catch (timeoutError) {
     console.warn(
       `[heartbeat] force-stop đơn quá giờ thất bại agent=${agent.id} message=${(timeoutError as Error).message}`,

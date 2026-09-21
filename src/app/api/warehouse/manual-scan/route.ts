@@ -3,6 +3,11 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, isError } from "@/lib/supabase/guard";
 import { normalizeWaybillCode } from "@/lib/warehouse/normalize-code";
 import { looksLikeControlCard, parseControlCard } from "@/lib/station/control-cards";
+import {
+  closeOpenReturnWithResult,
+  currentStationMode,
+  processReturnScan,
+} from "@/lib/station/return-scan";
 import { hookLarkNotifyScan } from "@/lib/lark/hook-scan";
 
 export const runtime = "nodejs";
@@ -142,13 +147,29 @@ export async function POST(req: Request) {
       );
     }
     if (controlCard.kind !== "mode") {
-      return NextResponse.json(
-        {
-          error: "control_card_not_supported",
-          message: "Thẻ này chỉ dùng khi đang mở một kiện hoàn.",
+      // Thẻ kết quả / thẻ KẾT THÚC: đóng kiện hoàn đang mở của bàn.
+      const outcome = await closeOpenReturnWithResult({
+        admin,
+        organizationId: ctx.organizationId,
+        stationId: resolved.station_id,
+        result: controlCard.kind === "result" ? controlCard.result : "unchecked",
+        closeReason: controlCard.kind === "result" ? "result_card" : "end_card",
+        at: scannedAt,
+      });
+      if (!outcome.closed) {
+        return NextResponse.json(
+          { error: "no_open_return", message: "Chưa có kiện hoàn nào đang mở." },
+          { status: 409 },
+        );
+      }
+      return NextResponse.json({
+        ok: true,
+        control_action: {
+          action: "return_closed",
+          waybill_code: outcome.waybill_code,
+          result: outcome.result,
         },
-        { status: 409 },
-      );
+      });
     }
     const { error: modeErr } = await admin.rpc("set_station_mode", {
       p_station_id: resolved.station_id,
@@ -224,6 +245,24 @@ export async function POST(req: Request) {
     eventId = inserted.id;
   }
 
+  // Bàn đang NHẬN HOÀN: mã vận đơn là kiện hàng hoàn.
+  const stationMode = resolved?.station_id
+    ? await currentStationMode(admin, resolved.station_id)
+    : "outbound";
+
+  if (stationMode === "return") {
+    const returnResult = await processReturnScan(admin, eventId);
+    return NextResponse.json({
+      ok: true,
+      duplicate: isDuplicate,
+      event_id: eventId,
+      scan_type: "waybill",
+      station_mode: stationMode,
+      return_result: returnResult,
+      warning: null,
+    });
+  }
+
   const { data: pack } = await admin
     .rpc("process_waybill_scan", { p_raw_event_id: eventId })
     .single<PackingRpcRow>();
@@ -263,6 +302,7 @@ export async function POST(req: Request) {
     duplicate: isDuplicate,
     event_id: eventId,
     scan_type: "waybill",
+    station_mode: stationMode,
     packing_result: pack ?? null,
     warning,
   });

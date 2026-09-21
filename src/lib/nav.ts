@@ -7,6 +7,8 @@ import {
   Warehouse,
   ScrollText,
   Activity,
+  PackageOpen,
+  QrCode,
   ShieldCheck,
   Wrench,
   Server,
@@ -56,6 +58,12 @@ export const NAV_SECTIONS: NavSection[] = [
         href: "/dashboard/videos",
         icon: ShieldCheck,
       },
+      {
+        id: "returns",
+        label: "Hàng hoàn",
+        href: "/dashboard/returns",
+        icon: PackageOpen,
+      },
     ],
   },
   {
@@ -79,6 +87,12 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Thiết bị kho",
         href: "/dashboard/devices",
         icon: Cpu,
+      },
+      {
+        id: "station-cards",
+        label: "Thẻ điều khiển bàn",
+        href: "/dashboard/station-cards",
+        icon: QrCode,
       },
       {
         id: "agents",

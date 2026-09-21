@@ -5,6 +5,7 @@ import {
   AUTO_STOP_TIMING_NOTE,
   computeOrderTimeout,
   resolveOrderLimitSeconds,
+  resolveReturnLimitSeconds,
 } from "./order-timeout";
 
 type Admin = ReturnType<typeof createAdminClient>;
@@ -40,6 +41,8 @@ interface OpenOrderRow {
   waybill_code: string | null;
   scanned_at: string;
   work_started_at: string | null;
+  /** 'outbound' = đơn đi (trần max_order_seconds); 'return' = kiện hoàn (trần return_max_seconds). */
+  event_kind: string | null;
 }
 
 /** Trần số đơn xử lý mỗi lượt — bàn bình thường chỉ có 0-1 đơn mở. */
@@ -56,7 +59,7 @@ export async function forceStopExpiredOrders(params: {
 
   let query = params.admin
     .from("packing_events")
-    .select("id, station_id, warehouse_id, waybill_code, scanned_at, work_started_at")
+    .select("id, station_id, warehouse_id, waybill_code, scanned_at, work_started_at, event_kind")
     .eq("organization_id", params.organizationId)
     .eq("timing_status", "open")
     .is("work_ended_at", null)
@@ -84,23 +87,57 @@ export async function forceStopExpiredOrders(params: {
         .eq("organization_id", params.organizationId)
         .in("id", warehouseIds)
     : { data: [] };
-  const limitByWarehouse = new Map(
+  // Giữ nguyên config thay vì đã quy ra số giây: trần của đơn đi và của kiện
+  // hoàn là hai khoá khác nhau trong cùng config.
+  const configByWarehouse = new Map(
     (warehouses ?? []).map((warehouse) => [
       warehouse.id as string,
-      resolveOrderLimitSeconds(warehouse.packing_timing_config),
+      warehouse.packing_timing_config as unknown,
     ]),
   );
 
   const stopped: ForceStoppedOrder[] = [];
   for (const row of rows) {
-    const limitSeconds = row.warehouse_id
-      ? limitByWarehouse.get(row.warehouse_id) ?? resolveOrderLimitSeconds(null)
-      : resolveOrderLimitSeconds(null);
+    const isReturn = row.event_kind === "return";
+    const cfg = row.warehouse_id ? configByWarehouse.get(row.warehouse_id) ?? null : null;
+    const limitSeconds = isReturn
+      ? resolveReturnLimitSeconds(cfg)
+      : resolveOrderLimitSeconds(cfg);
     const startedAt = row.work_started_at ?? row.scanned_at;
     const state = computeOrderTimeout({ startedAt, limitSeconds, now });
     if (!state.expired) continue;
 
     const workEndedAt = state.deadlineAt.toISOString();
+
+    // Kiện hoàn đi qua RPC riêng: nó còn phải ghi kết quả "chưa kiểm" và
+    // lý do đóng, và chính hai thứ đó mới kích hoạt hồ sơ khiếu nại.
+    if (isReturn) {
+      const { data: closed, error: closeError } = await params.admin.rpc("close_return_event", {
+        p_event_id: row.id,
+        p_result: "unchecked",
+        p_close_reason: "timeout",
+        p_at: workEndedAt,
+      });
+      if (closeError) {
+        console.warn(
+          `[station-timeout] chốt kiện hoàn thất bại pe=${row.id} message=${closeError.message}`,
+        );
+        continue;
+      }
+      if (closed === false) continue; // đường khác đã đóng trước
+      console.warn(
+        `[station-timeout] cưỡng chế dừng KIỆN HOÀN pe=${row.id} waybill=${row.waybill_code ?? "?"} limit=${limitSeconds}s`,
+      );
+      stopped.push({
+        id: row.id,
+        station_id: row.station_id,
+        waybill_code: row.waybill_code,
+        work_ended_at: workEndedAt,
+        limit_seconds: limitSeconds,
+      });
+      continue;
+    }
+
     const { data: updated, error: updateError } = await params.admin
       .from("packing_events")
       .update({

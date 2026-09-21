@@ -46,6 +46,37 @@ export function resolveOrderLimitSeconds(cfg: unknown): number {
   );
 }
 
+/**
+ * Trần thời gian MỘT kiện hoàn (chốt với chủ dự án 18/09/2026: 5 phút).
+ *
+ * Khác đơn đi ở chỗ đây là thời gian MỞ HÀNG và kiểm, không phải năng suất
+ * đóng gói. Quá hạn thì kiện tự đóng với kết quả "chưa kiểm" và vẫn sinh hồ
+ * sơ — không kiện nào treo, không kiện nào mất bằng chứng.
+ */
+export const RETURN_HARD_LIMIT_SECONDS = 300;
+
+/** Sàn phòng thủ khi config kho ghi nhầm đơn vị. */
+export const RETURN_MIN_LIMIT_SECONDS = 60;
+
+/** Trần cho kiện hoàn = `return_max_seconds` của kho, kẹp trong khoảng an toàn. */
+export function resolveReturnLimitSeconds(cfg: unknown): number {
+  const fallback = RETURN_HARD_LIMIT_SECONDS;
+  if (!cfg || typeof cfg !== "object") return fallback;
+  const raw = Number((cfg as Record<string, unknown>).return_max_seconds);
+  if (!Number.isFinite(raw) || raw <= 0) return fallback;
+  return Math.max(RETURN_MIN_LIMIT_SECONDS, Math.floor(raw));
+}
+
+/** Trần đúng theo loại lượt: đơn đi hay kiện hoàn. */
+export function resolveLimitSecondsFor(
+  eventKind: string | null | undefined,
+  cfg: unknown,
+): number {
+  return eventKind === "return"
+    ? resolveReturnLimitSeconds(cfg)
+    : resolveOrderLimitSeconds(cfg);
+}
+
 export interface OrderTimeoutState {
   /** Mốc bị cưỡng chế dừng. */
   deadlineAt: Date;

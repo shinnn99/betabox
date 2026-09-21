@@ -211,6 +211,8 @@ interface PackingEventInput {
    * dùng `scanned_at + work_duration_seconds` (đã cap ở max_order_seconds).
    */
   timing_status?: string | null;
+  /** 'outbound' | 'return'. Kiện hoàn có trần clip dài hơn (5 phút). */
+  event_kind?: string | null;
 }
 
 // Find the first scan after `current` that should mark the end of the
@@ -403,6 +405,7 @@ export async function resolveClipBounds(opts: {
       workDurationSeconds: packingEvent.work_duration_seconds,
       preSeconds: timing.pre,
       defaultPostSeconds: timing.defaultPost,
+      eventKind: packingEvent.event_kind,
     });
     clipEnd = win.clipEnd;
     endReason = win.endReason;

@@ -13,6 +13,12 @@ import {
 } from "@/lib/warehouse/staff-qr";
 import { normalizeWaybillCode } from "@/lib/warehouse/normalize-code";
 import { looksLikeControlCard, parseControlCard } from "@/lib/station/control-cards";
+import {
+  closeOpenReturnWithResult,
+  currentStationMode,
+  processReturnScan,
+  type ReturnScanResult,
+} from "@/lib/station/return-scan";
 import { hookLarkNotifyScan } from "@/lib/lark/hook-scan";
 
 export const runtime = "nodejs";
@@ -98,7 +104,7 @@ function detectScanType(rawValue: string): ScanType {
 
 /** Kết quả xử lý một thẻ điều khiển, trả về cho agent để ghi log. */
 interface ControlAction {
-  action: "mode_changed" | "ignored" | "invalid";
+  action: "mode_changed" | "return_closed" | "ignored" | "invalid";
   mode: "outbound" | "return" | null;
   message: string;
 }
@@ -417,6 +423,13 @@ export async function POST(req: Request) {
     });
   }
 
+  // Chế độ bàn quyết định một mã vận đơn thành đơn đi hay kiện hoàn, và
+  // thẻ kết quả có chỗ để áp dụng hay không. Đọc một lần, dùng cho cả hai.
+  const stationMode =
+    resolved?.station_id && !scanSourceDisabled
+      ? await currentStationMode(admin, resolved.station_id)
+      : "outbound";
+
   // Phase 4b: thẻ điều khiển. Chỉ có tác dụng khi máy quét đã gắn bàn và
   // đúng nguồn quét của bàn — cùng điều kiện với mọi lượt quét khác.
   let controlAction: ControlAction | null = null;
@@ -453,12 +466,29 @@ export async function POST(req: Request) {
                 : "Bàn quay lại chế độ đóng hàng.",
           };
     } else {
-      // Thẻ kết quả và thẻ kết thúc thuộc vòng đời kiện hoàn (đợt 3).
-      controlAction = {
-        action: "ignored",
-        mode: null,
-        message: "Thẻ này chỉ dùng khi đang mở một kiện hoàn.",
-      };
+      // Thẻ kết quả / thẻ KẾT THÚC: đóng kiện hoàn đang mở của bàn.
+      const outcome = await closeOpenReturnWithResult({
+        admin,
+        organizationId: agent.organization_id,
+        stationId: resolved.station_id,
+        result: card.kind === "result" ? card.result : "unchecked",
+        closeReason: card.kind === "result" ? "result_card" : "end_card",
+        at: parsed.scanned_at,
+      });
+      controlAction = outcome.closed
+        ? {
+            action: "return_closed",
+            mode: null,
+            message:
+              card.kind === "result" && card.result === "ok"
+                ? `Kiện hoàn ${outcome.waybill_code ?? ""} đã kiểm xong, hàng ổn.`.trim()
+                : `Kiện hoàn ${outcome.waybill_code ?? ""} đã ghi nhận, sẽ có hồ sơ theo dõi.`.trim(),
+          }
+        : {
+            action: "ignored",
+            mode: null,
+            message: "Chưa có kiện hoàn nào đang mở.",
+          };
     }
   }
 
@@ -479,8 +509,15 @@ export async function POST(req: Request) {
   // Phase 5: drive the waybill → packing_event pipeline. Run for every
   // waybill scan — the RPC itself records unmapped/no-session/duplicate
   // statuses so nothing gets dropped.
+  // Bàn đang NHẬN HOÀN: mã vận đơn là kiện hàng hoàn, không phải đơn đóng.
+  // Đường này không đếm vào số đơn và không đụng tới đơn đi.
+  let returnResult: ReturnScanResult | null = null;
+  if (scanType === "waybill" && !scanSourceDisabled && stationMode === "return") {
+    returnResult = await processReturnScan(admin, eventId);
+  }
+
   let packingResult: PackingResult | null = null;
-  if (scanType === "waybill" && !scanSourceDisabled) {
+  if (scanType === "waybill" && !scanSourceDisabled && stationMode === "outbound") {
     packingResult = await runWaybillRpc(admin, eventId);
     // Lark notify — schedule sau response bằng `after()` (Next.js 15+).
     // Vercel serverless: fire-and-forget "trần" (void Promise) sẽ bị kill khi
@@ -544,6 +581,8 @@ export async function POST(req: Request) {
     session_action: sessionAction,
     packing_result: packingResult,
     control_action: controlAction,
+    return_result: returnResult,
+    station_mode: stationMode,
     warning,
   });
 }

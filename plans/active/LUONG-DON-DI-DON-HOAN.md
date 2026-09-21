@@ -195,11 +195,12 @@ Bàn chỉ có một camera thì xuất **một góc**, không ghép camera vớ
 | Mã trùng một **đơn đi** đã có trong hệ thống (hoàn do giao thất bại) | Mở **kiện hoàn**, nối với đơn đi cùng mã để sau này xem hai video cạnh nhau | "Đơn hoàn · đã đóng ngày dd/mm · nhân viên …" |
 | Mã chưa có trong hệ thống (thường là khách trả hàng) | Mở **kiện hoàn mới** | "Đơn hoàn mới · mở hàng trước camera" |
 | Mã của kiện **đã ghi hoàn** trước đó | Không mở kiện mới, ghi là quét trùng | "Kiện này đã ghi hoàn lúc hh:mm" |
-| Mã từng vào **lưới an toàn** (mục 4.2) | Chuyển chính kiện nghi ngờ đó thành kiện hoàn đang mở, không tạo bản ghi thứ hai; huỷ hồ sơ cũ của nó | Như dòng đầu |
+| Mã từng vào **lưới an toàn** (mục 4.2) | Mở kiện hoàn bình thường cho lượt quét này, và **huỷ hồ sơ** của lượt nghi ngờ trước đó (ghi rõ "kiện đã được mở đúng ở bàn nhận hoàn") | Như dòng đầu |
 | Thẻ kết quả khi đang có kiện mở | Đóng kiện với kết quả đó (mục 5.3) | Đọc kết quả |
 | Thẻ kết quả khi **không** có kiện mở | Bỏ qua | "Chưa có kiện hoàn nào đang mở" |
 
-- Mở một kiện mới khi đang có kiện mở: kiện cũ được **đóng trước** với "chưa kiểm".
+- Mở một kiện mới khi đang có kiện mở: kiện cũ được **đóng trước** với "chưa kiểm". Riêng lượt **quét trùng** thì không đụng vào kiện đang mở — quét trùng thường là nhân viên quét lại đúng kiện đang kiểm dở.
+- Mỗi bàn chỉ có **một lượt đang mở**. Nếu còn sót một đơn đi đang mở khi kiện hoàn được mở, đơn đi đó được đóng với lý do đổi chế độ.
 - Kiện hoàn **không bao giờ** đóng hay làm thay đổi thời gian của một đơn đi.
 
 ### 5.3 Tám cách một kiện hoàn kết thúc

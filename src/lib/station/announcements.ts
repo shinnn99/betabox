@@ -141,6 +141,90 @@ export function buildPackingScanAnnouncement(input: {
 }
 
 /**
+ * Lượt quét ở bàn đang NHẬN HOÀN.
+ *
+ * Câu chữ phải nói rõ "kiện hoàn" để nhân viên biết mình đang ở chế độ nào —
+ * cùng một mã, quét nhầm chế độ thì kết quả khác hẳn.
+ */
+export function buildReturnScanAnnouncement(input: {
+  id: string;
+  status: string | null;
+  waybillCode: string | null;
+  scannedAt: string;
+  returnKind: string | null;
+  inspectionResult: string | null;
+  closeReason: string | null;
+}): StationAnnouncement {
+  const base = { id: `return:${input.id}`, occurred_at: input.scannedAt };
+  const waybill = input.waybillCode || "không đọc được mã";
+
+  if (input.status === "duplicated_return") {
+    return {
+      ...base,
+      level: "warning",
+      message: `Kiện ${waybill} đã ghi hoàn trước đó`,
+      speech: "Kiện này đã ghi hoàn rồi",
+    };
+  }
+  if (input.status === "no_active_session") {
+    return {
+      ...base,
+      level: "error",
+      message: "Chưa mở ca nên không quay được",
+      speech: "Chưa mở ca, chưa quay được video",
+    };
+  }
+  if (input.status !== "valid") {
+    return {
+      ...base,
+      level: "error",
+      message: `Không xử lý được mã quét · ${waybill}`,
+      speech: "Không xử lý được mã quét",
+    };
+  }
+
+  // Kiện đã đóng: đọc kết quả kiểm.
+  if (input.inspectionResult) {
+    if (input.inspectionResult === "ok") {
+      return {
+        ...base,
+        level: "success",
+        message: `Kiện ${waybill}: hàng ổn`,
+        speech: "Đã ghi nhận hàng ổn",
+      };
+    }
+    const label =
+      input.inspectionResult === "damaged"
+        ? "hỏng"
+        : input.inspectionResult === "missing"
+          ? "thiếu"
+          : input.inspectionResult === "swapped"
+            ? "tráo"
+            : "chưa kiểm";
+    const autoStopped = input.closeReason === "timeout";
+    return {
+      ...base,
+      level: "warning",
+      message: `Kiện ${waybill}: ${label}${autoStopped ? " · đã tự dừng quá giờ" : ""} · đã mở hồ sơ`,
+      speech: autoStopped
+        ? "Kiện hoàn đã tự dừng vì quá giờ, hồ sơ đã được mở"
+        : `Đã ghi nhận hàng ${label}. Hồ sơ đã được mở`,
+    };
+  }
+
+  // Kiện đang mở.
+  return {
+    ...base,
+    level: "success",
+    message:
+      input.returnKind === "rts"
+        ? `Đang quay kiện hoàn · ${waybill} · đã gửi đi trước đó`
+        : `Đang quay kiện hoàn · ${waybill}`,
+    speech: "Bắt đầu quay kiện hoàn. Mở hàng trước camera",
+  };
+}
+
+/**
  * Bàn vừa đổi chế độ.
  *
  * Nhân viên phải biết bàn đang ở chế độ nào TRƯỚC khi quét mã tiếp theo:

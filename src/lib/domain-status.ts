@@ -13,6 +13,10 @@ export const PACKING_EVENT_STATUSES = [
   "no_active_session",
   "unmapped_scanner",
   "invalid_code",
+  // Hàng hoàn (migration 20260921090000): lượt bị lưới an toàn bắt ở bàn
+  // đóng hàng, và lượt quét lại một kiện hoàn đã ghi.
+  "return_suspect",
+  "duplicated_return",
 ] as const;
 export type PackingEventStatus = (typeof PACKING_EVENT_STATUSES)[number];
 
@@ -23,6 +27,11 @@ export const PACKING_EVENT_TIMING_STATUSES = [
   "capped_timeout",
   "default_estimated",
   "not_applicable",
+  // Đơn đi bị đóng vì bàn chuyển sang chế độ nhận hoàn (20260921090000).
+  "finalized_by_mode_switch",
+  // Kiện hoàn đã đóng. Thời lượng của nó KHÔNG phải năng suất đóng gói,
+  // nên không nằm trong PACKING_EVENT_MEASURED_TIMING_STATUSES.
+  "return_closed",
 ] as const;
 export type PackingEventTimingStatus =
   (typeof PACKING_EVENT_TIMING_STATUSES)[number];

@@ -3,6 +3,7 @@ import type { createAdminClient } from "@/lib/supabase/admin";
 import { requireStationLiveAccess } from "@/lib/live/station-access";
 import {
   buildAutoStopAnnouncement,
+  buildReturnScanAnnouncement,
   buildStationModeAnnouncement,
   buildPackingScanAnnouncement,
   buildRecordingGapAnnouncement,
@@ -14,7 +15,7 @@ import { readStationMode, revertIdleReturnModes } from "@/lib/station/station-mo
 import {
   AUTO_STOP_TIMING_NOTE,
   computeOrderTimeout,
-  resolveOrderLimitSeconds,
+  resolveLimitSecondsFor,
 } from "@/lib/station/order-timeout";
 
 export const runtime = "nodejs";
@@ -88,7 +89,7 @@ export async function GET(_request: Request, context: RouteContext) {
     access.admin
       .from("packing_events")
       .select(
-        "id, status, waybill_code, scanned_at, work_started_at, work_ended_at, work_duration_seconds, timing_status, timing_note, warehouse_id",
+        "id, status, waybill_code, scanned_at, work_started_at, work_ended_at, work_duration_seconds, timing_status, timing_note, warehouse_id, event_kind, return_kind, inspection_result, close_reason",
       )
       .eq("organization_id", access.ctx.organizationId)
       .eq("station_id", stationId)
@@ -135,14 +136,26 @@ export async function GET(_request: Request, context: RouteContext) {
     warning: boolean;
   } | null = null;
 
+  const isReturnEvent = packing?.event_kind === "return";
+
   if (packing) {
     candidates.push(
-      buildPackingScanAnnouncement({
-        id: packing.id,
-        status: packing.status,
-        waybillCode: packing.waybill_code,
-        scannedAt: packing.scanned_at,
-      }),
+      isReturnEvent
+        ? buildReturnScanAnnouncement({
+            id: packing.id,
+            status: packing.status,
+            waybillCode: packing.waybill_code,
+            scannedAt: packing.scanned_at,
+            returnKind: packing.return_kind ?? null,
+            inspectionResult: packing.inspection_result ?? null,
+            closeReason: packing.close_reason ?? null,
+          })
+        : buildPackingScanAnnouncement({
+            id: packing.id,
+            status: packing.status,
+            waybillCode: packing.waybill_code,
+            scannedAt: packing.scanned_at,
+          }),
     );
 
     if (packing.timing_note === AUTO_STOP_TIMING_NOTE && packing.work_ended_at) {
@@ -165,7 +178,11 @@ export async function GET(_request: Request, context: RouteContext) {
             .eq("organization_id", access.ctx.organizationId)
             .maybeSingle()
         : { data: null };
-      const limitSeconds = resolveOrderLimitSeconds(warehouse?.packing_timing_config ?? null);
+      // Kiện hoàn có trần riêng (5 phút), đơn đi vẫn theo trần cũ.
+      const limitSeconds = resolveLimitSecondsFor(
+        packing.event_kind,
+        warehouse?.packing_timing_config ?? null,
+      );
       const state = computeOrderTimeout({
         startedAt: packing.work_started_at ?? packing.scanned_at,
         limitSeconds,
