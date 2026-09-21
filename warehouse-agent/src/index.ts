@@ -21,6 +21,7 @@ import {
   readRetentionCache,
   computeRecoveryScanDays,
 } from "./retention-cache";
+import { refreshRetentionPlan, readRetentionPlan } from "./retention-plan";
 import { RemoteLogger } from "./remote-logger";
 import { listLocalPorts, postDiscovery, type PortInfo } from "./discovery";
 import {
@@ -913,6 +914,33 @@ async function main(): Promise<void> {
             },
           );
           return;
+        }
+
+        // Segment hàng hoàn chỉ giữ 7 ngày, ngắn hơn hạn chung. Nếu file
+        // thiếu nằm trong danh sách đó và đã quá hạn riêng thì đây cũng
+        // là nghiệp vụ, không phải ổ hỏng — báo `segments_missing_on_disk`
+        // ở đây tức là đẩy một báo động giả cho Hạnh đi điều tra.
+        const plan = await readRetentionPlan();
+        if (plan !== null && Number.isFinite(earliestStartMs)) {
+          const planned = new Set(plan.files);
+          const allMissingArePlanned = exists.missing.every((m) => planned.has(m));
+          const olderThanReturnLimit =
+            Date.now() - earliestStartMs > plan.return_retention_days * 24 * 60 * 60 * 1000;
+          if (allMissingArePlanned && olderThanReturnLimit) {
+            console.warn(
+              `[clip-cutter] clip_expired_retention (hàng hoàn) clip=${p.clip_id} retention=${plan.return_retention_days}d earliest=${new Date(earliestStartMs).toISOString()}`,
+            );
+            await failCommand(
+              `clip_expired_retention: video đã quá hạn lưu trữ (segment hàng hoàn giữ ${plan.return_retention_days} ngày)`,
+              {
+                missing: exists.missing,
+                retention_days: plan.return_retention_days,
+                retention_class: "return_short",
+                earliest_segment_at: new Date(earliestStartMs).toISOString(),
+              },
+            );
+            return;
+          }
         }
 
         console.warn(
@@ -2004,6 +2032,37 @@ async function main(): Promise<void> {
       }, 60_000)
     : null;
 
+  // Danh sách segment thuần hàng hoàn (hạn 7 ngày thay vì hạn chung).
+  //
+  // Nhịp 6 giờ chứ không theo heartbeat: danh sách chỉ đổi khi bàn bật/tắt
+  // chế độ NHẬN HOÀN, và script cleanup cũng chỉ chạy mỗi ngày một lần.
+  // Hỏi dày hơn chỉ tốn request mà không sớm xoá được file nào.
+  //
+  // Gọi một lần lúc boot để máy vừa cài xong đã có file, không phải chờ
+  // sáu tiếng mới dọn được ổ đĩa.
+  const RETENTION_PLAN_INTERVAL_MS = 6 * 60 * 60 * 1000;
+  const refreshPlan = async () => {
+    const r = await refreshRetentionPlan({
+      backendUrl: config.backendUrl,
+      agentCode: config.agentCode,
+      agentSecret: config.agentSecret,
+    });
+    if (!r.ok) {
+      // Cloud cũ chưa có route (404) hoặc mạng hỏng: giữ nguyên file cũ,
+      // script vẫn xoá theo hạn chung. Không cản trở gì.
+      const verdict = fetchLogLimiter.tick(`retention-plan:${r.status}`);
+      if (verdict.kind === "log_first") {
+        console.warn(
+          `[retention-plan] không lấy được danh sách (status=${r.status}) — cleanup chạy theo hạn chung`,
+        );
+      }
+    }
+  };
+  swallow(refreshPlan(), "refreshRetentionPlan");
+  const retentionPlanTimer = setInterval(() => {
+    swallow(refreshPlan(), "refreshRetentionPlan");
+  }, RETENTION_PLAN_INTERVAL_MS);
+
   const heartbeatTimer = setInterval(ping, config.heartbeatIntervalMs);
   const pollTimer = setInterval(() => {
     swallow(pollOnce(), "pollOnce");
@@ -2297,6 +2356,7 @@ async function main(): Promise<void> {
     clearInterval(pollTimer);
     clearInterval(cameraProbeTimer);
     clearInterval(clipOutboxTimer);
+    clearInterval(retentionPlanTimer);
     runtimeWatchdog.current?.stop();
     for (const s of sessions.values()) s.stop();
 

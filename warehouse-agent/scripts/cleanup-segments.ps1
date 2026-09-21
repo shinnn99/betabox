@@ -1,13 +1,23 @@
 ﻿# Cleanup segment cũ hơn RETENTION_DAYS trên máy kho.
 #
-# Chạy hàng tuần qua Task Scheduler (Chủ nhật 03:00, delay 5 phút sau
-# khởi động máy). Không gọi mạng — đọc retention từ file cache local do
-# agent ghi khi nhận heartbeat response.
+# Chạy hàng ngày qua Task Scheduler (03:00, delay 5 phút sau khởi động
+# máy). Hàng ngày chứ không hàng tuần vì có thêm nhóm segment hạn ngắn
+# (hàng hoàn, 7 ngày): chạy tuần một lần thì file quá hạn có thể nằm lại
+# tới 6 ngày. Không gọi mạng — đọc mọi thứ từ file cache local do agent
+# ghi.
 #
-# Fail-loud: nếu retention cache thiếu / hỏng → script KHÔNG chạy, ghi
-# log rõ ràng. Lý do: mất dung lượng còn hơn mất bằng chứng. Silent
-# default 45 = kịch bản Hạnh gõ nhầm dashboard → xóa file sớm hơn tưởng
-# → mất bằng chứng không dấu vết.
+# Hai nhóm file, hai chính sách:
+#   1. Hàng hoàn (retention-plan.json): danh sách cloud lập, hạn 7 ngày.
+#   2. Mọi file khác (retention-cache.json): hạn chung của tổ chức.
+#
+# Fail-loud ở nhóm 2: nếu retention cache thiếu / hỏng → script KHÔNG
+# chạy, ghi log rõ ràng. Lý do: mất dung lượng còn hơn mất bằng chứng.
+# Silent default 45 = kịch bản Hạnh gõ nhầm dashboard → xóa file sớm hơn
+# tưởng → mất bằng chứng không dấu vết.
+#
+# Fail-safe ở nhóm 1: thiếu / hỏng retention-plan.json → bỏ qua bước đó,
+# file vẫn được giữ tới hạn chung. Ngược chiều nhau nhưng cùng một
+# nguyên tắc: nghi ngờ thì giữ.
 #
 # Guard hai lớp không xóa file đang ghi:
 #   1. Bỏ qua file có LastWriteTime trong 5 phút gần nhất.
@@ -17,7 +27,8 @@
 #
 # Dùng: cleanup-segments.ps1 [-WhatIf] [-AgentDir <path>]
 #   -WhatIf     : chỉ IN RA danh sách sẽ xóa, không xóa thật (chạy lần đầu).
-#   -AgentDir   : đường dẫn thư mục agent (chứa .env + retention-cache.json).
+#   -AgentDir   : đường dẫn thư mục agent (chứa .env, retention-cache.json,
+#                 retention-plan.json).
 #                 Mặc định: "C:\Program Files\BetacomAgent".
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -112,10 +123,6 @@ $todayFolder = $now.ToString("yyyy\\MM\\dd")  # Guard 2: bỏ qua thư mục hô
 
 Write-CleanupLog "INFO" "cutoff=$($cutoff.ToString('yyyy-MM-dd HH:mm:ss')) recent_guard=$($recentGuard.ToString('yyyy-MM-dd HH:mm:ss')) today_folder=$todayFolder"
 
-# 4. Quét cameras (thư mục con trực tiếp của recording_dir), loại _clips.
-$cameraDirs = Get-ChildItem -Path $recordingDir -Directory -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -ne "_clips" }
-
 # Danh sách ứng viên dùng CHUNG cho cả hai chế độ.
 #
 # Bug 12/08/2026: trước đây nhánh xoá thật đếm vào $totalDeleted, còn
@@ -131,6 +138,98 @@ $allCandidates = New-Object System.Collections.Generic.List[object]
 $totalDeleted = 0
 $totalBytes = 0L
 $emptyFoldersRemoved = 0
+
+# 4. Segment thuần hàng hoàn — hạn ngắn hơn hạn chung.
+#
+# Đoạn video chỉ phục vụ bàn NHẬN HOÀN không cần giữ lâu như bằng chứng
+# đơn đi: sàn khiếu nại hàng hoàn trong vòng một tuần. Danh sách do cloud
+# lập (chỉ cloud biết bàn nào ở chế độ nào lúc nào) và agent ghi xuống
+# file; script này KHÔNG gọi mạng.
+#
+# Fail-safe NGƯỢC với bước retention chung: thiếu file, hỏng JSON hay
+# agent cũ chưa biết ghi → bỏ qua bước này, chạy tiếp bước hạn chung.
+# Lý do khác nhau: ở đây "không chạy" nghĩa là GIỮ LÂU HƠN, tức nghiêng
+# về an toàn; còn ở bước kia "đoán bừa" nghĩa là XOÁ SỚM.
+#
+# Đặt TRƯỚC vòng quét camera để thư mục ngày rỗng ra sau khi xoá được
+# dọn luôn trong vòng lặp đó.
+$returnDeleted = 0
+$returnBytes = 0L
+$returnPlanPath = Join-Path $AgentDir "retention-plan.json"
+$returnPlan = $null
+
+if (-not (Test-Path $returnPlanPath)) {
+    Write-CleanupLog "INFO" "Không có retention-plan.json — bỏ qua bước xoá sớm segment hàng hoàn, chỉ xoá theo hạn chung."
+} else {
+    try {
+        $returnPlan = Get-Content $returnPlanPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        Write-CleanupLog "WARN" "retention-plan.json hỏng JSON: $($_.Exception.Message). Bỏ qua bước xoá sớm segment hàng hoàn."
+        $returnPlan = $null
+    }
+}
+
+if ($null -ne $returnPlan) {
+    $returnDays = $returnPlan.return_retention_days
+    $returnFiles = @($returnPlan.files)
+    if ($null -eq $returnDays -or $returnDays -isnot [int] -or $returnDays -lt 1 -or $returnDays -gt 365) {
+        Write-CleanupLog "WARN" "return_retention_days không hợp lệ (value='$returnDays'). Bỏ qua bước xoá sớm segment hàng hoàn."
+    } elseif ($returnFiles.Count -eq 0) {
+        Write-CleanupLog "INFO" "Danh sách segment hàng hoàn rỗng (cập nhật lúc $($returnPlan.updated_at)) — không có gì để xoá sớm."
+    } else {
+        $returnCutoff = $now.AddDays(-$returnDays)
+        Write-CleanupLog "INFO" "Segment hàng hoàn: $($returnFiles.Count) file trong danh sách, hạn $returnDays ngày, cutoff=$($returnCutoff.ToString('yyyy-MM-dd HH:mm:ss')) (cập nhật lúc $($returnPlan.updated_at))"
+
+        # Đường dẫn trong danh sách là tương đối so với RECORDING_DIR,
+        # dùng dấu "/" (agent chuẩn hoá khi báo cáo).
+        $recordingFull = (Resolve-Path $recordingDir).Path.TrimEnd('\')
+        foreach ($rel in $returnFiles) {
+            if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+            $full = Join-Path $recordingFull ($rel -replace "/", "\")
+
+            # Danh sách đến từ mạng: tuyệt đối không cho nó trỏ ra ngoài
+            # thư mục ghi hình (".." hay đường dẫn tuyệt đối).
+            $normalized = [System.IO.Path]::GetFullPath($full)
+            if (-not $normalized.StartsWith($recordingFull + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+                Write-CleanupLog "WARN" "Bỏ qua đường dẫn nằm ngoài thư mục ghi hình: $rel"
+                continue
+            }
+            if (-not (Test-Path $normalized -PathType Leaf)) { continue }
+
+            $file = Get-Item $normalized
+            # Cùng hai lớp guard của bước hạn chung: không đụng file đang
+            # ghi và không đụng thư mục hôm nay.
+            if ($file.FullName -like "*\$todayFolder\*") { continue }
+            if ($file.LastWriteTime -gt $recentGuard) { continue }
+            if ($file.LastWriteTime -ge $returnCutoff) { continue }
+
+            $sizeBytes = $file.Length
+            $allCandidates.Add([pscustomobject]@{
+                Camera  = ($rel -split "/")[0]
+                Path    = $file.FullName
+                Day     = $file.LastWriteTime.ToString("yyyy-MM-dd")
+                AgeDays = [int]($now - $file.LastWriteTime).TotalDays
+                Bytes   = $sizeBytes
+            })
+            if ($PSCmdlet.ShouldProcess($file.FullName, "Delete return segment (age=$([int]($now - $file.LastWriteTime).TotalDays)d size=$([math]::Round($sizeBytes/1MB,1))MB)")) {
+                try {
+                    Remove-Item -Path $file.FullName -Force
+                    $returnDeleted++
+                    $returnBytes += $sizeBytes
+                    $totalDeleted++
+                    $totalBytes += $sizeBytes
+                } catch {
+                    Write-CleanupLog "WARN" "Delete failed (hàng hoàn): $($file.FullName) — $($_.Exception.Message)"
+                }
+            }
+        }
+        Write-CleanupLog "INFO" "Segment hàng hoàn: xoá $returnDeleted file, $([math]::Round($returnBytes/1MB,1))MB"
+    }
+}
+
+# 5. Quét cameras (thư mục con trực tiếp của recording_dir), loại _clips.
+$cameraDirs = Get-ChildItem -Path $recordingDir -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -ne "_clips" }
 
 foreach ($camDir in $cameraDirs) {
     $camName = $camDir.Name
@@ -171,7 +270,7 @@ foreach ($camDir in $cameraDirs) {
         }
     }
 
-    # 5. Dọn thư mục ngày rỗng sau khi xóa file (tránh tích tụ folder trống).
+    # 6. Dọn thư mục ngày rỗng sau khi xóa file (tránh tích tụ folder trống).
     # Chỉ dọn khi thật sự xóa (không -WhatIf), và không đụng thư mục hôm nay.
     if (-not $PSCmdlet.MyInvocation.BoundParameters.WhatIf.IsPresent) {
         Get-ChildItem -Path $camDir.FullName -Recurse -Directory -ErrorAction SilentlyContinue |
@@ -192,7 +291,7 @@ foreach ($camDir in $cameraDirs) {
     }
 }
 
-# 6. Tổng kết — CẢ HAI chế độ đọc cùng $allCandidates.
+# 7. Tổng kết — CẢ HAI chế độ đọc cùng $allCandidates.
 $isWhatIf = $PSCmdlet.MyInvocation.BoundParameters.WhatIf.IsPresent
 $candidateBytes = 0L
 foreach ($c in $allCandidates) { $candidateBytes += $c.Bytes }

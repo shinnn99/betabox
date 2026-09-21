@@ -26,6 +26,7 @@ export const AGENT_API_PATHS = {
   bootDeclare: "/api/agent/boot-declare",
   logEvents: "/api/agent/log-events",
   cameraIpHealed: "/api/agent/camera-ip-healed",
+  retentionPlan: "/api/agent/retention-plan",
 } as const;
 
 export type AgentApiPathKey = keyof typeof AGENT_API_PATHS;

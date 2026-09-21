@@ -308,11 +308,13 @@ end;
 
 // Task Scheduler task cleanup segment cũ.
 //
-// Chạy Chủ nhật 03:00 (thấp tải, không đè giờ ghi peak). Chạy dưới SYSTEM
-// (cùng quyền service NSSM) để đọc .env + retention-cache.json trong
-// {app}. Delay 5 phút sau khởi động máy (option "Delay task for") tránh
-// đụng agent boot recovery scan trên HDD. Run-if-missed (kho tắt cuối
-// tuần → chạy khi bật máy sáng thứ Hai).
+// Chạy hàng ngày 03:00 (thấp tải, không đè giờ ghi peak). Trước đây chạy
+// Chủ nhật hàng tuần; đổi sang hàng ngày từ đợt hàng hoàn vì nhóm segment
+// hàng hoàn chỉ giữ 7 ngày — chạy tuần một lần thì file quá hạn nằm lại
+// tới 6 ngày. Chạy dưới SYSTEM (cùng quyền service NSSM) để đọc .env +
+// retention-cache.json + retention-plan.json trong {app}. Delay 5 phút
+// sau khởi động máy (option "Delay task for") tránh đụng agent boot
+// recovery scan trên HDD. Run-if-missed (kho tắt thì chạy khi bật máy).
 //
 // Idempotent: delete task cũ trước khi create (upgrade in-place hoặc
 // reinstall).
@@ -343,16 +345,15 @@ begin
     '<?xml version="1.0" encoding="UTF-16"?>' + #13#10 +
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' + #13#10 +
     '  <RegistrationInfo>' + #13#10 +
-    '    <Description>Xoa video segment cu hon retention_days. Doc cache local, khong goi mang.</Description>' + #13#10 +
+    '    <Description>Xoa video segment qua han: segment hang hoan theo retention-plan.json (7 ngay) va moi file khac theo retention_days. Doc cache local, khong goi mang.</Description>' + #13#10 +
     '  </RegistrationInfo>' + #13#10 +
     '  <Triggers>' + #13#10 +
     '    <CalendarTrigger>' + #13#10 +
     '      <StartBoundary>2026-01-04T03:00:00</StartBoundary>' + #13#10 +
     '      <Enabled>true</Enabled>' + #13#10 +
-    '      <ScheduleByWeek>' + #13#10 +
-    '        <DaysOfWeek><Sunday /></DaysOfWeek>' + #13#10 +
-    '        <WeeksInterval>1</WeeksInterval>' + #13#10 +
-    '      </ScheduleByWeek>' + #13#10 +
+    '      <ScheduleByDay>' + #13#10 +
+    '        <DaysInterval>1</DaysInterval>' + #13#10 +
+    '      </ScheduleByDay>' + #13#10 +
     '    </CalendarTrigger>' + #13#10 +
     '  </Triggers>' + #13#10 +
     '  <Principals>' + #13#10 +
