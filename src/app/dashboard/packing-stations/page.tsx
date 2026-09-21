@@ -20,6 +20,7 @@ import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
 import Select from "@/components/ui/Select";
 import { Modal, Field } from "@/components/warehouse-config/Modal";
+import StationPurposeCell from "@/components/stations/StationPurposeCell";
 
 interface Station {
   id: string;
@@ -27,6 +28,8 @@ interface Station {
   name: string;
   warehouse_id: string;
   status: string;
+  /** Chế độ mặc định: bàn đóng hàng, hay bàn chuyên nhận hàng hoàn. */
+  purpose?: "outbound" | "return" | null;
   created_at: string;
   updated_at: string;
 }
@@ -280,6 +283,7 @@ export default function PackingStationsPage() {
                 <th className="px-4 py-3 font-semibold">Tên bàn</th>
                 <th className="px-4 py-3 font-semibold">Kho</th>
                 <th className="px-4 py-3 font-semibold">Thiết bị đang gán</th>
+                <th className="px-4 py-3 font-semibold w-44">Chế độ bàn</th>
                 <th className="px-4 py-3 font-semibold w-32">Trạng thái</th>
                 <th className="px-4 py-3 font-semibold text-right whitespace-nowrap w-40">
                   <span className="inline-block w-24 text-center">Hành động</span>
@@ -289,21 +293,21 @@ export default function PackingStationsPage() {
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-slate-400">
+                  <td colSpan={7} className="px-4 py-10 text-center text-slate-400">
                     <Loader2 className="h-5 w-5 animate-spin inline mr-2" /> Đang tải...
                   </td>
                 </tr>
               )}
               {!loading && warehouses.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-slate-400 text-sm">
+                  <td colSpan={7} className="px-4 py-10 text-center text-slate-400 text-sm">
                     Chưa có kho nào. Tạo kho trước khi thêm bàn.
                   </td>
                 </tr>
               )}
               {!loading && warehouses.length > 0 && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-slate-400 text-sm">
+                  <td colSpan={7} className="px-4 py-10 text-center text-slate-400 text-sm">
                     Không có bàn nào khớp bộ lọc.
                   </td>
                 </tr>
@@ -334,6 +338,9 @@ export default function PackingStationsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <DeviceChips devices={stDevices} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <StationPurposeCell station={s} onSaved={load} />
                     </td>
                     <td className="px-4 py-3">
                       <span

@@ -12,6 +12,7 @@ import {
   type RecognizedStaff,
 } from "@/lib/warehouse/staff-qr";
 import { normalizeWaybillCode } from "@/lib/warehouse/normalize-code";
+import { looksLikeControlCard, parseControlCard } from "@/lib/station/control-cards";
 import { hookLarkNotifyScan } from "@/lib/lark/hook-scan";
 
 export const runtime = "nodejs";
@@ -81,7 +82,7 @@ function parsePayload(raw: unknown): ScanPayload | { error: string } {
   };
 }
 
-type ScanType = "staff_qr" | "waybill";
+type ScanType = "staff_qr" | "waybill" | "control";
 
 /**
  * Staff QR thật có dạng `<org_uuid>.<staff_uuid>.<rawToken>`.
@@ -89,7 +90,17 @@ type ScanType = "staff_qr" | "waybill";
  * Recognition (verify token_hash) chạy ở bước sau, không ảnh hưởng phân loại.
  */
 function detectScanType(rawValue: string): ScanType {
+  // Thứ tự cố định: thẻ điều khiển → QR nhân viên → mã vận đơn. Thẻ có tiền
+  // tố BETABOX: nên không đụng hai loại kia (xem control-cards.ts).
+  if (looksLikeControlCard(rawValue)) return "control";
   return tryParseStaffQr(rawValue) ? "staff_qr" : "waybill";
+}
+
+/** Kết quả xử lý một thẻ điều khiển, trả về cho agent để ghi log. */
+interface ControlAction {
+  action: "mode_changed" | "ignored" | "invalid";
+  mode: "outbound" | "return" | null;
+  message: string;
 }
 
 interface SessionAction {
@@ -406,6 +417,65 @@ export async function POST(req: Request) {
     });
   }
 
+  // Phase 4b: thẻ điều khiển. Chỉ có tác dụng khi máy quét đã gắn bàn và
+  // đúng nguồn quét của bàn — cùng điều kiện với mọi lượt quét khác.
+  let controlAction: ControlAction | null = null;
+  if (scanType === "control") {
+    const card = parseControlCard(parsed.raw_value);
+    if (!resolved?.station_id || scanSourceDisabled) {
+      controlAction = {
+        action: "ignored",
+        mode: null,
+        message: "Thẻ điều khiển bị bỏ qua vì máy quét chưa gắn bàn hoặc sai nguồn quét.",
+      };
+    } else if (!card) {
+      controlAction = {
+        action: "invalid",
+        mode: null,
+        message: "Thẻ điều khiển không đọc được.",
+      };
+    } else if (card.kind === "mode") {
+      const { error: modeErr } = await admin.rpc("set_station_mode", {
+        p_station_id: resolved.station_id,
+        p_mode: card.mode,
+        p_started_by: "card",
+        p_reason: `card_${card.mode}`,
+        p_at: parsed.scanned_at,
+      });
+      controlAction = modeErr
+        ? { action: "invalid", mode: null, message: `Không đổi được chế độ bàn: ${modeErr.message}` }
+        : {
+            action: "mode_changed",
+            mode: card.mode,
+            message:
+              card.mode === "return"
+                ? "Bàn chuyển sang chế độ nhận hàng hoàn."
+                : "Bàn quay lại chế độ đóng hàng.",
+          };
+    } else {
+      // Thẻ kết quả và thẻ kết thúc thuộc vòng đời kiện hoàn (đợt 3).
+      controlAction = {
+        action: "ignored",
+        mode: null,
+        message: "Thẻ này chỉ dùng khi đang mở một kiện hoàn.",
+      };
+    }
+  }
+
+  // Mọi lượt quét ở bàn đều tính là "còn đang làm việc", nên gia hạn mốc tự
+  // về chế độ đóng hàng. Best-effort: hỏng cũng không được chặn lượt quét.
+  if (resolved?.station_id && !scanSourceDisabled) {
+    const { error: touchErr } = await admin.rpc("touch_station_mode_activity", {
+      p_station_id: resolved.station_id,
+      p_at: parsed.scanned_at,
+    });
+    if (touchErr) {
+      console.warn(
+        `[warehouse-scans] touch_station_mode_activity lỗi station=${resolved.station_id}: ${touchErr.message}`,
+      );
+    }
+  }
+
   // Phase 5: drive the waybill → packing_event pipeline. Run for every
   // waybill scan — the RPC itself records unmapped/no-session/duplicate
   // statuses so nothing gets dropped.
@@ -473,6 +543,7 @@ export async function POST(req: Request) {
     recognized_staff: recognizedStaff,
     session_action: sessionAction,
     packing_result: packingResult,
+    control_action: controlAction,
     warning,
   });
 }

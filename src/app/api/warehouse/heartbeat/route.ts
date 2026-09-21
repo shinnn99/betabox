@@ -8,6 +8,7 @@ import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
 import { enqueueCutClip } from "@/lib/agent-commands/enqueue";
 import { forceStopExpiredOrders } from "@/lib/station/force-stop-expired-orders";
+import { revertIdleReturnModes } from "@/lib/station/station-mode";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -102,6 +103,9 @@ export async function POST(req: Request) {
   // bàn gọi cùng hàm này mỗi lượt poll để phản hồi nhanh hơn.
   try {
     await forceStopExpiredOrders({ admin, organizationId: agent.organization_id });
+    // Cùng nhịp: đưa bàn kẹt ở chế độ nhận hoàn về đóng hàng. Heartbeat là
+    // nhịp duy nhất chắc chắn còn chạy khi không ai mở màn hình bàn.
+    await revertIdleReturnModes({ admin, organizationId: agent.organization_id });
   } catch (timeoutError) {
     console.warn(
       `[heartbeat] force-stop đơn quá giờ thất bại agent=${agent.id} message=${(timeoutError as Error).message}`,

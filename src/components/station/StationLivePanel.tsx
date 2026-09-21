@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Loader2, RefreshCw, Timer, Volume2, VolumeX } from "lucide-react";
+import { AlertTriangle, Loader2, PackageCheck, RefreshCw, Timer, Volume2, VolumeX } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
 import LiveLayout, { type LiveCameraSource } from "./LiveLayout";
 
@@ -35,6 +35,8 @@ interface StationEventResponse {
     remaining_seconds: number;
     warning: boolean;
   } | null;
+  /** Chế độ bàn: đóng hàng gửi đi, hay nhận kiện hàng hoàn. */
+  station_mode?: "outbound" | "return";
 }
 
 /** Ngưỡng đọc cảnh báo sắp hết giờ — khớp ORDER_WARNING_LEAD_SECONDS ở server. */
@@ -64,6 +66,7 @@ export default function StationLivePanel({ stationId }: { stationId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [currentOrder, setCurrentOrder] = useState<StationEventResponse["current_order"]>(null);
+  const [stationMode, setStationMode] = useState<"outbound" | "return">("outbound");
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [audioReady, setAudioReady] = useState(false);
   // Ý muốn của người dùng: có nghe thông báo tiếng hay không. Tách khỏi
@@ -240,6 +243,7 @@ export default function StationLivePanel({ stationId }: { stationId: string }) {
         if (!response.ok || cancelled) return;
         const body = (await response.json()) as StationEventResponse;
         setCurrentOrder(body.current_order ?? null);
+        setStationMode(body.station_mode ?? "outbound");
         if (!body.event) return;
         if (lastEventId.current === null) {
           // Lần poll đầu chỉ ghi nhận mốc — không đọc lại sự kiện cũ đã
@@ -325,6 +329,19 @@ export default function StationLivePanel({ stationId }: { stationId: string }) {
       />
 
       <div className="flex flex-wrap items-center gap-2">
+        {/* Chế độ bàn luôn hiện. Nền cam = đang nhận hàng hoàn, mã quét
+            không tính vào số đơn. */}
+        <span
+          className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold ${
+            stationMode === "return"
+              ? "bg-amber-500 text-white"
+              : "bg-slate-100 text-slate-600"
+          }`}
+        >
+          <PackageCheck className="h-3.5 w-3.5" />
+          {stationMode === "return" ? "NHẬN HÀNG HOÀN" : "Đóng hàng"}
+        </span>
+
         {currentOrder && remainingSeconds !== null ? (
           <span
             className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold ${

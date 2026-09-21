@@ -2,6 +2,7 @@ import { NextResponse, after } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, isError } from "@/lib/supabase/guard";
 import { normalizeWaybillCode } from "@/lib/warehouse/normalize-code";
+import { looksLikeControlCard, parseControlCard } from "@/lib/station/control-cards";
 import { hookLarkNotifyScan } from "@/lib/lark/hook-scan";
 
 export const runtime = "nodejs";
@@ -122,6 +123,57 @@ export async function POST(req: Request) {
         { status: 409 },
       );
     }
+  }
+
+  // Thẻ điều khiển gõ tay: dùng khi bàn chưa có súng quét, hoặc khi thử
+  // luồng mà không cần phần cứng. Đi đúng đường của thẻ quét bằng súng.
+  const controlCard = looksLikeControlCard(rawValue) ? parseControlCard(rawValue) : null;
+  if (looksLikeControlCard(rawValue)) {
+    if (!resolved?.station_id) {
+      return NextResponse.json(
+        { error: "unmapped_scanner", message: "Máy quét chưa gắn vào bàn nào." },
+        { status: 409 },
+      );
+    }
+    if (!controlCard) {
+      return NextResponse.json(
+        { error: "invalid_control_card", message: "Thẻ điều khiển không đọc được." },
+        { status: 400 },
+      );
+    }
+    if (controlCard.kind !== "mode") {
+      return NextResponse.json(
+        {
+          error: "control_card_not_supported",
+          message: "Thẻ này chỉ dùng khi đang mở một kiện hoàn.",
+        },
+        { status: 409 },
+      );
+    }
+    const { error: modeErr } = await admin.rpc("set_station_mode", {
+      p_station_id: resolved.station_id,
+      p_mode: controlCard.mode,
+      p_started_by: "card",
+      p_reason: `card_${controlCard.mode}`,
+      p_at: scannedAt,
+    });
+    if (modeErr) {
+      return NextResponse.json(
+        { error: "set_mode_failed", message: modeErr.message },
+        { status: 500 },
+      );
+    }
+    return NextResponse.json({
+      ok: true,
+      control_action: {
+        action: "mode_changed",
+        mode: controlCard.mode,
+        message:
+          controlCard.mode === "return"
+            ? "Bàn chuyển sang chế độ nhận hàng hoàn."
+            : "Bàn quay lại chế độ đóng hàng.",
+      },
+    });
   }
 
   let eventId: string;

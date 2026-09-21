@@ -27,6 +27,17 @@ export async function PATCH(req: Request, { params }: RouteContext) {
   if (typeof body.status === "string") update.status = body.status;
   // Nguồn tạo lượt quét của bàn: súng quét hay camera ở vị trí QR. Chỉ một
   // nguồn được nhận — lượt quét từ nguồn kia bị từ chối (scan_source_disabled).
+  // Chế độ mặc định của bàn: bàn đóng hàng hay bàn chuyên nhận hoàn.
+  // Trigger `packing_stations_apply_purpose` đổi chế độ đang chạy ngay.
+  if (body.purpose !== undefined) {
+    if (body.purpose !== "outbound" && body.purpose !== "return") {
+      return NextResponse.json(
+        { error: "invalid_purpose", message: "Chế độ bàn chỉ là 'outbound' hoặc 'return'." },
+        { status: 400 },
+      );
+    }
+    update.purpose = body.purpose;
+  }
   if (body.scan_source !== undefined) {
     if (body.scan_source !== "scanner" && body.scan_source !== "camera") {
       return NextResponse.json(

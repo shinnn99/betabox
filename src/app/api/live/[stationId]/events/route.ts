@@ -3,12 +3,14 @@ import type { createAdminClient } from "@/lib/supabase/admin";
 import { requireStationLiveAccess } from "@/lib/live/station-access";
 import {
   buildAutoStopAnnouncement,
+  buildStationModeAnnouncement,
   buildPackingScanAnnouncement,
   buildRecordingGapAnnouncement,
   buildStaffSessionAnnouncement,
   type StationAnnouncement,
 } from "@/lib/station/announcements";
 import { forceStopExpiredOrders } from "@/lib/station/force-stop-expired-orders";
+import { readStationMode, revertIdleReturnModes } from "@/lib/station/station-mode";
 import {
   AUTO_STOP_TIMING_NOTE,
   computeOrderTimeout,
@@ -57,6 +59,18 @@ export async function GET(_request: Request, context: RouteContext) {
   // Thực thi trần thời gian TRƯỚC khi đọc trạng thái, để cùng một lượt
   // poll vừa chốt đơn vừa trả về thông báo "tự động dừng".
   await forceStopExpiredOrders({
+    admin: access.admin,
+    organizationId: access.ctx.organizationId,
+    stationId,
+  });
+
+  // Lối ra tự động của chế độ NHẬN HOÀN. Chạy trước khi đọc chế độ để cùng
+  // một lượt poll vừa đưa bàn về đóng hàng vừa báo cho nhân viên.
+  await revertIdleReturnModes({
+    admin: access.admin,
+    organizationId: access.ctx.organizationId,
+  });
+  const stationMode = await readStationMode({
     admin: access.admin,
     organizationId: access.ctx.organizationId,
     stationId,
@@ -186,14 +200,33 @@ export async function GET(_request: Request, context: RouteContext) {
     }
   }
 
+  if (stationMode.period_id && stationMode.since) {
+    candidates.push(
+      buildStationModeAnnouncement({
+        periodId: stationMode.period_id,
+        mode: stationMode.mode,
+        startedAt: stationMode.since,
+        startedBy: stationMode.started_by,
+      }),
+    );
+  }
+
   if (candidates.length === 0) {
-    return NextResponse.json({ event: null, current_order: null });
+    return NextResponse.json({
+      event: null,
+      current_order: null,
+      station_mode: stationMode.mode,
+    });
   }
 
   const latest = candidates.reduce((best, item) =>
     Date.parse(item.occurred_at) >= Date.parse(best.occurred_at) ? item : best,
   );
-  return NextResponse.json({ event: latest, current_order: currentOrder });
+  return NextResponse.json({
+    event: latest,
+    current_order: currentOrder,
+    station_mode: stationMode.mode,
+  });
 }
 
 /**

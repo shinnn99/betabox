@@ -141,6 +141,47 @@ export function buildPackingScanAnnouncement(input: {
 }
 
 /**
+ * Bàn vừa đổi chế độ.
+ *
+ * Nhân viên phải biết bàn đang ở chế độ nào TRƯỚC khi quét mã tiếp theo:
+ * cùng một mã, quét ở chế độ đóng hàng thì thành đơn đi (được đếm), quét ở
+ * chế độ nhận hoàn thì thành kiện hoàn (không đếm).
+ *
+ * `startedBy`:
+ *   card    — nhân viên quét thẻ;
+ *   system  — hệ thống tự đưa về (5 phút không thao tác, hoặc đóng ca);
+ *   purpose — chủ kho đổi chế độ mặc định của bàn trên giao diện.
+ */
+export function buildStationModeAnnouncement(input: {
+  periodId: string;
+  mode: "outbound" | "return";
+  startedAt: string;
+  startedBy: string | null;
+}): StationAnnouncement {
+  const base = { id: `mode:${input.periodId}`, occurred_at: input.startedAt };
+  if (input.mode === "return") {
+    return {
+      ...base,
+      level: "warning",
+      message: "Chế độ NHẬN HÀNG HOÀN · mã quét không tính vào số đơn",
+      speech: "Đã chuyển sang chế độ nhận hàng hoàn",
+    };
+  }
+  return {
+    ...base,
+    level: "success",
+    message:
+      input.startedBy === "system"
+        ? "Đã tự về chế độ đóng hàng"
+        : "Chế độ đóng hàng",
+    speech:
+      input.startedBy === "system"
+        ? "Đã tự về chế độ đóng hàng"
+        : "Đã về chế độ đóng hàng",
+  };
+}
+
+/**
  * Đơn bị cưỡng chế dừng vì quá trần thời gian.
  *
  * Câu chữ do nghiệp vụ chốt, đừng sửa tuỳ tiện: nhân viên nghe câu này

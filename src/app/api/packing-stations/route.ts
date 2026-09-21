@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
   const warehouseId = req.nextUrl.searchParams.get("warehouse_id");
   const scoped = await getScopedClient(ctx);
   let q = scoped
-    .select("packing_stations", "id, code, name, warehouse_id, status, scan_source, created_at, updated_at")
+    .select("packing_stations", "id, code, name, warehouse_id, status, scan_source, purpose, created_at, updated_at")
     .order("code");
   if (warehouseId) q = q.eq("warehouse_id", warehouseId);
 

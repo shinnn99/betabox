@@ -394,10 +394,11 @@ async function main(): Promise<void> {
       if (result.ok) {
         const body = result.body as {
           duplicate?: boolean;
-          scan_type?: "staff_qr" | "waybill";
+          scan_type?: "staff_qr" | "waybill" | "control";
           recognized_staff?: { staff_code: string; full_name: string } | null;
           session_action?: { action: string } | null;
           packing_result?: { status: string; assignment_method?: string } | null;
+          control_action?: { action: string; mode?: string | null; message?: string } | null;
           warning?: { code: string; message?: string } | null;
         } | null;
         const dup = body?.duplicate ? " (dup)" : "";
@@ -416,11 +417,16 @@ async function main(): Promise<void> {
                 : ""
             }]`
           : "";
+        const control = body?.control_action
+          ? ` [THE: ${body.control_action.action}${
+              body.control_action.mode ? ` -> ${body.control_action.mode}` : ""
+            }]`
+          : "";
         const displayValue =
           body?.scan_type === "staff_qr" ? "<STAFF_QR>" : payload.raw_value;
         const tag = fromQueue ? "[OK-RETRY]" : "[OK]";
         console.log(
-          `${tag}${dup}${warn}${staff}${session}${packing} ${payload.scanner_device_code} ${payload.port} -> ${displayValue}`,
+          `${tag}${dup}${warn}${staff}${session}${packing}${control} ${payload.scanner_device_code} ${payload.port} -> ${displayValue}`,
         );
         return true;
       }
