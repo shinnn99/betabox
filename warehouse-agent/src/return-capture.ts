@@ -35,6 +35,14 @@ interface PersistedState {
   draining: boolean;
   /** Camera còn đoạn dở lúc nhận TẮT. Rỗng + draining = báo xong được. */
   pending_cameras: string[];
+  /**
+   * Camera đang ghi dở một đoạn từ TRƯỚC lúc nhận BẬT.
+   *
+   * Đoạn đó chứa phần cuối của việc đóng hàng, nên nó thuộc luồng đóng
+   * hàng chứ không phải hàng hoàn. Cứ để ffmpeg ghi nốt; phiên hoàn bắt
+   * đầu nhận từ đoạn KẾ TIẾP. Đây là gương của luật lúc TẮT.
+   */
+  deferred_cameras: string[];
   /** Mốc kết thúc muộn nhất trong các đoạn đã đóng của phiên. */
   last_segment_ended_at: string | null;
   updated_at: string;
@@ -54,6 +62,8 @@ export interface ReturnCaptureDeps {
   agentSecret: string;
   /** Camera này có đoạn video đang ghi dở không (SegmentTracker trả lời). */
   hasOpenSegment: (cameraId: string) => boolean;
+  /** Thay đường gửi lên cloud — chỉ dùng trong test. */
+  send?: (payload: Record<string, unknown>) => Promise<boolean>;
 }
 
 function statePath(): string {
@@ -62,8 +72,11 @@ function statePath(): string {
 
 export class ReturnCaptureStore {
   private state: PersistedState | null = null;
+  private readonly deps: ReturnCaptureDeps;
 
-  constructor(private readonly deps: ReturnCaptureDeps) {}
+  constructor(deps: ReturnCaptureDeps) {
+    this.deps = deps;
+  }
 
   /**
    * Đọc lại trạng thái sau khi agent khởi động.
@@ -91,6 +104,9 @@ export class ReturnCaptureStore {
         pending_cameras: Array.isArray(parsed.pending_cameras)
           ? parsed.pending_cameras.filter((c): c is string => typeof c === "string")
           : [],
+        deferred_cameras: Array.isArray(parsed.deferred_cameras)
+          ? parsed.deferred_cameras.filter((c): c is string => typeof c === "string")
+          : [],
         last_segment_ended_at:
           typeof parsed.last_segment_ended_at === "string" ? parsed.last_segment_ended_at : null,
         updated_at: new Date().toISOString(),
@@ -111,6 +127,9 @@ export class ReturnCaptureStore {
     const s = this.state;
     if (!s) return null;
     if (!s.camera_ids.includes(cameraId)) return null;
+    // Đoạn đang ghi dở từ trước lúc BẬT vẫn là của luồng đóng hàng — nó
+    // bọc phần kết thúc của video đơn đi. Không cướp nhãn của nó.
+    if (s.deferred_cameras.includes(cameraId)) return null;
     // Đang rút: chỉ còn gán cho camera có đoạn dở từ trước lúc TẮT. Đoạn
     // MỚI mở sau đó là của việc khác, không phải hàng hoàn.
     if (s.draining && !s.pending_cameras.includes(cameraId)) return null;
@@ -133,18 +152,23 @@ export class ReturnCaptureStore {
         // bằng mốc đang có, đừng để nó treo ở cloud.
         await this.reportFinish(this.state);
       }
+      const deferred = signal.camera_ids.filter((c) => this.deps.hasOpenSegment(c));
       this.state = {
         capture_id: signal.capture_id,
         station_id: signal.station_id,
         camera_ids: signal.camera_ids,
         draining: false,
         pending_cameras: [],
+        deferred_cameras: deferred,
         last_segment_ended_at: null,
         updated_at: new Date().toISOString(),
       };
       await this.persist();
       console.log(
-        `[return-capture] BẬT phiên ${signal.capture_id} bàn=${signal.station_id} camera=${signal.camera_ids.length}`,
+        `[return-capture] BẬT phiên ${signal.capture_id} bàn=${signal.station_id} camera=${signal.camera_ids.length}` +
+          (deferred.length > 0
+            ? ` — ${deferred.length} đoạn của luồng đóng hàng đang ghi dở, để chúng lưu nốt rồi mới nhận`
+            : ""),
       );
       return;
     }
@@ -159,8 +183,11 @@ export class ReturnCaptureStore {
     if (this.state.draining) return;
 
     this.state.draining = true;
-    this.state.pending_cameras = this.state.camera_ids.filter((c) =>
-      this.deps.hasOpenSegment(c),
+    // Camera còn đang ghi dở đoạn của luồng ĐÓNG HÀNG (chưa từng được gán
+    // nhãn) thì không có gì để chờ — chờ nó là treo phiên vì một đoạn
+    // không thuộc mình.
+    this.state.pending_cameras = this.state.camera_ids.filter(
+      (c) => this.deps.hasOpenSegment(c) && !this.state!.deferred_cameras.includes(c),
     );
     await this.persist();
     console.log(
@@ -178,6 +205,14 @@ export class ReturnCaptureStore {
   async noteSegmentClosed(cameraId: string, endedAt: string | null): Promise<void> {
     const s = this.state;
     if (!s || !s.camera_ids.includes(cameraId)) return;
+
+    // Đoạn cuối của luồng đóng hàng vừa lưu xong: từ đoạn kế tiếp trở đi
+    // camera này thuộc phiên hoàn.
+    if (s.deferred_cameras.includes(cameraId)) {
+      s.deferred_cameras = s.deferred_cameras.filter((c) => c !== cameraId);
+      await this.persist();
+      return;
+    }
 
     if (endedAt) {
       if (!s.last_segment_ended_at || endedAt > s.last_segment_ended_at) {
@@ -238,6 +273,7 @@ export class ReturnCaptureStore {
   }
 
   private async post(payload: Record<string, unknown>): Promise<boolean> {
+    if (this.deps.send) return this.deps.send(payload);
     const body = JSON.stringify(payload);
     try {
       const res = await fetchWithRetrySigned(

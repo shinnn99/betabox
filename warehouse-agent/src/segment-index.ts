@@ -362,16 +362,22 @@ export class SegmentIndex {
     const capture = this.deps.capture;
     if (!capture) return payloads;
 
-    const stamped = payloads.map((p) => ({
-      ...p,
-      return_capture_id: capture.labelFor(p.camera_id) ?? p.return_capture_id ?? null,
-    }));
-    for (const p of stamped) {
+    // Tuần tự từng payload, KHÔNG gán hết một lượt rồi mới báo đóng. Lúc
+    // segment cuộn, tracker trả [đóng đoạn cũ, mở đoạn mới] trong cùng một
+    // lô. Đoạn cũ có thể là đoạn cuối của luồng đóng hàng (chưa được nhận)
+    // hoặc đoạn cuối của phiên hoàn (đang rút) — trạng thái phiên đổi ngay
+    // khi nó đóng, và đoạn mới phải được xét theo trạng thái SAU đó.
+    const out: SegmentFilePayload[] = [];
+    for (const p of payloads) {
+      out.push({
+        ...p,
+        return_capture_id: capture.labelFor(p.camera_id) ?? p.return_capture_id ?? null,
+      });
       if (p.ended_at !== null) {
         await capture.noteSegmentClosed(p.camera_id, p.ended_at);
       }
     }
-    return stamped;
+    return out;
   }
 
   private async sendOrQueue(payloads: SegmentFilePayload[]): Promise<void> {

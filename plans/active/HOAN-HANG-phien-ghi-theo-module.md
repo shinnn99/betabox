@@ -84,6 +84,19 @@ Không thêm bảng mới. `station_mode_periods` (đợt 2) đã là *khoảng 
 
 ---
 
+### Luật đối xứng ở hai đầu phiên (chủ dự án xác nhận 21/09/2026)
+
+Đoạn video 60 giây đang ghi dở **không bao giờ bị cắt ngang** khi đổi module — ffmpeg ghi nốt cho tới lúc cuộn. Câu hỏi chỉ là đoạn đó thuộc về ai:
+
+| Lúc | Đoạn đang ghi dở | Thuộc về | Phiên hoàn nhận từ |
+|---|---|---|---|
+| **Vào** module hoàn | chứa phần kết thúc của video **đơn đi** | luồng **đóng hàng** (không gán nhãn hoàn) | đoạn **kế tiếp** |
+| **Thoát** module hoàn | chứa phần kết thúc của việc **mở kiện hoàn** | phiên **hoàn** (vẫn gán nhãn) | — phiên kết thúc khi đoạn đó đóng |
+
+Hệ quả: đoạn bọc chỗ kết thúc video đơn đi luôn giữ hạn lưu dài của luồng đóng hàng, không bao giờ bị xoá sau 7 ngày chỉ vì có người mở module hoàn giữa chừng. Video kiện hoàn vẫn cắt được từ đoạn đó, vì cắt clip theo **thời gian**, không theo nhãn.
+
+Bật rồi tắt ngay trong cùng một đoạn đóng hàng → phiên kết thúc luôn, không chờ đoạn không thuộc mình.
+
 ## 5. Đường tín hiệu
 
 | Bước | Ai gọi ai | Nội dung |
