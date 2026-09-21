@@ -257,3 +257,100 @@ test("lệnh BẬT giao trễ sau khi phiên đã xong không làm phiên sống
     process.chdir(cwd);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Đợt 6: MỘT agent điều khiển mọi bàn — bàn đóng hàng và bàn nhận hoàn chạy
+// song song, đổi vai giữa chừng (chủ dự án chốt 21/09/2026).
+// ---------------------------------------------------------------------------
+
+/** Nhiều camera trên một agent, mỗi camera cuộn đoạn theo nhịp riêng. */
+class FakeRig {
+  readonly open = new Map<string, number>();
+  private readonly clock = new Map<string, number>();
+  private readonly store: ReturnCaptureStore;
+  /** Nhãn của mọi đoạn đã đóng, theo camera. */
+  readonly closed = new Map<string, Array<string | null>>();
+  constructor(store: ReturnCaptureStore, cams: string[]) {
+    this.store = store;
+    for (const [i, c] of cams.entries()) {
+      this.open.set(c, 1);
+      // Lệch pha: mỗi camera bắt đầu đoạn ở một giây khác nhau.
+      this.clock.set(c, Date.parse("2026-09-21T02:00:00.000Z") + i * 17_000);
+      this.closed.set(c, []);
+    }
+  }
+  has(cam: string) {
+    return this.open.has(cam);
+  }
+  async roll(cam: string) {
+    const label = this.store.labelFor(cam);
+    const t = this.clock.get(cam)! + 60_000;
+    this.clock.set(cam, t);
+    await this.store.noteSegmentClosed(cam, new Date(t).toISOString());
+    this.closed.get(cam)!.push(label);
+    this.open.set(cam, this.open.get(cam)! + 1);
+  }
+}
+
+test("một agent, bàn 1-2 đóng hàng, bàn 3-4 nhận hoàn: nhãn đúng từng camera, đổi vai giữa chừng", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "return-capture-hybrid-"));
+  process.chdir(dir);
+  const sent: Array<Record<string, unknown>> = [];
+  let rig: FakeRig | null = null;
+  const store = new ReturnCaptureStore({
+    getBackendUrl: () => "http://unused",
+    agentCode: "AG-KHO",
+    agentSecret: "secret",
+    hasOpenSegment: (cam) => rig?.has(cam) ?? false,
+    send: async (p) => {
+      sent.push(p);
+      return true;
+    },
+  });
+  // Mỗi bàn hai camera (toàn cảnh + góc QR), tất cả trên MỘT agent.
+  const cams = ["b1-toan", "b1-qr", "b2-toan", "b2-qr", "b3-toan", "b3-qr", "b4-toan", "b4-qr"];
+  rig = new FakeRig(store, cams);
+  const cap = (n: number, active: boolean) => ({
+    capture_id: `cap-b${n}`,
+    station_id: `ban-${n}`,
+    camera_ids: [`b${n}-toan`, `b${n}-qr`],
+    active,
+  });
+  try {
+    // Bàn 3, 4 bật nhận hoàn giữa lúc mọi camera đang ghi đoạn đầu.
+    await store.apply(cap(3, true));
+    await store.apply(cap(4, true));
+
+    // Cuộn lệch nhịp: mỗi camera đóng 2 đoạn, xen kẽ nhau.
+    for (let round = 0; round < 2; round++) {
+      for (const c of cams) await rig.roll(c);
+    }
+    // Bàn 1, 2 đóng hàng: không đoạn nào mang nhãn.
+    for (const c of ["b1-toan", "b1-qr", "b2-toan", "b2-qr"]) {
+      assert.deepEqual(rig.closed.get(c), [null, null], `${c} là camera bàn đóng hàng`);
+    }
+    // Bàn 3, 4: đoạn đầu (đang ghi dở lúc bật) vẫn của đóng hàng, đoạn sau của phiên hoàn.
+    assert.deepEqual(rig.closed.get("b3-toan"), [null, "cap-b3"]);
+    assert.deepEqual(rig.closed.get("b3-qr"), [null, "cap-b3"]);
+    assert.deepEqual(rig.closed.get("b4-toan"), [null, "cap-b4"]);
+    assert.deepEqual(rig.closed.get("b4-qr"), [null, "cap-b4"], "không lẫn nhãn giữa bàn 3 và bàn 4");
+
+    // Đổi vai giữa chừng: bàn 4 về đóng hàng, bàn 1 sang nhận hoàn.
+    await store.apply(cap(4, false));
+    await store.apply(cap(1, true));
+    for (const c of cams) await rig.roll(c);
+    for (const c of cams) await rig.roll(c);
+
+    assert.deepEqual(rig.closed.get("b4-toan")!.slice(2), ["cap-b4", null], "đoạn dở lúc thoát của bàn 4 vẫn là hoàn");
+    assert.deepEqual(rig.closed.get("b1-toan")!.slice(2), [null, "cap-b1"], "đoạn dở lúc vào của bàn 1 vẫn là đóng hàng");
+    assert.deepEqual(rig.closed.get("b3-qr")!.slice(2), ["cap-b3", "cap-b3"], "bàn 3 không bị ảnh hưởng");
+    assert.deepEqual(rig.closed.get("b2-qr")!.slice(2), [null, null], "bàn 2 không bị ảnh hưởng");
+
+    // Phiên bàn 4 kết thúc đúng một lần, SAU khi cả hai camera của nó lưu xong đoạn cuối.
+    const finish = sent.filter((p) => p.action === "finish");
+    assert.equal(finish.length, 1);
+    assert.equal(finish[0].capture_id, "cap-b4");
+  } finally {
+    process.chdir(cwd);
+  }
+});

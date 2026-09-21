@@ -239,3 +239,76 @@ export async function readCaptureStatus(params: {
     captureEndedAt: row.capture_ended_at,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Nhiều bàn song song (đợt 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Người giữ phiên từ giao diện: `module:<user_id>:<tab_id>`.
+ *
+ * Theo TAB chứ không theo tài khoản: kho hay dùng chung một tài khoản cho
+ * mọi máy ở bàn. Giữ theo tài khoản thì máy này thoát là tắt luôn phiên mà
+ * máy khác đang giữ ở cùng bàn. `tab_id` do trình duyệt sinh ngẫu nhiên và
+ * chỉ là phần đuôi — phần `user_id` luôn lấy từ phiên đăng nhập ở server,
+ * nên không ai giả được người giữ phiên của người khác.
+ *
+ * Không có tab_id (giao diện cũ) thì về dạng `module:<user_id>` như đợt 5.
+ */
+const TAB_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
+
+export function moduleHolder(userId: string, tabId: unknown): string {
+  return typeof tabId === "string" && TAB_ID_RE.test(tabId)
+    ? `module:${userId}:${tabId}`
+    : `module:${userId}`;
+}
+
+export interface StationCaptureStatus {
+  stationId: string;
+  state: CaptureState;
+  holders: string[];
+  agentAcked: boolean;
+  /** Kỳ còn mở (chưa ai nhả hết). Phiên đang rút thì kỳ đã đóng. */
+  open: boolean;
+}
+
+/**
+ * Trạng thái phiên của MỌI bàn trong tổ chức bằng một truy vấn — trang
+ * giám sát cần cả kho cùng lúc, hỏi từng bàn là N request mỗi lần tải.
+ *
+ * Mỗi bàn lấy kỳ NHẬN HOÀN mới nhất còn liên quan: đang mở, hoặc đang rút.
+ * Bàn không có gì liên quan thì không có mặt trong kết quả (= chưa nhận hoàn).
+ */
+export async function readCaptureStatuses(params: {
+  admin: SupabaseClient;
+  organizationId: string;
+}): Promise<Map<string, StationCaptureStatus>> {
+  const { data, error } = await params.admin
+    .from("station_mode_periods")
+    .select("station_id, capture_state, holders, agent_acked_at, ended_at, started_at")
+    .eq("organization_id", params.organizationId)
+    .eq("mode", "return")
+    .or("ended_at.is.null,capture_state.eq.draining")
+    .order("started_at", { ascending: false });
+  if (error) throw new Error(`readCaptureStatuses: ${error.message}`);
+
+  const out = new Map<string, StationCaptureStatus>();
+  for (const row of (data ?? []) as Array<{
+    station_id: string;
+    capture_state: CaptureState;
+    holders: string[] | null;
+    agent_acked_at: string | null;
+    ended_at: string | null;
+  }>) {
+    // Đã có kỳ mới hơn của bàn này thì bỏ kỳ cũ.
+    if (out.has(row.station_id)) continue;
+    out.set(row.station_id, {
+      stationId: row.station_id,
+      state: row.capture_state,
+      holders: row.ended_at === null ? (row.holders ?? []) : [],
+      agentAcked: row.agent_acked_at !== null,
+      open: row.ended_at === null,
+    });
+  }
+  return out;
+}

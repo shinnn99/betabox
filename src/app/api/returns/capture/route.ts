@@ -3,136 +3,195 @@ import type { NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isError, requirePermission } from "@/lib/supabase/guard";
 import {
+  moduleHolder,
   openReturnCapture,
-  readCaptureStatus,
+  readCaptureStatuses,
   releaseReturnCapture,
   touchReturnCapture,
+  type StationCaptureStatus,
 } from "@/lib/station/return-capture";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Tín hiệu bật/tắt phiên ghi hoàn từ trang Hàng hoàn.
+ * Tín hiệu bật/tắt phiên nhận hoàn từ phân hệ Hàng hoàn.
  *
  * Ba hành động, cùng một đường:
- *   open      — người dùng chọn bàn và bắt đầu nhận hoàn;
- *   heartbeat — nhịp 30 giây, để cloud biết trình duyệt còn sống;
- *   close     — rời trang (kể cả sendBeacon lúc đóng tab).
+ *   open      — bắt đầu nhận hoàn ở một hoặc nhiều bàn;
+ *   heartbeat — nhịp 30 giây cho MỌI bàn tab này đang giữ, một request;
+ *   close     — thôi nhận hoàn (kể cả sendBeacon lúc rời phân hệ).
  *
- * Người giữ phiên là `module:<user_id>` chứ không phải theo tab: hai tab
- * của cùng một người là một nguồn, đóng tab này không cắt ngang tab kia.
+ * Đợt 6 (21/09/2026): mọi bàn nhận hoàn song song. Một lượt nhận nhiều bàn
+ * (`station_ids`) để một màn hình bật được cả kho, và người giữ phiên tính
+ * theo TAB (`tab_id`) để nhiều máy dùng chung tài khoản không tắt phiên của
+ * nhau. Xem moduleHolder() ở src/lib/station/return-capture.ts.
  *
- * Kế hoạch: plans/active/HOAN-HANG-phien-ghi-theo-module.md
+ * Mỗi bàn xử lý riêng và báo kết quả riêng: một bàn lỗi (bàn không có
+ * camera, bàn vừa bị đổi) không được làm hỏng các bàn còn lại.
+ *
+ * Kế hoạch: plans/active/HOAN-HANG-song-song-moi-ban.md
  */
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+/** Trần số bàn mỗi lượt — đủ cho một kho, chặn request vô lý. */
+const MAX_STATIONS = 50;
+
 type Action = "open" | "heartbeat" | "close";
+
+interface StationResult {
+  station_id: string;
+  ok: boolean;
+  error?: string;
+  capture_id?: string | null;
+  camera_count?: number;
+  agent_notified?: boolean;
+  still_held?: boolean;
+}
+
+function statusView(status: StationCaptureStatus | undefined, holder: string) {
+  return {
+    state: status?.state ?? "none",
+    held_by_me: Boolean(status?.open && status.holders.includes(holder)),
+    holder_count: status?.open ? status.holders.length : 0,
+    agent_acked: status?.agentAcked ?? false,
+  };
+}
 
 export async function POST(req: NextRequest) {
   const ctx = await requirePermission("order_proof.view");
   if (isError(ctx)) return ctx;
 
-  let body: { station_id?: unknown; action?: unknown };
+  let body: { station_id?: unknown; station_ids?: unknown; action?: unknown; tab_id?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
-    // sendBeacon gửi Blob; nếu không parse được thì coi như body rỗng.
     return NextResponse.json({ error: "invalid_body" }, { status: 400 });
   }
 
-  const stationId = typeof body.station_id === "string" ? body.station_id.trim() : "";
-  if (!UUID_RE.test(stationId)) {
-    return NextResponse.json({ error: "station_id_invalid" }, { status: 400 });
-  }
   const action = body.action as Action;
   if (action !== "open" && action !== "heartbeat" && action !== "close") {
     return NextResponse.json({ error: "action_invalid" }, { status: 400 });
   }
 
+  const requested = Array.isArray(body.station_ids)
+    ? body.station_ids
+    : body.station_id !== undefined
+      ? [body.station_id]
+      : [];
+  const stationIds = Array.from(
+    new Set(
+      requested.filter((v): v is string => typeof v === "string" && UUID_RE.test(v.trim())).map((v) => v.trim()),
+    ),
+  );
+  if (stationIds.length === 0) {
+    return NextResponse.json({ error: "station_id_invalid" }, { status: 400 });
+  }
+  if (stationIds.length > MAX_STATIONS) {
+    return NextResponse.json({ error: "too_many_stations", max: MAX_STATIONS }, { status: 400 });
+  }
+
   const admin = createAdminClient();
 
   // Bàn phải thuộc tổ chức của người gọi. Không tin station_id từ body.
-  const { data: station, error: stationErr } = await admin
+  const { data: owned, error: ownedErr } = await admin
     .from("packing_stations")
-    .select("id, code, name, organization_id")
-    .eq("id", stationId)
-    .maybeSingle();
-  if (stationErr) {
+    .select("id")
+    .eq("organization_id", ctx.organizationId)
+    .in("id", stationIds);
+  if (ownedErr) {
     return NextResponse.json({ error: "station_lookup_failed" }, { status: 500 });
   }
-  if (!station || station.organization_id !== ctx.organizationId) {
-    return NextResponse.json({ error: "station_not_found" }, { status: 404 });
+  const ownedIds = new Set((owned ?? []).map((s) => s.id as string));
+
+  const holder = moduleHolder(ctx.userId, body.tab_id);
+
+  // Mỗi bàn chạy riêng, song song. Khoá ở database là theo TỪNG BÀN nên
+  // các bàn không chờ nhau.
+  const results: StationResult[] = await Promise.all(
+    stationIds.map(async (stationId): Promise<StationResult> => {
+      if (!ownedIds.has(stationId)) {
+        return { station_id: stationId, ok: false, error: "station_not_found" };
+      }
+      try {
+        if (action === "open") {
+          const r = await openReturnCapture({
+            admin,
+            organizationId: ctx.organizationId,
+            stationId,
+            holder,
+          });
+          return {
+            station_id: stationId,
+            ok: r.captureId !== null,
+            capture_id: r.captureId,
+            camera_count: r.cameraIds.length,
+            agent_notified: r.agentNotified,
+          };
+        }
+        if (action === "heartbeat") {
+          const captureId = await touchReturnCapture({ admin, stationId, holder });
+          // null = phiên đã đóng ở nơi khác (thẻ ĐÓNG HÀNG, đóng ca, hết
+          // nhịp). Giao diện phải mở lại chứ không gia hạn ngầm.
+          return { station_id: stationId, ok: captureId !== null, capture_id: captureId };
+        }
+        const r = await releaseReturnCapture({
+          admin,
+          organizationId: ctx.organizationId,
+          stationId,
+          holder,
+          reason: "module_exit",
+        });
+        return { station_id: stationId, ok: true, capture_id: r.captureId, still_held: r.stillHeld };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[returns/capture] ${action} lỗi station=${stationId}: ${message}`);
+        return { station_id: stationId, ok: false, error: message };
+      }
+    }),
+  );
+
+  const statuses = await readCaptureStatuses({ admin, organizationId: ctx.organizationId });
+  const withStatus = results.map((r) => ({ ...r, ...statusView(statuses.get(r.station_id), holder) }));
+
+  // Tương thích giao diện cũ gửi một station_id: trả phẳng như đợt 5.
+  if (!Array.isArray(body.station_ids) && withStatus.length === 1) {
+    const one = withStatus[0];
+    if (!one.ok && one.error && action !== "heartbeat") {
+      const status = one.error === "station_not_found" ? 404 : 500;
+      return NextResponse.json({ error: one.error === "station_not_found" ? one.error : "capture_failed", message: one.error }, { status });
+    }
+    return NextResponse.json({ ...one, ok: one.ok });
   }
 
-  const holder = `module:${ctx.userId}`;
-
-  try {
-    if (action === "open") {
-      const result = await openReturnCapture({
-        admin,
-        organizationId: ctx.organizationId,
-        stationId,
-        holder,
-      });
-      const status = await readCaptureStatus({ admin, stationId });
-      return NextResponse.json({
-        ok: true,
-        capture_id: result.captureId,
-        camera_count: result.cameraIds.length,
-        agent_notified: result.agentNotified,
-        state: status?.state ?? "none",
-        agent_acked: status?.agentAcked ?? false,
-      });
-    }
-
-    if (action === "heartbeat") {
-      const captureId = await touchReturnCapture({ admin, stationId, holder });
-      const status = await readCaptureStatus({ admin, stationId });
-      return NextResponse.json({
-        ok: captureId !== null,
-        // null = phiên đã đóng ở nơi khác (thẻ ĐÓNG HÀNG, đóng ca, hết
-        // nhịp). Giao diện phải mở lại chứ không gia hạn ngầm.
-        capture_id: captureId,
-        state: status?.state ?? "none",
-        agent_acked: status?.agentAcked ?? false,
-      });
-    }
-
-    const released = await releaseReturnCapture({
-      admin,
-      organizationId: ctx.organizationId,
-      stationId,
-      holder,
-      reason: "module_exit",
-    });
-    const status = await readCaptureStatus({ admin, stationId });
-    return NextResponse.json({
-      ok: true,
-      capture_id: released.captureId,
-      still_held: released.stillHeld,
-      state: status?.state ?? "none",
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[returns/capture] ${action} lỗi station=${stationId}: ${message}`);
-    return NextResponse.json({ error: "capture_failed", message }, { status: 500 });
-  }
+  return NextResponse.json({ ok: withStatus.every((r) => r.ok), results: withStatus });
 }
 
-/** Trạng thái phiên của một bàn — giao diện hỏi lúc tải trang. */
+/**
+ * Không nêu bàn: danh sách bàn KÈM trạng thái phiên của từng bàn — trang
+ * giám sát cần cả kho trong một lần hỏi. Nêu `station_id`: trạng thái một bàn.
+ *
+ * Trả danh sách bàn ở đây chứ không bắt trang gọi /api/packing-stations:
+ * quyền của hai trang khác nhau, người xem hàng hoàn không nhất thiết có
+ * quyền xem thiết bị kho.
+ */
 export async function GET(req: NextRequest) {
   const ctx = await requirePermission("order_proof.view");
   if (isError(ctx)) return ctx;
 
   const admin = createAdminClient();
   const stationId = req.nextUrl.searchParams.get("station_id") ?? "";
+  const holder = moduleHolder(ctx.userId, req.nextUrl.searchParams.get("tab_id"));
 
-  // Không nêu bàn = hỏi danh sách bàn để chọn. Trả ở đây chứ không bắt
-  // trang Hàng hoàn gọi /api/packing-stations: quyền của hai trang khác
-  // nhau, người xem hàng hoàn không nhất thiết có quyền xem thiết bị kho.
+  let statuses: Map<string, StationCaptureStatus>;
+  try {
+    statuses = await readCaptureStatuses({ admin, organizationId: ctx.organizationId });
+  } catch {
+    return NextResponse.json({ error: "status_failed" }, { status: 500 });
+  }
+
   if (!stationId) {
     const { data: stations, error } = await admin
       .from("packing_stations")
@@ -143,13 +202,18 @@ export async function GET(req: NextRequest) {
     if (error) {
       return NextResponse.json({ error: "stations_failed" }, { status: 500 });
     }
-    return NextResponse.json({ ok: true, stations: stations ?? [] });
+    return NextResponse.json({
+      ok: true,
+      stations: (stations ?? []).map((s) => ({
+        ...s,
+        capture: statusView(statuses.get(s.id as string), holder),
+      })),
+    });
   }
 
   if (!UUID_RE.test(stationId)) {
     return NextResponse.json({ error: "station_id_invalid" }, { status: 400 });
   }
-
   const { data: station } = await admin
     .from("packing_stations")
     .select("id, organization_id")
@@ -159,15 +223,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "station_not_found" }, { status: 404 });
   }
 
-  const status = await readCaptureStatus({ admin, stationId });
-  const holder = `module:${ctx.userId}`;
-  return NextResponse.json({
-    ok: true,
-    state: status?.state ?? "none",
-    capture_id: status?.captureId ?? null,
-    // Kỳ đã đóng thì dù state là gì cũng không còn giữ.
-    held_by_me: status !== null && status.endedAt === null && status.holders.includes(holder),
-    holder_count: status?.endedAt === null ? (status?.holders.length ?? 0) : 0,
-    agent_acked: status?.agentAcked ?? false,
-  });
+  return NextResponse.json({ ok: true, ...statusView(statuses.get(stationId), holder) });
 }

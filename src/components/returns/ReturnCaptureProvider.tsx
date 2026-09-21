@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -12,50 +13,55 @@ import {
 import { useToast } from "@/components/ui/Toast";
 
 /**
- * Giữ phiên nhận hoàn cho CẢ phân hệ hoàn hàng.
+ * Giữ phiên nhận hoàn cho CẢ phân hệ hoàn hàng — nhiều bàn cùng lúc.
  *
  * Đặt ở layout của route group `(return-module)` — layout của Next.js không
  * bị dựng lại khi chuyển giữa các trang con, nên:
  *   - Giám sát hoàn hàng ⇄ Bằng chứng hoàn hàng: phiên vẫn giữ, nhịp vẫn chạy;
- *   - rời sang trang khác hoặc đóng tab: gửi tín hiệu đóng — đúng nghĩa
- *     "thoát khỏi giao diện hoàn hàng" mà chủ dự án chốt.
+ *   - rời sang trang khác hoặc đóng tab: nhả MỌI bàn tab này đang giữ.
  *
- * Nếu để nhịp trong từng trang thì mỗi lần bấm sang trang hoàn hàng kia là
- * một lần đóng rồi mở phiên — agent nhận TẮT/BẬT liên tục và đoạn video ở
- * giữa bị chia cho hai phiên.
+ * Đợt 6 (21/09/2026): chủ dự án muốn mọi bàn nhận hoàn song song như luồng
+ * đóng hàng. Một tab giữ được nhiều bàn; nhịp 30 giây gửi MỘT request cho
+ * mọi bàn đang giữ thay vì mỗi bàn một request.
  *
- * Kế hoạch: plans/active/HOAN-HANG-phien-ghi-theo-module.md,
- * plans/active/HOAN-HANG-giao-dien-giam-sat-bang-chung.md
+ * Người giữ phiên tính theo TAB (`tabId` sinh mới mỗi lần tải trang): kho
+ * hay dùng chung tài khoản cho mọi máy ở bàn, giữ theo tài khoản thì máy
+ * này thoát là tắt phiên của máy kia. Không lưu tabId vào sessionStorage —
+ * "Nhân bản tab" chép luôn sessionStorage và hai tab sẽ trùng người giữ.
+ *
+ * Kế hoạch: plans/active/HOAN-HANG-song-song-moi-ban.md
  */
 
-const STORAGE_KEY = "betabox.returns.capture-station";
 const HEARTBEAT_MS = 30_000;
-
-export interface StationOption {
-  id: string;
-  code: string;
-  name: string;
-  purpose: string | null;
-}
 
 export type CaptureState = "none" | "active" | "draining" | "finished" | "abandoned";
 
 export interface CaptureView {
   state: CaptureState;
   heldByMe: boolean;
+  /** Số nguồn đang giữ bàn (tab khác, thẻ QR) — kể cả tab này. */
+  holderCount: number;
   agentAcked: boolean;
 }
 
-const IDLE: CaptureView = { state: "none", heldByMe: false, agentAcked: false };
+export interface StationOption {
+  id: string;
+  code: string;
+  name: string;
+  purpose: string | null;
+  capture: CaptureView;
+}
+
+const IDLE: CaptureView = { state: "none", heldByMe: false, holderCount: 0, agentAcked: false };
 
 interface CaptureContextValue {
   stations: StationOption[];
-  stationId: string;
-  setStationId: (id: string) => void;
-  view: CaptureView;
-  busy: boolean;
-  start: () => Promise<void>;
-  stop: () => Promise<void>;
+  /** Bàn tab này đang giữ. */
+  heldIds: string[];
+  /** Bàn đang có thao tác chờ server trả lời. */
+  busyIds: Set<string>;
+  start: (stationIds: string[]) => Promise<void>;
+  stop: (stationIds: string[]) => Promise<void>;
 }
 
 const CaptureContext = createContext<CaptureContextValue | null>(null);
@@ -66,183 +72,195 @@ export function useReturnCapture(): CaptureContextValue {
   return ctx;
 }
 
-async function readStatus(id: string): Promise<CaptureView> {
-  const res = await fetch(`/api/returns/capture?station_id=${id}`, { cache: "no-store" });
-  if (!res.ok) return IDLE;
-  const body = (await res.json()) as {
-    state?: CaptureState;
-    held_by_me?: boolean;
-    agent_acked?: boolean;
-  };
+interface RawCapture {
+  state?: CaptureState;
+  held_by_me?: boolean;
+  holder_count?: number;
+  agent_acked?: boolean;
+}
+
+function toView(raw: RawCapture | undefined): CaptureView {
+  if (!raw) return IDLE;
   return {
-    state: body.state ?? "none",
-    heldByMe: Boolean(body.held_by_me),
-    agentAcked: Boolean(body.agent_acked),
+    state: raw.state ?? "none",
+    heldByMe: Boolean(raw.held_by_me),
+    holderCount: raw.holder_count ?? 0,
+    agentAcked: Boolean(raw.agent_acked),
   };
+}
+
+function newTabId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
 export default function ReturnCaptureProvider({ children }: { children: ReactNode }) {
   const toast = useToast();
+  const [tabId] = useState(newTabId);
   const [stations, setStations] = useState<StationOption[]>([]);
-  const [stationId, setStationId] = useState("");
-  const [view, setView] = useState<CaptureView>(IDLE);
-  const [busy, setBusy] = useState(false);
+  const [busyIds, setBusyIds] = useState<Set<string>>(() => new Set());
+
+  const heldIds = useMemo(
+    () => stations.filter((s) => s.capture.heldByMe).map((s) => s.id),
+    [stations],
+  );
 
   // Tín hiệu đóng lúc rời phân hệ chạy ngoài vòng render nên đọc giá trị
   // mới nhất qua ref. Gán trong effect, không gán khi render.
-  const stationRef = useRef("");
-  const heldRef = useRef(false);
+  const heldRef = useRef<string[]>([]);
   useEffect(() => {
-    stationRef.current = stationId;
-    heldRef.current = view.heldByMe;
-  }, [stationId, view.heldByMe]);
+    heldRef.current = heldIds;
+  }, [heldIds]);
+
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/returns/capture?tab_id=${encodeURIComponent(tabId)}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const body = (await res.json()) as {
+        stations?: Array<{ id: string; code: string; name: string; purpose: string | null; capture?: RawCapture }>;
+      };
+      setStations(
+        (body.stations ?? []).map((s) => ({
+          id: s.id,
+          code: s.code,
+          name: s.name,
+          purpose: s.purpose,
+          capture: toView(s.capture),
+        })),
+      );
+    } catch {
+      // Mất mạng: giữ nguyên màn hình. Cloud tự nhả sau 2 phút.
+    }
+  }, [tabId]);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      try {
-        const res = await fetch("/api/returns/capture", { cache: "no-store" });
-        if (!res.ok) return;
-        const body = (await res.json()) as { stations?: StationOption[] };
-        if (cancelled) return;
-        const list = body.stations ?? [];
-        setStations(list);
-        const saved = window.localStorage.getItem(STORAGE_KEY) ?? "";
-        const pick =
-          list.find((s) => s.id === saved)?.id ??
-          list.find((s) => s.purpose === "return")?.id ??
-          "";
-        if (pick) setStationId(pick);
-      } catch {
-        // Không tải được danh sách bàn thì chỉ mất nút bật, không chặn trang.
-      }
+      if (!cancelled) await refresh();
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refresh]);
 
+  // Nhịp: gia hạn mọi bàn đang giữ trong MỘT request, rồi đọc lại trạng thái
+  // cả kho (thấy được bàn do tab khác hay thẻ QR bật).
   useEffect(() => {
-    if (!stationId) return;
-    window.localStorage.setItem(STORAGE_KEY, stationId);
-    let cancelled = false;
-    void (async () => {
-      const status = await readStatus(stationId);
-      if (!cancelled) setView(status);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [stationId]);
-
-  // Nhịp giữ phiên. Chỉ chạy khi CHÍNH mình đang giữ.
-  useEffect(() => {
-    if (!view.heldByMe || !stationId) return;
     const timer = setInterval(() => {
       void (async () => {
-        try {
-          const res = await fetch("/api/returns/capture", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ station_id: stationId, action: "heartbeat" }),
-          });
-          const body = (await res.json()) as {
-            ok?: boolean;
-            state?: CaptureState;
-            agent_acked?: boolean;
-          };
-          setView({
-            state: body.state ?? "none",
-            // ok=false nghĩa là phiên đã đóng ở nơi khác (thẻ ĐÓNG HÀNG,
-            // đóng ca). Bỏ nhận giữ ngay để người dùng thấy đúng sự thật.
-            heldByMe: Boolean(body.ok),
-            agentAcked: Boolean(body.agent_acked),
-          });
-        } catch {
-          // Mất mạng: giữ nguyên màn hình. Cloud tự nhả sau 2 phút.
+        const held = heldRef.current;
+        if (held.length > 0) {
+          try {
+            await fetch("/api/returns/capture", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ station_ids: held, action: "heartbeat", tab_id: tabId }),
+            });
+          } catch {
+            // Mất mạng: thử lại nhịp sau. Cloud tự nhả sau 2 phút.
+          }
         }
+        await refresh();
       })();
     }, HEARTBEAT_MS);
     return () => clearInterval(timer);
-  }, [view.heldByMe, stationId]);
+  }, [refresh, tabId]);
 
-  // Rời phân hệ / đóng tab: gửi tín hiệu đóng. sendBeacon vì fetch thường
-  // bị huỷ khi trang unload.
+  // Rời phân hệ / đóng tab: nhả mọi bàn đang giữ bằng MỘT tín hiệu.
+  // sendBeacon vì fetch thường bị huỷ khi trang unload.
   useEffect(() => {
     const closeBeacon = () => {
-      if (!heldRef.current || !stationRef.current) return;
-      const payload = JSON.stringify({ station_id: stationRef.current, action: "close" });
-      navigator.sendBeacon(
-        "/api/returns/capture",
-        new Blob([payload], { type: "application/json" }),
-      );
+      const held = heldRef.current;
+      if (held.length === 0) return;
+      const payload = JSON.stringify({ station_ids: held, action: "close", tab_id: tabId });
+      navigator.sendBeacon("/api/returns/capture", new Blob([payload], { type: "application/json" }));
+      heldRef.current = [];
     };
     window.addEventListener("pagehide", closeBeacon);
     return () => {
       window.removeEventListener("pagehide", closeBeacon);
       closeBeacon();
     };
-  }, []);
+  }, [tabId]);
 
-  const start = useCallback(async () => {
-    if (!stationId) return;
-    setBusy(true);
-    try {
-      const res = await fetch("/api/returns/capture", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ station_id: stationId, action: "open" }),
-      });
-      const body = (await res.json()) as {
-        message?: string;
-        camera_count?: number;
-        agent_notified?: boolean;
-      };
-      if (!res.ok) throw new Error(body.message ?? "Không bật được phiên nhận hoàn.");
-      if ((body.camera_count ?? 0) === 0) {
-        toast.error("Bàn này chưa gắn camera nào — sẽ không có video kiện hoàn.");
-      } else if (!body.agent_notified) {
-        toast.error("Chưa gửi được tín hiệu cho máy chủ kho. Video chưa được đánh dấu.");
-      } else {
-        toast.success("Đã bật nhận hoàn cho bàn này.");
+  const run = useCallback(
+    async (stationIds: string[], action: "open" | "close") => {
+      if (stationIds.length === 0) return;
+      setBusyIds((prev) => new Set([...prev, ...stationIds]));
+      try {
+        const res = await fetch("/api/returns/capture", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ station_ids: stationIds, action, tab_id: tabId }),
+        });
+        const body = (await res.json().catch(() => ({}))) as {
+          message?: string;
+          results?: Array<{
+            station_id: string;
+            ok: boolean;
+            error?: string;
+            camera_count?: number;
+            agent_notified?: boolean;
+            still_held?: boolean;
+          }>;
+        };
+        if (!res.ok || !body.results) {
+          throw new Error(body.message ?? "Máy chủ không phản hồi đúng.");
+        }
+
+        const codeOf = (id: string) => stations.find((s) => s.id === id)?.code ?? id.slice(0, 8);
+        const failed = body.results.filter((r) => !r.ok);
+        const noCamera = body.results.filter((r) => r.ok && action === "open" && (r.camera_count ?? 0) === 0);
+        const notNotified = body.results.filter(
+          (r) => r.ok && action === "open" && (r.camera_count ?? 0) > 0 && !r.agent_notified,
+        );
+        const stillHeld = body.results.filter((r) => r.ok && action === "close" && r.still_held);
+        const okCount = body.results.length - failed.length;
+
+        if (okCount > 0) {
+          toast.success(
+            action === "open"
+              ? `Đã bật nhận hoàn ở ${okCount} bàn.`
+              : `Đã kết thúc nhận hoàn ở ${okCount} bàn. Đoạn video đang ghi dở sẽ được lưu nốt.`,
+          );
+        }
+        if (failed.length > 0) {
+          toast.error(`Không thực hiện được ở ${failed.map((r) => codeOf(r.station_id)).join(", ")}.`);
+        }
+        if (noCamera.length > 0) {
+          toast.error(`${noCamera.map((r) => codeOf(r.station_id)).join(", ")} chưa gắn camera — sẽ không có video kiện hoàn.`);
+        }
+        if (notNotified.length > 0) {
+          toast.error("Chưa gửi được tín hiệu cho máy chủ kho. Video chưa được đánh dấu.");
+        }
+        if (stillHeld.length > 0) {
+          toast.info(
+            `${stillHeld.map((r) => codeOf(r.station_id)).join(", ")} vẫn đang nhận hoàn vì còn nguồn khác giữ (tab khác hoặc thẻ QR).`,
+          );
+        }
+      } catch (err) {
+        toast.error((err as Error).message);
+      } finally {
+        setBusyIds((prev) => {
+          const next = new Set(prev);
+          for (const id of stationIds) next.delete(id);
+          return next;
+        });
+        await refresh();
       }
-      setView(await readStatus(stationId));
-    } catch (err) {
-      toast.error((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }, [stationId, toast]);
-
-  const stop = useCallback(async () => {
-    if (!stationId) return;
-    setBusy(true);
-    try {
-      const res = await fetch("/api/returns/capture", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ station_id: stationId, action: "close" }),
-      });
-      const body = (await res.json()) as { still_held?: boolean; message?: string };
-      if (!res.ok) throw new Error(body.message ?? "Không tắt được phiên nhận hoàn.");
-      toast.success(
-        body.still_held
-          ? "Đã thoát. Bàn vẫn đang nhận hoàn vì còn nguồn khác giữ."
-          : "Đã kết thúc. Đoạn video đang ghi dở sẽ được lưu nốt.",
-      );
-      setView(await readStatus(stationId));
-    } catch (err) {
-      toast.error((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }, [stationId, toast]);
-
-  return (
-    <CaptureContext.Provider
-      value={{ stations, stationId, setStationId, view, busy, start, stop }}
-    >
-      {children}
-    </CaptureContext.Provider>
+    },
+    [refresh, stations, tabId, toast],
   );
+
+  const start = useCallback((ids: string[]) => run(ids, "open"), [run]);
+  const stop = useCallback((ids: string[]) => run(ids, "close"), [run]);
+
+  const value = useMemo(
+    () => ({ stations, heldIds, busyIds, start, stop }),
+    [stations, heldIds, busyIds, start, stop],
+  );
+
+  return <CaptureContext.Provider value={value}>{children}</CaptureContext.Provider>;
 }
