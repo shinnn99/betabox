@@ -22,6 +22,7 @@ import {
   computeRecoveryScanDays,
 } from "./retention-cache";
 import { refreshRetentionPlan, readRetentionPlan } from "./retention-plan";
+import { ReturnCaptureStore } from "./return-capture";
 import { RemoteLogger } from "./remote-logger";
 import { listLocalPorts, postDiscovery, type PortInfo } from "./discovery";
 import {
@@ -351,6 +352,18 @@ async function main(): Promise<void> {
     recoveryScanDays,
     queuePath: resolve(dataDir, "pending-segment-reports.jsonl"),
   });
+
+  // Phiên ghi hoàn: gán nhãn cho đoạn video thuộc luồng hàng hoàn, và giữ
+  // nhãn cho đoạn đang ghi dở tới khi nó đóng hẳn — kể cả khi người dùng
+  // đã thoát giao diện. Không có tín hiệu từ cloud thì không gán gì.
+  const returnCapture = new ReturnCaptureStore({
+    getBackendUrl: () => config.backendUrl,
+    agentCode: config.agentCode,
+    agentSecret: config.agentSecret,
+    hasOpenSegment: (cameraId) => segmentIndex.hasOpenSegment(cameraId),
+  });
+  segmentIndex.setCapture(returnCapture);
+  swallow(returnCapture.load(), "returnCapture.load");
   // 3b-2: 1-in-flight encode gate. Chỉ 1 flag, dùng cho poll body
   // (encoding_busy) + wrap runCutClip. Không có queue local.
   const encodeGate = new EncodeGate();
@@ -680,6 +693,51 @@ async function main(): Promise<void> {
           error: `${outcome.reason} (kind=${outcome.kind}) :: ${outcome.stderrTail.slice(-500)}`,
         });
       }
+      return;
+    }
+
+    if (command.type === "set_return_capture") {
+      const p = command.payload as {
+        capture_id?: string;
+        station_id?: string;
+        camera_ids?: string[];
+        active?: boolean;
+      };
+      if (!p.capture_id || !p.station_id) {
+        await reportCommandResult({
+          backendUrl: config.backendUrl,
+          agentCode: config.agentCode,
+          agentSecret: config.agentSecret,
+          commandId: command.id,
+          status: "failed",
+          error: "set_return_capture payload missing capture_id or station_id",
+        });
+        return;
+      }
+      const active = p.active !== false;
+      console.log(
+        `[COMMAND SET_RETURN_CAPTURE] ${command.id} capture=${p.capture_id} active=${active}`,
+      );
+      await returnCapture.apply({
+        capture_id: p.capture_id,
+        station_id: p.station_id,
+        camera_ids: Array.isArray(p.camera_ids) ? p.camera_ids : [],
+        active,
+      });
+      // Xác nhận TRƯỚC khi báo lệnh xong: cloud dựa vào mốc ack để biết có
+      // gì đáng chờ lúc phiên đóng. Ack hỏng thì cloud coi như agent chưa
+      // biết gì — thà thiếu nhãn còn hơn treo phiên chờ một máy đã tắt.
+      if (active) {
+        await returnCapture.reportAck(p.capture_id);
+      }
+      await reportCommandResult({
+        backendUrl: config.backendUrl,
+        agentCode: config.agentCode,
+        agentSecret: config.agentSecret,
+        commandId: command.id,
+        status: "done",
+        result: { capture_id: p.capture_id, active },
+      });
       return;
     }
 

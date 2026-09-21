@@ -36,6 +36,8 @@ const UUID_RE =
 interface FilePayload {
   camera_id: string;
   session_id: string | null;
+  /** Nhãn phiên ghi hoàn do agent gán (đợt 5). null = đoạn thường. */
+  return_capture_id: string | null;
   file_path: string;
   file_name: string;
   started_at: string;
@@ -117,9 +119,19 @@ function parseBody(raw: unknown): ParseOutcome {
       size = Math.round(s);
     }
 
+    // Nhãn phiên hoàn: agent chỉ gửi khi nó đã nhận tín hiệu module. Sai
+    // định dạng thì BỎ nhãn chứ không từ chối cả lô — mất nhãn chỉ khiến
+    // đoạn video được giữ lâu hơn, còn mất cả lô là mất chỉ mục segment.
+    const captureRaw = x.return_capture_id;
+    const captureId =
+      typeof captureRaw === "string" && UUID_RE.test(captureRaw.trim())
+        ? captureRaw.trim()
+        : null;
+
     out.push({
       camera_id: cameraId,
       session_id: sessionId,
+      return_capture_id: captureId,
       file_path: filePath,
       file_name: fileName,
       started_at: startedAt,
@@ -211,7 +223,7 @@ export async function POST(req: Request) {
   for (const paths of chunk(distinctPaths)) {
     const { data, error: exErr } = await admin
       .from("camera_recording_files")
-      .select("camera_id, file_path, ended_at")
+      .select("camera_id, file_path, ended_at, return_capture_id")
       .eq("organization_id", agent.organization_id)
       .in("file_path", paths);
     if (exErr) {

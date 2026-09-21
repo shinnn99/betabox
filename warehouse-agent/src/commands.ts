@@ -245,6 +245,11 @@ export async function postRecordingStatus(params: {
 export interface SegmentFilePayload {
   camera_id: string;
   session_id: string | null;
+  /**
+   * Phiên ghi hoàn mà đoạn video này thuộc về (đợt 5 hàng hoàn).
+   * Chỉ có giá trị khi agent ĐÃ nhận tín hiệu module từ cloud.
+   */
+  return_capture_id?: string | null;
   file_path: string;
   file_name: string;
   started_at: string;

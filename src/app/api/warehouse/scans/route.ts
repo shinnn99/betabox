@@ -13,6 +13,7 @@ import {
 } from "@/lib/warehouse/staff-qr";
 import { normalizeWaybillCode } from "@/lib/warehouse/normalize-code";
 import { looksLikeControlCard, parseControlCard } from "@/lib/station/control-cards";
+import { openReturnCapture, releaseReturnCapture } from "@/lib/station/return-capture";
 import {
   closeOpenReturnWithResult,
   currentStationMode,
@@ -448,13 +449,35 @@ export async function POST(req: Request) {
         message: "Thẻ điều khiển không đọc được.",
       };
     } else if (card.kind === "mode") {
-      const { error: modeErr } = await admin.rpc("set_station_mode", {
-        p_station_id: resolved.station_id,
-        p_mode: card.mode,
-        p_started_by: "card",
-        p_reason: `card_${card.mode}`,
-        p_at: parsed.scanned_at,
-      });
+      // Thẻ là MỘT NGUỒN giữ phiên ghi hoàn, ngang hàng với người mở trang
+      // Hàng hoàn. Quét thẻ ĐÓNG HÀNG chỉ nhả nguồn 'card'; nếu còn người
+      // đang mở giao diện thì bàn vẫn ở chế độ nhận hoàn.
+      const stationId = resolved.station_id;
+      const modeErr = await (async () => {
+        try {
+          if (card.mode === "return") {
+            await openReturnCapture({
+              admin,
+              organizationId: agent.organization_id,
+              stationId,
+              holder: "card",
+              at: parsed.scanned_at,
+            });
+          } else {
+            await releaseReturnCapture({
+              admin,
+              organizationId: agent.organization_id,
+              stationId,
+              holder: "card",
+              reason: "card_outbound",
+              at: parsed.scanned_at,
+            });
+          }
+          return null;
+        } catch (err) {
+          return { message: err instanceof Error ? err.message : String(err) };
+        }
+      })();
       controlAction = modeErr
         ? { action: "invalid", mode: null, message: `Không đổi được chế độ bàn: ${modeErr.message}` }
         : {

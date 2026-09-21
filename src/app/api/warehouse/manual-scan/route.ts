@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, isError } from "@/lib/supabase/guard";
 import { normalizeWaybillCode } from "@/lib/warehouse/normalize-code";
 import { looksLikeControlCard, parseControlCard } from "@/lib/station/control-cards";
+import { openReturnCapture, releaseReturnCapture } from "@/lib/station/return-capture";
 import {
   closeOpenReturnWithResult,
   currentStationMode,
@@ -171,16 +172,30 @@ export async function POST(req: Request) {
         },
       });
     }
-    const { error: modeErr } = await admin.rpc("set_station_mode", {
-      p_station_id: resolved.station_id,
-      p_mode: controlCard.mode,
-      p_started_by: "card",
-      p_reason: `card_${controlCard.mode}`,
-      p_at: scannedAt,
-    });
-    if (modeErr) {
+    // Cùng đường với route quét của agent: thẻ là một nguồn giữ phiên ghi
+    // hoàn, không phải công tắc duy nhất. Xem return-capture.ts.
+    try {
+      if (controlCard.mode === "return") {
+        await openReturnCapture({
+          admin,
+          organizationId: ctx.organizationId,
+          stationId: resolved.station_id,
+          holder: "card",
+          at: scannedAt,
+        });
+      } else {
+        await releaseReturnCapture({
+          admin,
+          organizationId: ctx.organizationId,
+          stationId: resolved.station_id,
+          holder: "card",
+          reason: "card_outbound",
+          at: scannedAt,
+        });
+      }
+    } catch (err) {
       return NextResponse.json(
-        { error: "set_mode_failed", message: modeErr.message },
+        { error: "set_mode_failed", message: err instanceof Error ? err.message : String(err) },
         { status: 500 },
       );
     }

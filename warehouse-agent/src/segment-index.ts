@@ -37,6 +37,18 @@ export interface CameraInfo {
   sessionId: string | null;
 }
 
+/**
+ * Gán nhãn phiên ghi hoàn cho đoạn video vừa sinh (đợt 5 hàng hoàn).
+ *
+ * Chỉ áp cho đường LIVE (watcher thấy file mới, ffmpeg dừng). Đường quét
+ * lại ổ đĩa lúc khởi động KHÔNG gán: đoạn cũ của hôm kia không thuộc phiên
+ * đang mở hôm nay, gán nhầm là rút hạn lưu của bằng chứng đơn đi.
+ */
+export interface ReturnCaptureLabeller {
+  labelFor(cameraId: string): string | null;
+  noteSegmentClosed(cameraId: string, endedAt: string | null): Promise<void>;
+}
+
 export interface SegmentIndexDeps {
   backendUrl: string;
   agentCode: string;
@@ -45,6 +57,8 @@ export interface SegmentIndexDeps {
   segmentWatchPollMs: number;
   recoveryScanDays: number;
   queuePath: string;
+  /** Không có = agent chưa nhận tín hiệu module nào, không gán nhãn gì. */
+  capture?: ReturnCaptureLabeller;
 }
 
 const FLUSH_INTERVAL_MS = 5000;
@@ -64,6 +78,19 @@ export class SegmentIndex {
       deps.segmentWatchPollMs,
       (event) => this.onOpened(event),
     );
+  }
+
+  /**
+   * Nối phiên ghi hoàn vào sau khi đã dựng xong (phiên cần hỏi ngược lại
+   * tracker xem camera nào còn đoạn dở, nên hai bên phụ thuộc vòng).
+   */
+  setCapture(capture: ReturnCaptureLabeller): void {
+    this.deps.capture = capture;
+  }
+
+  /** Camera này có đoạn video đang ghi dở không. */
+  hasOpenSegment(cameraId: string): boolean {
+    return this.tracker.hasCamera(cameraId);
   }
 
   start(): void {
@@ -94,7 +121,7 @@ export class SegmentIndex {
   async onFfmpegExitedForRespawn(cameraId: string): Promise<void> {
     const payload = await this.tracker.closeCurrent(cameraId);
     if (payload) {
-      await this.sendOrQueue([payload]);
+      await this.sendOrQueue(await this.stamp([payload]));
     }
   }
 
@@ -106,7 +133,7 @@ export class SegmentIndex {
     const payload = await this.tracker.closeCurrent(cameraId);
     this.watcher.unwatchCamera(cameraId);
     if (payload) {
-      await this.sendOrQueue([payload]);
+      await this.sendOrQueue(await this.stamp([payload]));
     }
   }
 
@@ -121,7 +148,7 @@ export class SegmentIndex {
       console.log(
         `[segment-index] rolled camera=${event.cameraCode} file=${path.basename(event.absPath)} (${payloads.length} payload(s))`,
       );
-      await this.sendOrQueue(payloads);
+      await this.sendOrQueue(await this.stamp(payloads));
     } catch (err) {
       console.error(
         `[segment-index] onOpened failed camera=${event.cameraCode}: ${(err as Error).message}`,
@@ -324,6 +351,29 @@ export class SegmentIndex {
   /**
    * Gửi luôn nếu được, còn lỗi/rớt thì queue để flush timer retry.
    */
+  /**
+   * Gắn nhãn phiên hoàn rồi báo cho phiên biết đoạn nào vừa đóng.
+   *
+   * Thứ tự quan trọng: gán nhãn TRƯỚC khi báo đóng. Báo đóng có thể kết
+   * thúc phiên, và sau đó nhãn không còn để gán nữa — chính đoạn cuối
+   * cùng, đoạn quan trọng nhất, sẽ mất nhãn.
+   */
+  private async stamp(payloads: SegmentFilePayload[]): Promise<SegmentFilePayload[]> {
+    const capture = this.deps.capture;
+    if (!capture) return payloads;
+
+    const stamped = payloads.map((p) => ({
+      ...p,
+      return_capture_id: capture.labelFor(p.camera_id) ?? p.return_capture_id ?? null,
+    }));
+    for (const p of stamped) {
+      if (p.ended_at !== null) {
+        await capture.noteSegmentClosed(p.camera_id, p.ended_at);
+      }
+    }
+    return stamped;
+  }
+
   private async sendOrQueue(payloads: SegmentFilePayload[]): Promise<void> {
     if (payloads.length === 0) return;
     const chunks: SegmentFilePayload[][] = [];

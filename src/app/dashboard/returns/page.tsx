@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Loader2, PackageOpen, RefreshCw } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
 import ReturnClipPlayer from "@/components/returns/ReturnClipPlayer";
+import ReturnCapturePanel from "@/components/returns/ReturnCapturePanel";
 
 /**
  * Trang Hàng hoàn.
@@ -159,6 +160,8 @@ export default function ReturnsPage() {
           </button>
         </div>
       </div>
+
+      <ReturnCapturePanel />
 
       {loading ? (
         <div className="flex items-center gap-2 p-10 text-slate-500">

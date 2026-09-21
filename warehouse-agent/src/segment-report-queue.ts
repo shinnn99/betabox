@@ -14,6 +14,7 @@ import {
 export interface SegmentReport {
   camera_id: string;
   session_id: string | null;
+  return_capture_id?: string | null;
   file_path: string;
   file_name: string;
   started_at: string;

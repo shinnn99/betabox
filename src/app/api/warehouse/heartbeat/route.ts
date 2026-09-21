@@ -110,6 +110,10 @@ export async function POST(req: Request) {
     // Hồ sơ kiện hoàn: hết hạn thì tự đóng, còn mở thì xin cắt clip sẵn.
     await admin.rpc("expire_return_claims", { p_organization_id: agent.organization_id });
     await requestClipsForOpenReturnClaims({ admin, organizationId: agent.organization_id });
+    // Phiên ghi hoàn: trình duyệt sập thì không ai gửi tín hiệu đóng, nên
+    // phải có người dọn. Quá 2 phút không nhịp là nhả, quá 15 phút agent
+    // không báo xong là bỏ rơi.
+    await admin.rpc("expire_return_captures", { p_organization_id: agent.organization_id });
   } catch (timeoutError) {
     console.warn(
       `[heartbeat] force-stop đơn quá giờ thất bại agent=${agent.id} message=${(timeoutError as Error).message}`,
