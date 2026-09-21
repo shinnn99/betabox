@@ -1,6 +1,7 @@
 import "server-only";
 import type { createAdminClient } from "@/lib/supabase/admin";
 import { vietnamTodayUtcRange } from "@/lib/warehouse/time-range";
+import type { LiveFlow } from "@/lib/warehouse/live/stations";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
@@ -27,7 +28,11 @@ export interface StaleSessionWarning {
  * không nhân bản logic — hai bản sao của cùng một phép đếm là hai con số
  * chực lệch nhau.
  */
-export async function buildLiveSummary(admin: Admin, orgId: string) {
+export async function buildLiveSummary(
+  admin: Admin,
+  orgId: string,
+  flow: LiveFlow = "outbound",
+) {
   const { startIso, endIso } = vietnamTodayUtcRange();
   const onlineCutoff = new Date(
     Date.now() - AGENT_ONLINE_WINDOW_SECONDS * 1000,
@@ -41,10 +46,10 @@ export async function buildLiveSummary(admin: Admin, orgId: string) {
       .order("code"),
     admin
       .from("packing_events")
-      .select("status, timing_status", { count: "exact" })
+      .select("status, timing_status, inspection_result", { count: "exact" })
       .eq("organization_id", orgId)
-      // Chỉ đơn đi — xem src/lib/warehouse/outbound-only.ts
-      .eq("event_kind", "outbound")
+      // Mỗi màn hình đếm ĐÚNG luồng của nó — xem src/lib/warehouse/outbound-only.ts
+      .eq("event_kind", flow)
       .gte("scanned_at", startIso)
       .lt("scanned_at", endIso),
     admin
@@ -88,6 +93,19 @@ export async function buildLiveSummary(admin: Admin, orgId: string) {
   }
   const totalToday = (packingToday.data ?? []).length;
 
+  if (flow === "return") {
+    return {
+      range: { start: startIso, end: endIso, timezone: "Asia/Ho_Chi_Minh" },
+      agents: agentRows,
+      today: await summarizeReturnsToday(admin, orgId, packingToday.data ?? []),
+      active_sessions: {
+        staff_count: new Set((activeSessions.data ?? []).map((s) => s.staff_id)).size,
+        station_count: new Set((activeSessions.data ?? []).map((s) => s.station_id)).size,
+      },
+      stale_session_warnings: (staleWarnings.data ?? []) as StaleSessionWarning[],
+    };
+  }
+
   return {
     range: { start: startIso, end: endIso, timezone: "Asia/Ho_Chi_Minh" },
     agents: agentRows,
@@ -109,5 +127,51 @@ export async function buildLiveSummary(admin: Admin, orgId: string) {
       ).size,
     },
     stale_session_warnings: (staleWarnings.data ?? []) as StaleSessionWarning[],
+  };
+}
+
+/**
+ * Thẻ số của Giám sát hoàn hàng.
+ *
+ * `open_claims` KHÔNG bó theo hôm nay: hồ sơ sống 7 ngày, và việc cần làm
+ * là mọi hồ sơ chưa khiếu nại, không chỉ hồ sơ mở ra hôm nay.
+ */
+async function summarizeReturnsToday(
+  admin: Admin,
+  orgId: string,
+  rows: Array<{ status: string; timing_status: string | null; inspection_result: string | null }>,
+) {
+  let received = 0;
+  let ok = 0;
+  let problem = 0;
+  let duplicated = 0;
+  let suspect = 0;
+  let open = 0;
+  for (const r of rows) {
+    if (r.status === "duplicated_return") {
+      duplicated += 1;
+      continue;
+    }
+    if (r.status === "return_suspect") suspect += 1;
+    received += 1;
+    if (r.timing_status === "open") open += 1;
+    else if (r.inspection_result === "ok") ok += 1;
+    else if (r.inspection_result) problem += 1;
+  }
+
+  const { count: openClaims } = await admin
+    .from("return_claims")
+    .select("id", { count: "exact", head: true })
+    .eq("organization_id", orgId)
+    .eq("status", "open");
+
+  return {
+    received,
+    ok,
+    problem,
+    duplicated,
+    suspect,
+    open,
+    open_claims: openClaims ?? 0,
   };
 }

@@ -1,0 +1,1876 @@
+"use client";
+
+import type { ComponentType } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  Camera,
+  Circle,
+  Clock,
+  Flag,
+  HardDrive,
+  LayoutGrid,
+  List,
+  Download,
+  FileCheck2,
+  FileX2,
+  Loader2,
+  Package,
+  Play,
+  Plus,
+  RefreshCcw,
+  RotateCw,
+  Search,
+  Timer,
+  User,
+  Video,
+  Warehouse as WarehouseIcon,
+  WifiOff,
+  X,
+} from "lucide-react";
+import DashboardLayout from "@/components/layout/DashboardLayout";
+import DateRangePicker from "@/components/ui/DateRangePicker";
+import { useToast } from "@/components/ui/Toast";
+import { apiFetch } from "@/lib/api-fetch";
+import {
+  useWatchClipState,
+  formatOfflineDuration,
+  type WatchClipState,
+} from "@/lib/watch/use-watch-clip-state";
+
+/**
+ * Bằng chứng hoàn hàng.
+ *
+ * Chủ dự án chốt (21/09/2026): giao diện giống hệt Bằng chứng giao hàng,
+ * chỉ khác chức năng — và là trang RIÊNG. File này được chép nguyên văn từ
+ * src/app/dashboard/videos/page.tsx rồi đổi phần nghiệp vụ; bố cục, bảng,
+ * lưới, modal giữ y hệt. Sửa giao diện trang kia thì nhớ soi lại trang này.
+ *
+ * Khác chức năng:
+ *   - Danh sách kiện hoàn, từ /api/returns/proof/scans.
+ *   - Cột "T/g kiểm hàng" thay "T/g đóng đơn".
+ *   - Nhãn dòng: kết quả kiểm + trạng thái hồ sơ, thay "Đơn lỗi".
+ *   - Hành động hàng loạt: Đã khiếu nại / Không cần, thay Đánh dấu lỗi.
+ *     Kiện hoàn KHÔNG BAO GIỜ được đánh dấu "Đơn lỗi" — dấu đó tính vào báo
+ *     cáo hiệu suất đóng gói của nhân viên.
+ *   - Modal có thêm nút "Xem video lúc gửi đi" để đối chiếu với lúc đóng
+ *     gói — bằng chứng mạnh nhất khi khiếu nại tráo hàng.
+ *
+ * Kế hoạch: plans/active/HOAN-HANG-giao-dien-giam-sat-bang-chung.md
+ *
+ * ── Ghi chú gốc của trang Bằng chứng giao hàng ──
+ *
+ * Lát 3d list migration + UX một-cửa-thật-sự (2026-07-03):
+ *
+ * `/dashboard/videos` từng chạy stack cũ (backend Vercel spawn ffmpeg +
+ * đọc clip_path local). Migration đưa list vào luồng agent-pattern, và
+ * gom mọi thao tác vào modal — không nhảy tab, không link sang trang
+ * khác. Trang `/dashboard/orders/[pe_id]/watch` cũ đã xóa; state machine
+ * 3c/3d chuyển vào hook `useWatchClipState` dùng chung.
+ *
+ * Mọi nút hành động (Xem/Tạo clip/Thử lại/Tạo lại) mở CÙNG một modal,
+ * khác nhau chỉ ở state ban đầu — user không cần nhớ nút nào mở gì.
+ * Modal tự POST /watch, tự poll (2s active / 20s offline), tự xử 8
+ * nhánh state, cleanup timer khi đóng.
+ *
+ * KHÔNG đẻ luồng thứ hai. Modal là NƠI POLL DUY NHẤT (trang detail đã
+ * xóa). Nguyên tắc "một nơi poll" giữ nguyên, chỉ đổi vị trí từ trang
+ * sang modal.
+ */
+
+const AGENT_OFFLINE_THRESHOLD_SECONDS = 30;
+
+interface ClipSummary {
+  id: string;
+  status: "pending" | "ready" | "failed";
+  duration_seconds: number | null;
+  target_duration_seconds: number | null;
+  cut_duration_seconds: number | null;
+  target_started_at: string | null;
+  target_ended_at: string | null;
+  cut_started_at: string | null;
+  cut_ended_at: string | null;
+  clip_size_bytes: number | null;
+  error_message: string | null;
+  generated_at: string | null;
+  transcoded_for_browser: boolean;
+  // 3d migration: tách "clip đã cắt" (status=ready) khỏi "clip xem-ngay-
+  // được" (bucket còn TTL). Nếu bucket_uploaded_at null hoặc quá hạn
+  // → hiện nút [Tạo lại], không [Xem].
+  bucket_path: string | null;
+  bucket_uploaded_at: string | null;
+}
+
+interface ScanRow {
+  id: string;
+  waybill_code: string;
+  scanned_at: string;
+  status: string;
+  assignment_method: string;
+  timing_status: string;
+  work_duration_seconds: number | null;
+  station: { id: string; code: string; name: string } | null;
+  warehouse: { id: string; name: string } | null;
+  staff: { id: string; full_name: string; staff_code: string } | null;
+  camera: { id: string; camera_code: string; name: string } | null;
+  clip: ClipSummary | null;
+  agent_offline_seconds: number;
+  agent_time_drift_seconds: number | null;
+  // Trang này không dùng — kiện hoàn không bao giờ mang dấu "Đơn lỗi".
+  manual_error: boolean;
+  event_kind: "outbound" | "return";
+  /** rts / customer_return / suspect. */
+  return_kind: string | null;
+  /** ok / damaged / missing / swapped / unchecked. null = đang mở. */
+  inspection_result: string | null;
+  close_reason: string | null;
+  /** Lượt đóng gói gửi đi của cùng mã, nếu nối được. */
+  outbound_event_id: string | null;
+  claim: {
+    id: string;
+    status: "open" | "submitted" | "dismissed" | "expired";
+    deadline_at: string;
+    platform_claim_ref: string | null;
+  } | null;
+}
+
+const INSPECTION_LABEL: Record<string, string> = {
+  ok: "Hàng ổn",
+  damaged: "Hỏng",
+  missing: "Thiếu",
+  swapped: "Tráo",
+  unchecked: "Chưa kiểm",
+};
+
+const RETURN_KIND_LABEL: Record<string, string> = {
+  rts: "Giao thất bại",
+  customer_return: "Khách trả",
+  suspect: "Quét ở bàn đóng hàng",
+};
+
+const CLAIM_LABEL: Record<string, string> = {
+  open: "Cần khiếu nại",
+  submitted: "Đã khiếu nại",
+  dismissed: "Không cần",
+  expired: "Hết hạn",
+};
+
+const CLAIM_TONE: Record<string, string> = {
+  open: "text-rose-700 bg-rose-100",
+  submitted: "text-emerald-700 bg-emerald-100",
+  dismissed: "text-slate-600 bg-slate-100",
+  expired: "text-amber-700 bg-amber-100",
+};
+
+/** Kiện có hồ sơ đang chờ khiếu nại — tô nổi như "Đơn lỗi" bên đóng hàng. */
+function needsClaim(scan: ScanRow): boolean {
+  return scan.claim?.status === "open";
+}
+
+function remainingLabel(deadlineIso: string): string {
+  const ms = Date.parse(deadlineIso) - Date.now();
+  if (ms <= 0) return "đã tới hạn";
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours >= 24) return `còn ${Math.floor(hours / 24)} ngày`;
+  if (hours >= 1) return `còn ${hours} giờ`;
+  return `còn ${Math.max(1, Math.floor(ms / 60_000))} phút`;
+}
+
+/** Nhãn kết quả kiểm + hồ sơ — vị trí của badge "Đơn lỗi" bên đóng hàng. */
+function ReturnBadges({ scan, compact }: { scan: ScanRow; compact?: boolean }) {
+  const result = scan.inspection_result;
+  return (
+    <div className={`flex flex-wrap items-center gap-1 ${compact ? "" : "mt-1"} font-sans`}>
+      {result && (
+        <span
+          className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+            result === "ok" ? "text-emerald-700 bg-emerald-100" : "text-rose-700 bg-rose-100"
+          }`}
+        >
+          {INSPECTION_LABEL[result] ?? result}
+        </span>
+      )}
+      {scan.claim && (
+        <span
+          className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded ${CLAIM_TONE[scan.claim.status] ?? ""}`}
+          title={scan.claim.platform_claim_ref ? `Mã khiếu nại: ${scan.claim.platform_claim_ref}` : undefined}
+        >
+          <Flag className="h-2.5 w-2.5" />
+          {CLAIM_LABEL[scan.claim.status] ?? scan.claim.status}
+          {scan.claim.status === "open" ? ` · ${remainingLabel(scan.claim.deadline_at)}` : ""}
+        </span>
+      )}
+    </div>
+  );
+}
+
+const BUCKET_TTL_HOURS = 72;
+const NTP_DRIFT_ALERT_THRESHOLD_SECONDS = 30;
+
+// clipBucketValid — cùng công thức với `clipBucketValid` ở service.ts
+// (bài học nguồn-sự-thật-duy-nhất, nhưng đây là client, không import
+// server-only được). Nếu đổi TTL, đổi CẢ hai chỗ.
+function clipBucketValid(clip: ClipSummary | null): boolean {
+  if (!clip) return false;
+  if (clip.status !== "ready") return false;
+  if (!clip.bucket_path || !clip.bucket_uploaded_at) return false;
+  const uploadedMs = new Date(clip.bucket_uploaded_at).getTime();
+  if (!Number.isFinite(uploadedMs)) return false;
+  const ageMs = Date.now() - uploadedMs;
+  return ageMs < BUCKET_TTL_HOURS * 3600 * 1000;
+}
+
+function formatClockTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString("vi-VN", { hour12: false });
+}
+
+function videoStartFromEnd(
+  endIso: string | null,
+  durationSeconds: number | null,
+): string | null {
+  if (!endIso || durationSeconds == null) return null;
+  const end = new Date(endIso);
+  if (Number.isNaN(end.getTime())) return null;
+  return new Date(end.getTime() - durationSeconds * 1000).toISOString();
+}
+
+function clipDurationTooltip(c: {
+  duration_seconds: number | null;
+  target_duration_seconds: number | null;
+  cut_duration_seconds: number | null;
+}): string {
+  const parts: string[] = [];
+  if (c.duration_seconds != null) parts.push(`Video: ${c.duration_seconds}s`);
+  if (c.target_duration_seconds != null) {
+    parts.push(`Window đơn hàng: ${c.target_duration_seconds}s`);
+  }
+  if (
+    c.cut_duration_seconds != null &&
+    c.target_duration_seconds != null &&
+    c.cut_duration_seconds > c.target_duration_seconds
+  ) {
+    const extra = c.cut_duration_seconds - c.target_duration_seconds;
+    parts.push(`Buffer cắt: +${extra}s để tránh keyframe trim`);
+  }
+  return parts.join("\n");
+}
+
+// formatOfflineDuration import từ @/lib/watch/use-watch-clip-state — dùng
+// chung với modal, đừng chép công thức ra hai chỗ.
+
+type ViewMode = "list" | "grid";
+
+function dayStart(s: string): Date {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, m - 1, d, 0, 0, 0, 0);
+}
+function dayEnd(s: string): Date {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, m - 1, d, 23, 59, 59, 999);
+}
+
+function formatBytes(n: number | null | undefined): string {
+  if (!n) return "—";
+  const mb = n / 1024 / 1024;
+  if (mb < 0.1) return `${(n / 1024).toFixed(0)} KB`;
+  return `${mb.toFixed(2)} MB`;
+}
+
+function formatDuration(sec: number | null | undefined): string {
+  if (sec === null || sec === undefined) return "—";
+  if (sec < 60) return `${sec}s`;
+  return `${Math.floor(sec / 60)}m ${sec % 60}s`;
+}
+
+// Trạng thái clip render theo 5 nhánh — tách bucket-valid khỏi
+// status='ready' để không hứa "Sẵn sàng" cho clip chưa xem-ngay-được.
+type ClipCellState =
+  | "none"           // Không có row clip → nút [Tạo clip]
+  | "processing"     // status='pending' → text "Đang xử lý", nút disabled + link
+  | "failed"         // status='failed' → text lỗi + nút [Thử lại]
+  | "ready_cloud"    // status='ready' + bucket còn TTL → nút [Xem] + [Tạo lại]
+  | "ready_no_cloud"; // status='ready' + bucket null/expired → nút [Tạo lại]
+
+function clipCellState(clip: ClipSummary | null): ClipCellState {
+  if (!clip) return "none";
+  if (clip.status === "pending") return "processing";
+  if (clip.status === "failed") return "failed";
+  if (clipBucketValid(clip)) return "ready_cloud";
+  return "ready_no_cloud";
+}
+
+const PAGE_LIMIT = 50;
+
+export default function ReturnVideosPage() {
+  const toast = useToast();
+
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [waybillSearch, setWaybillSearch] = useState("");
+  const [from, setFrom] = useState<string>("");
+  const [to, setTo] = useState<string>("");
+
+  const [rows, setRows] = useState<ScanRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [offset, setOffset] = useState(0);
+  // Selection cho bulk-mark manual_error. Set các row id đang tick,
+  // reset khi filter/refresh mode "fresh" (danh sách đổi hoàn toàn).
+  // "silent" refresh giữ selection vì id giữ nguyên — nếu row biến
+  // mất khỏi list mới, effect dưới tự dọn id-lạc.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [marking, setMarking] = useState(false);
+  // Modal state: null = đóng. Khi mở, mang cả scan + mode để modal biết
+  // phải render "view" (ready ngay) / "generate" (retry + poll) / "watch"
+  // (poll tiếp).
+  const [openModal, setOpenModal] = useState<{
+    scan: ScanRow;
+    mode: ModalMode;
+  } | null>(null);
+  const openFor = useCallback(
+    (scan: ScanRow) => (mode: ModalMode) => setOpenModal({ scan, mode }),
+    [],
+  );
+
+  const totalClipBytes = useMemo(
+    () =>
+      rows.reduce((sum, r) => sum + (r.clip?.clip_size_bytes ?? 0), 0),
+    [rows],
+  );
+
+  /**
+   * Agent offline duration cho toàn org — 1 agent per org (cọc #6
+   * project_camera_probe_tech_debt_cocs; sẽ đổi per-warehouse khi có
+   * kho thứ 2). Mọi row cùng org chia sẻ 1 số → lấy từ row đầu tiên.
+   * 0 khi không có row (chưa load hoặc list rỗng).
+   */
+  const agentOfflineSeconds = rows[0]?.agent_offline_seconds ?? 0;
+  const isAgentOffline = agentOfflineSeconds > AGENT_OFFLINE_THRESHOLD_SECONDS;
+
+  // NTP drift banner — hiện khi agent lệch giờ > 30s. Không phụ thuộc
+  // offline: agent có thể online nhưng clock sai (Windows Time bị tắt).
+  // Bằng chứng pháp lý cần timestamp burn-in đúng, nên đây là cảnh báo
+  // NẶNG (đỏ) không phải amber như offline.
+  const agentTimeDriftSeconds = rows[0]?.agent_time_drift_seconds ?? null;
+  const isAgentClockDrifted =
+    agentTimeDriftSeconds !== null &&
+    agentTimeDriftSeconds > NTP_DRIFT_ALERT_THRESHOLD_SECONDS;
+
+  const buildQuery = useCallback(
+    (off: number) => {
+      const params = new URLSearchParams();
+      if (from) params.set("from", dayStart(from).toISOString());
+      if (to) params.set("to", dayEnd(to).toISOString());
+      if (waybillSearch.trim()) params.set("waybill_code", waybillSearch.trim());
+      params.set("limit", String(PAGE_LIMIT));
+      params.set("offset", String(off));
+      return params.toString();
+    },
+    [from, to, waybillSearch],
+  );
+
+  /**
+   * load modes:
+   *   - "fresh": load lại trang đầu, hiện spinner. User bấm refresh hoặc
+   *     đổi filter.
+   *   - "more": load thêm trang kế (pagination).
+   *   - "silent": refetch trang đầu KHÔNG hiện spinner (không nháy màn).
+   *     Dùng cho auto-poll 15s + refresh khi modal ready. User không
+   *     thấy loading state — data cập nhật "âm thầm".
+   */
+  const load = useCallback(
+    async (mode: "fresh" | "more" | "silent") => {
+      const off = mode === "more" ? offset : 0;
+      if (mode === "fresh") setLoading(true);
+      else if (mode === "more") setLoadingMore(true);
+
+      const res = await fetch(
+        `/api/returns/proof/scans?${buildQuery(off)}`,
+        { cache: "no-store" },
+      );
+      const data = await res.json();
+      if (mode === "fresh") setLoading(false);
+      else if (mode === "more") setLoadingMore(false);
+
+      if (!res.ok) {
+        // Silent poll không show toast (không phiền user với lỗi mạng
+        // tạm thời — sẽ thử lại tick sau).
+        if (mode !== "silent") {
+          toast.error(data.message ?? data.error ?? "Không tải được danh sách");
+        }
+        return;
+      }
+      const incoming = (data.scans ?? []) as ScanRow[];
+      const more = Boolean(data.has_more);
+      if (mode === "fresh" || mode === "silent") {
+        setRows(incoming);
+        setOffset(incoming.length);
+      } else {
+        setRows((prev) => [...prev, ...incoming]);
+        setOffset((prev) => prev + incoming.length);
+      }
+      setHasMore(more);
+    },
+    [buildQuery, offset, toast],
+  );
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+    void load("fresh");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waybillSearch, from, to]);
+
+  // Dọn id không còn trong list (bị lọc bởi silent refresh) để bulk
+  // bar không đếm "ma". Ref-set để so nhanh.
+  useEffect(() => {
+    if (selectedIds.size === 0) return;
+    const present = new Set(rows.map((r) => r.id));
+    let stale = false;
+    for (const id of selectedIds) {
+      if (!present.has(id)) {
+        stale = true;
+        break;
+      }
+    }
+    if (!stale) return;
+    setSelectedIds((prev) => {
+      const next = new Set<string>();
+      for (const id of prev) if (present.has(id)) next.add(id);
+      return next;
+    });
+  }, [rows, selectedIds]);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAllCurrent = useCallback(() => {
+    setSelectedIds((prev) => {
+      // Nếu đã chọn HẾT rows hiện tại → uncheck. Không nếu chỉ chọn
+      // 1 phần → select-all thêm phần còn thiếu.
+      const allSelected =
+        rows.length > 0 && rows.every((r) => prev.has(r.id));
+      if (allSelected) return new Set();
+      const next = new Set(prev);
+      for (const r of rows) next.add(r.id);
+      return next;
+    });
+  }, [rows]);
+
+  /**
+   * Đổi trạng thái hồ sơ hàng loạt — vị trí của "Đánh dấu lỗi" bên đóng
+   * hàng. Optimistic như bản gốc: đổi ngay trên màn hình, server hỏng thì
+   * trả lại giá trị cũ từng dòng.
+   *
+   * Chỉ dòng có hồ sơ còn sửa được (open / submitted) mới đổi; dòng hàng
+   * ổn không có hồ sơ thì bỏ qua — server trả `updated` là số thật.
+   */
+  const setClaimStatus = useCallback(
+    async (status: "submitted" | "dismissed") => {
+      if (selectedIds.size === 0) return;
+      const ids = Array.from(selectedIds);
+      setMarking(true);
+      const prevMap = new Map<string, ScanRow["claim"]>();
+      for (const r of rows) if (ids.includes(r.id)) prevMap.set(r.id, r.claim);
+      setRows((prev) =>
+        prev.map((r) =>
+          ids.includes(r.id) && r.claim && (r.claim.status === "open" || r.claim.status === "submitted")
+            ? { ...r, claim: { ...r.claim, status } }
+            : r,
+        ),
+      );
+      const revert = () =>
+        setRows((prev) =>
+          prev.map((r) => (prevMap.has(r.id) ? { ...r, claim: prevMap.get(r.id) ?? null } : r)),
+        );
+      try {
+        const res = await apiFetch("/api/returns/claims/bulk", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ event_ids: ids, status }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          revert();
+          toast.error(data.message ?? data.error ?? "Không cập nhật được hồ sơ");
+          return;
+        }
+        const updated = data.updated ?? 0;
+        if (updated === 0) {
+          toast.info("Các kiện đã chọn không có hồ sơ nào cần đổi.");
+        } else {
+          toast.success(
+            status === "submitted"
+              ? `Đã ghi nhận ${updated} hồ sơ đã khiếu nại`
+              : `Đã đánh dấu ${updated} hồ sơ không cần xử lý`,
+          );
+        }
+        setSelectedIds(new Set());
+      } catch (err) {
+        revert();
+        toast.error((err as Error).message);
+      } finally {
+        setMarking(false);
+      }
+    },
+    [selectedIds, rows, toast],
+  );
+
+  /**
+   * Mở video lúc đóng gói gửi đi của cùng mã, ngay trong modal đang mở.
+   * Tra theo mã vận đơn (đường tra cứu chính xác có sẵn) rồi lấy đúng lượt
+   * mà kiện hoàn đã nối tới.
+   */
+  const openOutboundFor = useCallback(
+    async (scan: ScanRow) => {
+      if (!scan.outbound_event_id) return;
+      try {
+        const res = await fetch(
+          `/api/order-proof/scans?waybill_code=${encodeURIComponent(scan.waybill_code)}&exact=1`,
+          { cache: "no-store" },
+        );
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message ?? data.error ?? "Không tải được lượt gửi đi");
+        const outbound = ((data.scans ?? []) as ScanRow[]).find(
+          (r) => r.id === scan.outbound_event_id,
+        );
+        if (!outbound) throw new Error("Không tìm thấy lượt đóng gói gửi đi của mã này.");
+        setOpenModal({
+          scan: outbound,
+          mode: clipCellState(outbound.clip) === "ready_cloud" ? "view" : "generate",
+        });
+      } catch (err) {
+        toast.error((err as Error).message);
+      }
+    },
+    [toast],
+  );
+
+  /**
+   * Auto-poll list mỗi 15s để cập nhật:
+   *   - Kho online lại (badge offline biến mất).
+   *   - Clip vừa cắt/upload xong ở tab khác hoặc từ modal.
+   *   - Trạng thái processing → ready.
+   *
+   * Pause khi tab background (document.hidden) — không cần poll khi
+   * user không nhìn, tiết kiệm request + pin. Khi tab visible lại,
+   * tick NGAY (không chờ 15s).
+   *
+   * Skip khi modal đang mở — modal đã poll /watch riêng, list refetch
+   * cùng lúc gây race React state. Modal close → useEffect ở dưới
+   * refresh ngay nếu ready.
+   */
+  useEffect(() => {
+    if (openModal) return; // Skip khi modal mở
+    if (loading) return; // Skip lần load đầu (đã có fresh load)
+
+    const POLL_INTERVAL_MS = 15_000;
+
+    const tick = () => {
+      if (document.hidden) return;
+      void load("silent");
+    };
+
+    const timer = setInterval(tick, POLL_INTERVAL_MS);
+
+    // Khi tab quay lại visible → tick ngay, reset interval.
+    const onVisibilityChange = () => {
+      if (!document.hidden) {
+        tick();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [openModal, loading, load]);
+
+  /**
+   * Khi modal đóng, refresh ngay nếu clip vừa lên ready (không chờ
+   * poll 15s). Cụ thể: modal state=ready khi close = clip vừa cắt+
+   * upload xong → cell row đang hiện "Chưa có" / "Chưa lên cloud"
+   * cần đổi sang "Sẵn sàng" ngay.
+   *
+   * Tách flag riêng vì onClose callback chạy sau khi modal state đã
+   * mất — không đọc được watch.state ở lúc close. Dùng ref set trong
+   * modal khi state=ready, list đọc khi modal đóng.
+   */
+  const refreshOnModalClose = useCallback(() => {
+    void load("silent");
+  }, [load]);
+
+  return (
+    <DashboardLayout
+      pageTitle="Kho bằng chứng hoàn hàng"
+      pageSubtitle="Tra mã vận đơn để xem video lúc mở kiện hoàn"
+      pageIcon={Video}
+    >
+      <div className="space-y-3">
+        <SearchBar
+          waybillSearch={waybillSearch}
+          setWaybillSearch={setWaybillSearch}
+          from={from}
+          to={to}
+          onDateChange={(f, t) => {
+            setFrom(f);
+            setTo(t);
+          }}
+          viewMode={viewMode}
+          setViewMode={setViewMode}
+          onRefresh={() => load("fresh")}
+        />
+
+        {isAgentClockDrifted && agentTimeDriftSeconds !== null && (
+          <div className="bg-rose-50 border border-rose-200 rounded-2xl px-4 py-3 flex items-start gap-3 text-sm text-rose-900">
+            <AlertTriangle className="h-5 w-5 shrink-0 text-rose-600 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold">
+                Agent kho lệch giờ hệ thống (~{formatOfflineDuration(agentTimeDriftSeconds)})
+              </div>
+              <div className="text-xs text-rose-800 mt-1">
+                Clip bằng chứng có <b>timestamp cháy trên hình</b> — nếu giờ máy kho sai, timestamp clip sẽ sai theo và mất giá trị pháp lý khi tranh chấp.
+              </div>
+              <div className="text-xs text-rose-700 mt-1.5 font-mono bg-rose-100 px-2 py-1 rounded">
+                Chạy trên máy kho (Admin PowerShell):<br/>
+                w32tm /config /manualpeerlist:&quot;pool.ntp.org&quot; /syncfromflags:manual /reliable:yes /update<br/>
+                w32tm /resync
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isAgentOffline && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 flex items-center gap-3 text-sm text-amber-800">
+            <WifiOff className="h-5 w-5 shrink-0 text-amber-600" />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold">
+                Kho đang offline ({formatOfflineDuration(agentOfflineSeconds)})
+              </div>
+              <div className="text-xs text-amber-700 mt-0.5">
+                Agent kho không phản hồi. Clip vẫn xem được nếu đã lên cloud;
+                clip chưa lên cloud sẽ tự cắt+upload khi kho online lại.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {selectedIds.size > 0 && (
+          <BulkActionBar
+            selectedCount={selectedIds.size}
+            openClaimCount={rows.reduce(
+              (n, r) => n + (selectedIds.has(r.id) && needsClaim(r) ? 1 : 0),
+              0,
+            )}
+            marking={marking}
+            onSubmitted={() => void setClaimStatus("submitted")}
+            onDismissed={() => void setClaimStatus("dismissed")}
+            onClear={() => setSelectedIds(new Set())}
+          />
+        )}
+
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm">
+          <div className="px-4 lg:px-5 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
+            <p className="text-sm font-semibold text-slate-800">
+              {loading
+                ? "Đang tải..."
+                : `${rows.length} kiện hoàn${hasMore ? "+" : ""}`}
+            </p>
+            <div className="flex items-center gap-3 text-[11px] text-slate-500">
+              {(from || to) && (
+                <span>
+                  {from || "…"} → {to || "…"}
+                </span>
+              )}
+              {!loading && totalClipBytes > 0 && (
+                <span
+                  className="inline-flex items-center gap-1"
+                  title={
+                    hasMore
+                      ? "Tổng dung lượng của các clip đã tải trên trang. Còn dữ liệu chưa tải — tổng thực tế lớn hơn."
+                      : "Tổng dung lượng của các clip trong danh sách hiện tại."
+                  }
+                >
+                  <HardDrive className="h-3.5 w-3.5 text-slate-400" />
+                  <span className="font-mono text-slate-700">
+                    {formatBytes(totalClipBytes)}
+                    {hasMore ? "+" : ""}
+                  </span>
+                </span>
+              )}
+            </div>
+          </div>
+
+          {viewMode === "list" ? (
+            <ListView
+              loading={loading}
+              rows={rows}
+              openFor={openFor}
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
+              onToggleSelectAll={toggleSelectAllCurrent}
+            />
+          ) : (
+            <GridView
+              loading={loading}
+              rows={rows}
+              openFor={openFor}
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
+            />
+          )}
+
+          {hasMore && !loading && (
+            <div className="border-t border-slate-100 px-4 py-3 text-center">
+              <button
+                onClick={() => load("more")}
+                disabled={loadingMore}
+                className="h-9 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold inline-flex items-center gap-2 disabled:opacity-60"
+              >
+                {loadingMore ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCcw className="h-4 w-4" />
+                )}
+                Tải thêm
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {openModal && (
+        <PlayerModal
+          scan={openModal.scan}
+          mode={openModal.mode}
+          onClose={() => {
+            setOpenModal(null);
+            refreshOnModalClose();
+          }}
+          onOpenOutbound={
+            openModal.scan.event_kind === "return" && openModal.scan.outbound_event_id
+              ? () => void openOutboundFor(openModal.scan)
+              : undefined
+          }
+        />
+      )}
+    </DashboardLayout>
+  );
+}
+
+function SearchBar(props: {
+  waybillSearch: string;
+  setWaybillSearch: (v: string) => void;
+  from: string;
+  to: string;
+  onDateChange: (from: string, to: string) => void;
+  viewMode: ViewMode;
+  setViewMode: (v: ViewMode) => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="bg-white rounded-2xl border border-slate-100 p-3 lg:p-4 shadow-sm">
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1 min-w-0">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
+          <input
+            value={props.waybillSearch}
+            onChange={(e) =>
+              props.setWaybillSearch(e.target.value.toUpperCase())
+            }
+            placeholder="Tìm mã vận đơn..."
+            className="w-full h-9 pl-9 pr-3 rounded-xl border border-slate-200 text-sm font-mono uppercase focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+          />
+        </div>
+
+        <DateRangePicker
+          from={props.from}
+          to={props.to}
+          onChange={({ from, to }) => props.onDateChange(from, to)}
+          placeholder="Tất cả các ngày"
+        />
+
+        <div className="inline-flex items-center rounded-xl border border-slate-200 bg-slate-50 p-0.5">
+          <button
+            onClick={() => props.setViewMode("list")}
+            className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1 text-xs font-semibold transition-colors ${
+              props.viewMode === "list"
+                ? "bg-white text-slate-800 shadow-sm"
+                : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            <List className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Danh sách</span>
+          </button>
+          <button
+            onClick={() => props.setViewMode("grid")}
+            className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1 text-xs font-semibold transition-colors ${
+              props.viewMode === "grid"
+                ? "bg-white text-slate-800 shadow-sm"
+                : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            <LayoutGrid className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Lưới</span>
+          </button>
+        </div>
+
+        <button
+          onClick={props.onRefresh}
+          title="Làm mới"
+          className="h-9 w-9 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center justify-center"
+        >
+          <RefreshCcw className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ListView({
+  loading,
+  rows,
+  openFor,
+  selectedIds,
+  onToggleSelect,
+  onToggleSelectAll,
+}: {
+  loading: boolean;
+  rows: ScanRow[];
+  openFor: (r: ScanRow) => (mode: ModalMode) => void;
+  selectedIds: Set<string>;
+  onToggleSelect: (id: string) => void;
+  onToggleSelectAll: () => void;
+}) {
+  // "select-all" checkbox trạng thái 3 pha: none / partial / all.
+  // Dùng ref để set indeterminate (attribute không expose qua JSX).
+  const allSelected =
+    rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
+  const someSelected =
+    !allSelected && rows.some((r) => selectedIds.has(r.id));
+  const headerCheckboxRef = (el: HTMLInputElement | null) => {
+    if (el) el.indeterminate = someSelected;
+  };
+
+  return (
+    <div>
+      <table className="w-full text-sm border-separate border-spacing-0">
+        <thead>
+          <tr className="bg-slate-50 text-left text-[11px] tracking-wider text-slate-500 sticky top-0 z-10 [&>th:first-child]:rounded-tl-2xl [&>th:last-child]:rounded-tr-2xl [&>th]:border-b [&>th]:border-slate-100">
+            <th className="bg-slate-50 px-3 py-2.5 font-semibold w-10">
+              <input
+                type="checkbox"
+                ref={headerCheckboxRef}
+                checked={allSelected}
+                onChange={onToggleSelectAll}
+                disabled={rows.length === 0}
+                aria-label="Chọn tất cả trên trang"
+                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+              />
+            </th>
+            <th className="bg-slate-50 px-3 py-2.5 font-semibold w-40">Thời gian</th>
+            <th className="bg-slate-50 px-3 py-2.5 font-semibold w-44">Mã vận đơn</th>
+            <th className="bg-slate-50 px-3 py-2.5 font-semibold">Kho · Bàn</th>
+            <th className="bg-slate-50 px-3 py-2.5 font-semibold">Nhân viên</th>
+            <th className="bg-slate-50 px-3 py-2.5 font-semibold">Camera</th>
+            <th className="bg-slate-50 px-3 py-2.5 font-semibold w-28">T/g kiểm hàng</th>
+            <th className="bg-slate-50 px-3 py-2.5 font-semibold">Clip</th>
+            <th className="bg-slate-50 px-3 py-2.5 font-semibold text-right w-1">
+              Hành động
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {loading && (
+            <tr>
+              <td colSpan={9} className="px-3 py-10 text-center text-slate-400">
+                <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
+                Đang tải...
+              </td>
+            </tr>
+          )}
+          {!loading && rows.length === 0 && (
+            <tr>
+              <td
+                colSpan={9}
+                className="px-3 py-12 text-center text-slate-400 text-sm"
+              >
+                Không có kiện hoàn nào khớp bộ lọc.
+              </td>
+            </tr>
+          )}
+          {!loading &&
+            rows.map((r) => (
+              <ScanRowView
+                key={r.id}
+                scan={r}
+                onOpen={openFor(r)}
+                selected={selectedIds.has(r.id)}
+                onToggleSelect={onToggleSelect}
+              />
+            ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function GridView({
+  loading,
+  rows,
+  openFor,
+  selectedIds,
+  onToggleSelect,
+}: {
+  loading: boolean;
+  rows: ScanRow[];
+  openFor: (r: ScanRow) => (mode: ModalMode) => void;
+  selectedIds: Set<string>;
+  onToggleSelect: (id: string) => void;
+}) {
+  if (loading) {
+    return (
+      <div className="px-3 py-16 text-center text-slate-400">
+        <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
+        Đang tải...
+      </div>
+    );
+  }
+  if (rows.length === 0) {
+    return (
+      <div className="px-3 py-16 text-center text-slate-400 text-sm">
+        Không có kiện hoàn nào khớp bộ lọc.
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 p-3">
+      {rows.map((r) => (
+        <ScanCardView
+          key={r.id}
+          scan={r}
+          onOpen={openFor(r)}
+          selected={selectedIds.has(r.id)}
+          onToggleSelect={onToggleSelect}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Badge "Kho offline" per row đã bị xoá 2026-07-03: agent offline là
+// trạng thái TOÀN ORG (1 agent per org, cọc #6). Lặp 34 badge cho 34
+// row = nhiễu thị giác. Thay bằng 1 banner đầu trang (xem JSX chính
+// trong VideosPage) — 1 lần, đủ thông tin, không lặp.
+
+// Render badge + text mô tả cho một trạng thái clip. Không nút — nút do
+// caller quyết theo layout (list/grid).
+function ClipStateCell({ scan }: { scan: ScanRow }) {
+  const clip = scan.clip;
+  const state = clipCellState(clip);
+
+  if (state === "none") {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
+        <Circle className="h-3 w-3" /> Chưa có
+      </span>
+    );
+  }
+  if (state === "processing") {
+    return (
+      <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-blue-50 text-blue-700">
+        Đang xử lý
+      </span>
+    );
+  }
+  if (state === "failed") {
+    // Phân biệt 3 loại failed:
+    //   (a) expired_retention = video đã quá hạn theo cấu hình org. Nghiệp
+    //       vụ, không phải bug. Badge amber "Quá hạn".
+    //   (b) no_segments = THÔNG BÁO ("không có video vào lúc đó"), không
+    //       phải lỗi hệ thống. Camera có thể chưa cắm hoặc window nằm
+    //       ngoài giờ ghi hình. Badge slate, không đỏ.
+    //   (c) Lỗi thật (ffmpeg fail, agent crash, ...) — badge rose, hiện
+    //       error_message.
+    // Detect qua prefix message ổn định từ /watch route.ts.
+    const msg = clip?.error_message ?? "";
+    const isExpiredRetention = msg.startsWith("Video đã quá hạn lưu trữ");
+    const isNoSegments = msg.startsWith("Không có video");
+    if (isExpiredRetention) {
+      return (
+        <>
+          <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-amber-50 text-amber-700">
+            Quá hạn lưu trữ
+          </span>
+          <div className="text-[10px] text-amber-700 mt-0.5 max-w-[180px]" title={msg}>
+            {msg}
+          </div>
+        </>
+      );
+    }
+    if (isNoSegments) {
+      return (
+        <>
+          <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-600">
+            Không có video
+          </span>
+          <div className="text-[10px] text-slate-500 mt-0.5 max-w-[180px]">
+            Camera chưa ghi hình khoảng này.
+          </div>
+        </>
+      );
+    }
+    return (
+      <>
+        <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-rose-50 text-rose-700">
+          Lỗi
+        </span>
+        {clip?.error_message && (
+          <div
+            className="text-[10px] text-rose-700 mt-0.5 max-w-[180px] truncate"
+            title={clip.error_message}
+          >
+            {clip.error_message.split("\n")[0]}
+          </div>
+        )}
+      </>
+    );
+  }
+  if (state === "ready_cloud") {
+    return (
+      <>
+        <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700">
+          Sẵn sàng
+        </span>
+        <div
+          className="text-[10px] text-slate-500 mt-0.5"
+          title={clipDurationTooltip(clip!)}
+        >
+          {formatDuration(clip!.duration_seconds)} ·{" "}
+          {formatBytes(clip!.clip_size_bytes)}
+        </div>
+      </>
+    );
+  }
+  // ready_no_cloud — thiết kế: clip tạo on-demand khi user cần. Row có
+  // status='ready' + bucket null/expired = clip cũ, không phải "phải
+  // đồng bộ". Không dùng badge cảnh báo (amber/AlertTriangle) — chỉ
+  // thông báo trung tính: chưa tạo clip xem, bấm khi cần.
+  return (
+    <>
+      <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-600">
+        Chưa tạo clip
+      </span>
+      <div className="text-[10px] text-slate-500 mt-0.5">
+        Bấm Tạo clip khi cần xem.
+      </div>
+    </>
+  );
+}
+
+/**
+ * Nút hành động — MỌI nút mở CÙNG modal, khác nhau chỉ ở state ban đầu.
+ * Modal tự POST /watch (auto enqueue cut nếu chưa có clip), tự poll đến
+ * ready/terminal. User không nhảy tab, không link — một cửa trong list.
+ *
+ * `mode` truyền vào modal:
+ *   - "view"   : row ready_cloud → mở modal, /watch trả ready ngay → video.
+ *   - "generate": row none/failed/ready_no_cloud → mở modal, /watch enqueue
+ *                 cut → poll preparing → ready.
+ *   - "watch"  : row processing (đang cắt ở tab khác) → mở modal → poll
+ *                 tiếp cho đến ready.
+ * "generate" cần POST /watch/retry TRƯỚC khi tick đầu (xóa row failed +
+ * bucket cũ, không thì reconcile thấy failed → loop). "view"/"watch" chỉ
+ * cần tick /watch bình thường.
+ */
+type ModalMode = "view" | "generate" | "watch";
+
+function ScanActions({
+  scan,
+  onOpen,
+}: {
+  scan: ScanRow;
+  onOpen: (mode: ModalMode) => void;
+}) {
+  const state = clipCellState(scan.clip);
+
+  if (state === "ready_cloud") {
+    return (
+      <div className="inline-flex items-center justify-end gap-1">
+        <button
+          onClick={() => onOpen("view")}
+          className="h-8 px-2.5 rounded-lg bg-violet-50 hover:bg-violet-100 text-violet-700 inline-flex items-center gap-1 text-xs font-semibold"
+        >
+          <Play className="h-3 w-3" /> Xem
+        </button>
+        <button
+          onClick={() => onOpen("generate")}
+          className="h-8 px-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1 text-xs font-semibold"
+          title="Cắt lại clip từ đầu"
+        >
+          <RotateCw className="h-3 w-3" />
+          Tạo lại
+        </button>
+      </div>
+    );
+  }
+
+  if (state === "processing") {
+    return (
+      <button
+        onClick={() => onOpen("watch")}
+        className="h-8 px-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1 text-xs font-semibold"
+        title="Đang cắt, mở modal để theo dõi tiến độ"
+      >
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Đang cắt
+      </button>
+    );
+  }
+
+  // none / failed / ready_no_cloud → 1 nút primary mở modal generate.
+  // Label + icon nhất quán với badge cell:
+  //   none            → "Tạo clip" (Plus)     — chưa từng có clip.
+  //   failed no_segments → "Thử lại" (RotateCw) — user thử lại xem segment
+  //                        có được cắt không (biết đâu agent đã ghi thêm).
+  //   failed khác     → "Thử lại" (RotateCw) — lỗi hệ thống, retry hợp lý.
+  //   ready_no_cloud  → "Tạo clip" (Plus)     — clip cũ, tạo mới on-demand
+  //                     (khớp thiết kế "tạo khi cần xem").
+  const label = state === "failed" ? "Thử lại" : "Tạo clip";
+  const Icon = state === "failed" ? RotateCw : Plus;
+
+  return (
+    <button
+      onClick={() => onOpen("generate")}
+      className="h-8 px-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white inline-flex items-center gap-1 text-xs font-semibold"
+    >
+      <Icon className="h-3 w-3" />
+      {label}
+    </button>
+  );
+}
+
+function ScanRowView({
+  scan,
+  onOpen,
+  selected,
+  onToggleSelect,
+}: {
+  scan: ScanRow;
+  onOpen: (mode: ModalMode) => void;
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
+}) {
+  // Hồ sơ đang chờ khiếu nại tô nền rose nhẹ — cùng cách bên đóng hàng
+  // tô "Đơn lỗi": việc cần làm phải nổi giữa danh sách.
+  const rowClass = needsClaim(scan)
+    ? "bg-rose-50/70 hover:bg-rose-100/60"
+    : "hover:bg-slate-50";
+  return (
+    <tr className={`[&>td]:border-t [&>td]:border-slate-100 align-top ${rowClass}`}>
+      <td className="px-3 py-2.5">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggleSelect(scan.id)}
+          aria-label={`Chọn kiện ${scan.waybill_code}`}
+          className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+        />
+      </td>
+      <td className="px-3 py-2.5 text-xs text-slate-700 whitespace-nowrap">
+        <div className="inline-flex items-center gap-1">
+          <Clock className="h-3 w-3 text-slate-400" />
+          {new Date(scan.scanned_at).toLocaleString("vi-VN")}
+        </div>
+      </td>
+      <td className="px-3 py-2.5 font-mono text-xs font-semibold text-slate-800">
+        {scan.waybill_code}
+        {scan.return_kind && (
+          <div className="text-[10px] text-slate-500 mt-0.5 font-sans font-normal">
+            {RETURN_KIND_LABEL[scan.return_kind] ?? scan.return_kind}
+          </div>
+        )}
+        <ReturnBadges scan={scan} />
+        {scan.timing_status === "open" && (
+          <div className="text-[10px] text-blue-700 mt-1 font-sans">
+            Đang mở kiện
+          </div>
+        )}
+      </td>
+      <td className="px-3 py-2.5 text-xs text-slate-700 whitespace-nowrap">
+        <div className="inline-flex items-center gap-1">
+          <WarehouseIcon className="h-3 w-3 text-slate-400" />
+          {scan.warehouse?.name ?? "—"}
+        </div>
+        <div className="text-[11px] text-slate-500 mt-0.5">
+          {scan.station ? `${scan.station.code} · ${scan.station.name}` : "—"}
+        </div>
+      </td>
+      <td className="px-3 py-2.5 text-xs text-slate-700 whitespace-nowrap">
+        {scan.staff ? (
+          <div className="inline-flex items-center gap-1">
+            <User className="h-3 w-3 text-slate-400" />
+            <span>
+              <span className="font-mono">{scan.staff.staff_code}</span>{" "}
+              <span className="text-slate-500">·</span> {scan.staff.full_name}
+            </span>
+          </div>
+        ) : (
+          <span className="text-slate-400">Không có ca</span>
+        )}
+      </td>
+      <td className="px-3 py-2.5 text-xs text-slate-700">
+        {scan.camera ? (
+          <div className="inline-flex items-center gap-1">
+            <Camera className="h-3 w-3 text-slate-400" />
+            <span className="font-mono">{scan.camera.camera_code}</span>
+          </div>
+        ) : (
+          <span className="text-slate-400">—</span>
+        )}
+      </td>
+      <td className="px-3 py-2.5 text-xs text-slate-700">
+        <div className="inline-flex items-center gap-1">
+          <Timer className="h-3 w-3 text-slate-400" />
+          {formatDuration(scan.work_duration_seconds)}
+        </div>
+      </td>
+      <td className="px-3 py-2.5 whitespace-nowrap">
+        <ClipStateCell scan={scan} />
+      </td>
+      <td className="px-3 py-2.5 text-right whitespace-nowrap">
+        <div className="inline-flex flex-col items-end gap-1">
+          <ScanActions scan={scan} onOpen={onOpen} />
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function ScanCardView({
+  scan,
+  onOpen,
+  selected,
+  onToggleSelect,
+}: {
+  scan: ScanRow;
+  onOpen: (mode: ModalMode) => void;
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
+}) {
+  const clip = scan.clip;
+  const state = clipCellState(clip);
+  const canPlay = state === "ready_cloud";
+
+  return (
+    <div
+      className={`bg-white rounded-lg border shadow-sm overflow-hidden ${
+        needsClaim(scan) ? "border-rose-300 ring-1 ring-rose-200" : "border-slate-200"
+      }`}
+    >
+      <div className="relative">
+        <button
+          type="button"
+          onClick={canPlay ? () => onOpen("view") : undefined}
+          disabled={!canPlay}
+          className={`relative w-full aspect-video bg-slate-900 group ${
+            canPlay ? "cursor-pointer" : "cursor-default"
+          }`}
+        >
+          <div
+            className="absolute inset-0 bg-gradient-to-br from-slate-800 to-black"
+            style={{
+              backgroundImage:
+                "radial-gradient(ellipse at 40% 50%, rgba(16,185,129,0.12) 0%, transparent 60%)",
+            }}
+          />
+          {canPlay && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="h-10 w-10 rounded-full bg-white/15 backdrop-blur-md group-hover:bg-white/25 flex items-center justify-center transition-colors">
+                <Play className="h-4 w-4 text-white translate-x-0.5" />
+              </div>
+            </div>
+          )}
+          {scan.camera && (
+            <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-sm text-white text-[10px] font-mono">
+              {scan.camera.camera_code}
+            </div>
+          )}
+          {canPlay && clip?.duration_seconds != null && (
+            <div
+              className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-sm text-white text-[10px] font-mono inline-flex items-center gap-1"
+              title={clipDurationTooltip(clip)}
+            >
+              <Clock className="h-3 w-3" /> {formatDuration(clip.duration_seconds)}
+            </div>
+          )}
+        </button>
+        {/* Checkbox tách khỏi <button> để tránh interactive-lồng-interactive
+            (button chứa input là a11y invalid, có browser sẽ nuốt click). */}
+        <div className="absolute top-1.5 right-1.5 z-10 inline-flex items-center justify-center h-6 w-6 rounded bg-black/50 backdrop-blur-sm">
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={() => onToggleSelect(scan.id)}
+            aria-label={`Chọn kiện ${scan.waybill_code}`}
+            className="h-3.5 w-3.5 rounded border-white/60 text-emerald-500 focus:ring-emerald-500 cursor-pointer bg-transparent"
+          />
+        </div>
+        {needsClaim(scan) && (
+          <div className="absolute bottom-1.5 left-1.5 z-10 inline-flex items-center gap-1 text-[10px] font-semibold text-white bg-rose-600 px-1.5 py-0.5 rounded shadow">
+            <Flag className="h-2.5 w-2.5" />
+            Cần khiếu nại
+          </div>
+        )}
+      </div>
+      <div className="p-2.5 space-y-1.5">
+        <p className="font-mono text-xs font-semibold text-slate-800 truncate">
+          {scan.waybill_code}
+        </p>
+        <ReturnBadges scan={scan} compact />
+        <div className="flex items-center justify-between text-[10px] text-slate-500">
+          <span>{new Date(scan.scanned_at).toLocaleString("vi-VN")}</span>
+          {canPlay && (
+            <span className="font-mono">{formatBytes(clip!.clip_size_bytes)}</span>
+          )}
+        </div>
+        <div className="text-[10px] text-slate-500 truncate">
+          {scan.warehouse?.name ?? "—"}
+          {scan.station ? ` · ${scan.station.code}` : ""}
+        </div>
+        {scan.staff && (
+          <div className="text-[10px] text-slate-500 truncate inline-flex items-center gap-1">
+            <User className="h-3 w-3 text-slate-400" />
+            {scan.staff.full_name}
+          </div>
+        )}
+        <div className="pt-1">
+          <ScanActions scan={scan} onOpen={onOpen} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Bulk bar hiện khi có ≥1 row được tick — cùng vị trí, cùng dáng với bản
+ * đóng hàng. Hành động chính là "Đã khiếu nại" (primary), phụ là "Không
+ * cần". Không có hồ sơ mở nào trong phần chọn thì vẫn hiện nút: hồ sơ đã
+ * khiếu nại vẫn đổi được sang "Không cần" và ngược lại.
+ *
+ * Đặt sticky top để không bị cuộn khuất khi user chọn giữa list dài.
+ */
+function BulkActionBar({
+  selectedCount,
+  openClaimCount,
+  marking,
+  onSubmitted,
+  onDismissed,
+  onClear,
+}: {
+  selectedCount: number;
+  openClaimCount: number;
+  marking: boolean;
+  onSubmitted: () => void;
+  onDismissed: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="sticky top-2 z-30 bg-white rounded-2xl border border-rose-200 shadow-md px-4 py-2.5 flex items-center gap-3 flex-wrap">
+      <div className="flex items-center gap-2 text-sm text-slate-700 flex-1 min-w-0">
+        <span className="inline-flex items-center justify-center h-6 min-w-[24px] px-1.5 rounded-full bg-emerald-100 text-emerald-700 text-xs font-semibold">
+          {selectedCount}
+        </span>
+        <span>
+          đã chọn
+          {openClaimCount > 0 && (
+            <span className="text-slate-500">
+              {" · "}
+              {openClaimCount} đang chờ khiếu nại
+            </span>
+          )}
+        </span>
+      </div>
+      <button
+        onClick={onSubmitted}
+        disabled={marking}
+        className="h-8 px-3 rounded-lg bg-rose-500 hover:bg-rose-600 text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
+      >
+        {marking ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <FileCheck2 className="h-3 w-3" />
+        )}
+        Đã khiếu nại
+      </button>
+      <button
+        onClick={onDismissed}
+        disabled={marking}
+        className="h-8 px-3 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
+      >
+        {marking ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <FileX2 className="h-3 w-3" />
+        )}
+        Không cần
+      </button>
+      <button
+        onClick={onClear}
+        disabled={marking}
+        className="h-8 px-2 rounded-lg text-slate-500 hover:bg-slate-100 text-xs inline-flex items-center gap-1 disabled:opacity-60"
+        title="Bỏ chọn tất cả"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * PlayerModal: dùng hook `useWatchClipState` — mount → gọi start()/retry()
+ * theo mode → tự POST /watch, tự poll 2s active / 20s offline, tự cleanup
+ * khi đóng. Modal là NƠI POLL DUY NHẤT (trang /watch đã xóa).
+ *
+ * KHÔNG hardcode "mở từ nút Xem nên chắc ready". Data list có thể cũ
+ * (bucket vừa hết TTL giữa lúc load và bấm → race → preparing_upload),
+ * modal phải xử được ca này bằng cách đọc state thật, không giả định.
+ *
+ * `<video>` CHỈ render trong nhánh `ready` + có signed_url. Các nhánh
+ * khác hiện text + nút retry inline (không link đi đâu).
+ *
+ * mode:
+ *   - "view"   : chỉ start(), /watch trả ready ngay → video.
+ *   - "generate": retry() trước (xóa row+bucket cũ) rồi start() ẩn dưới,
+ *                 tick đầu enqueue cut → poll preparing → ready.
+ *   - "watch"  : start(), /watch cho biết đang preparing → poll tiếp.
+ */
+function PlayerModal({
+  scan,
+  mode,
+  onClose,
+  onOpenOutbound,
+}: {
+  scan: ScanRow;
+  mode: ModalMode;
+  onClose: () => void;
+  /** Có khi kiện hoàn nối được với lượt đóng gói gửi đi. */
+  onOpenOutbound?: () => void;
+}) {
+  const isReturn = scan.event_kind === "return";
+  const scannedAt = new Date(scan.scanned_at);
+  const watch = useWatchClipState(scan.id);
+
+  // Kick tick đầu theo mode. Chạy 1 lần khi mount — hook idempotent nếu
+  // gọi start() 2 lần liên tiếp.
+  useEffect(() => {
+    if (mode === "generate") {
+      void watch.retry();
+    } else {
+      watch.start();
+    }
+    // Chỉ chạy khi mount. Đổi mode giữa chừng không xảy ra (modal đóng
+    // rồi mở lại = component mới).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Cleanup: khi user đóng modal → stop poll. Hook đã có cleanup unmount,
+  // đây là gọi tường minh để đảm bảo không có race giữa unmount và tick
+  // đang pending.
+  const handleClose = useCallback(() => {
+    watch.stop();
+    onClose();
+  }, [watch, onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm"
+      onClick={handleClose}
+    >
+      <div
+        className="bg-white rounded-2xl shadow-xl w-full max-w-4xl relative overflow-hidden max-h-[92vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={handleClose}
+          className="absolute top-2 right-2 z-10 h-8 w-8 rounded-lg bg-black/60 hover:bg-black text-white inline-flex items-center justify-center"
+        >
+          <X className="h-4 w-4" />
+        </button>
+
+        <ModalBody watch={watch} />
+
+        {scan.clip?.transcoded_for_browser && (
+          <div className="px-4 pt-2 text-[11px] text-slate-500">
+            Đã chuyển mã sang H.264 để xem được trên trình duyệt.
+          </div>
+        )}
+        <div className="p-4 lg:p-5 overflow-y-auto">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <p className="font-mono text-base font-semibold text-slate-900">
+                {scan.waybill_code}
+              </p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {isReturn ? "Mở kiện hoàn" : "Đóng gói gửi đi"} · {scannedAt.toLocaleString("vi-VN")}
+              </p>
+              {isReturn && <ReturnBadges scan={scan} />}
+            </div>
+            {scan.clip && (
+              <div
+                className="inline-flex items-center gap-1.5 text-[11px] text-slate-600"
+                title={clipDurationTooltip(scan.clip)}
+              >
+                <Clock className="h-3.5 w-3.5 text-slate-400" />
+                <span>{formatDuration(scan.clip.duration_seconds)}</span>
+                <span className="text-slate-300">·</span>
+                <HardDrive className="h-3.5 w-3.5 text-slate-400" />
+                <span className="font-mono">
+                  {formatBytes(scan.clip.clip_size_bytes)}
+                </span>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+            <DetailField
+              icon={WarehouseIcon}
+              label="Kho"
+              value={scan.warehouse?.name ?? "—"}
+            />
+            <DetailField
+              icon={Package}
+              label="Bàn"
+              value={
+                scan.station
+                  ? `${scan.station.code} · ${scan.station.name}`
+                  : "—"
+              }
+            />
+            <DetailField
+              icon={User}
+              label="Nhân viên"
+              value={
+                scan.staff
+                  ? `${scan.staff.staff_code} · ${scan.staff.full_name}`
+                  : "Không có ca"
+              }
+            />
+            <DetailField
+              icon={Camera}
+              label="Camera"
+              value={
+                scan.camera
+                  ? `${scan.camera.camera_code}${
+                      scan.camera.name ? ` · ${scan.camera.name}` : ""
+                    }`
+                  : "—"
+              }
+            />
+            <DetailField
+              icon={Timer}
+              label={isReturn ? "T/g kiểm hàng" : "T/g đóng đơn"}
+              value={formatDuration(scan.work_duration_seconds)}
+            />
+            {isReturn && (
+              <DetailField
+                icon={Package}
+                label="Loại hoàn"
+                value={
+                  scan.return_kind
+                    ? RETURN_KIND_LABEL[scan.return_kind] ?? scan.return_kind
+                    : "—"
+                }
+              />
+            )}
+            {scan.clip?.cut_ended_at && (
+              <DetailField
+                icon={Clock}
+                label="Video bắt đầu"
+                value={formatClockTime(
+                  videoStartFromEnd(
+                    scan.clip.cut_ended_at,
+                    scan.clip.duration_seconds,
+                  ),
+                )}
+              />
+            )}
+            {scan.clip?.cut_ended_at && (
+              <DetailField
+                icon={Clock}
+                label="Video kết thúc"
+                value={formatClockTime(scan.clip.cut_ended_at)}
+              />
+            )}
+          </div>
+
+          {onOpenOutbound && (
+            <button
+              onClick={onOpenOutbound}
+              className="mt-4 h-9 px-3 rounded-xl bg-violet-50 hover:bg-violet-100 text-violet-700 inline-flex items-center gap-1.5 text-xs font-semibold"
+            >
+              <Play className="h-3.5 w-3.5" />
+              Xem video lúc đóng gói gửi đi
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Body của modal — chia theo state hook trả về. `<video>` CHỈ render ở
+ * nhánh ready + có signed_url. Các nhánh khác hiện text + nút retry
+ * inline (không link đi đâu — modal tự retry qua hook).
+ *
+ * Nguyên tắc: KHÔNG hardcode "mở từ [Xem] nên chắc ready" — luôn đọc
+ * state THẬT từ hook. Bắt ca race TTL bucket vừa hết hạn (mở [Xem] →
+ * hook tick /watch → server thấy bucket hết hạn → trả preparing_upload
+ * → modal poll tiếp đến ready thật, không video-đen).
+ */
+function ModalBody({ watch }: { watch: ReturnType<typeof useWatchClipState> }) {
+  // idle = hook chưa tick lần đầu (start()/retry() vừa gọi). Hiển thị
+  // "đang tải trạng thái" ngắn. Sau tick đầu, state chuyển sang một
+  // trong 8 nhánh cụ thể.
+  if (watch.state === "idle") {
+    return (
+      <div className="w-full aspect-video bg-slate-900 flex items-center justify-center">
+        <div className="text-white text-sm inline-flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Đang tải trạng thái...
+        </div>
+      </div>
+    );
+  }
+
+  if (watch.state === "network_error") {
+    return (
+      <MessageBox
+        title="Lỗi tải trạng thái"
+        message={watch.errorMessage ?? "Không rõ lý do"}
+        actionLabel="Thử lại"
+        onAction={watch.retry}
+      />
+    );
+  }
+
+  if (watch.state === "ready" && watch.signedUrl) {
+    // Safe-retry state kép: nếu đang regenerate, hiện badge phía trên
+    // video. Video vẫn phát clip cũ bình thường. Nếu regeneration_error,
+    // hiện cảnh báo cho user biết retry vừa fail nhưng video hiện tại
+    // vẫn được giữ.
+    return (
+      <div className="relative">
+        {watch.regenerating && (
+          <div className="absolute top-2 left-2 right-2 z-10 rounded-lg bg-blue-500/90 text-white text-xs px-3 py-2 inline-flex items-center gap-2 shadow-lg">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span>
+              Đang tạo lại video (
+              {watch.regenerationState === "encoding" ? "cắt" : "tải lên"}
+              )... {watch.elapsedSeconds}s
+            </span>
+          </div>
+        )}
+        {watch.regenerationError && !watch.regenerating && (
+          <div className="absolute top-2 left-2 right-2 z-10 rounded-lg bg-amber-500/90 text-white text-xs px-3 py-2 shadow-lg flex items-start gap-3">
+            <div className="flex-1">
+              <div className="font-semibold mb-0.5">
+                Tạo lại thất bại, video hiện tại vẫn được giữ.
+              </div>
+              <div className="text-white/85">{watch.regenerationError}</div>
+            </div>
+            <button
+              onClick={() => void watch.retry()}
+              className="shrink-0 px-2 py-1 rounded bg-white/20 hover:bg-white/30 text-white text-[11px] font-semibold"
+            >
+              Thử lại
+            </button>
+          </div>
+        )}
+        <video
+          src={watch.signedUrl}
+          controls
+          autoPlay
+          playsInline
+          preload="metadata"
+          className="w-full aspect-video bg-black"
+        />
+        {watch.downloadUrl && (
+          // Link tải riêng, KHÔNG dùng chung URL với <video>: URL tải có
+          // `?download=` nên Storage trả Content-Disposition attachment —
+          // đúng cho nút tải, nhưng không nên áp cho thẻ phát inline.
+          <a
+            href={watch.downloadUrl}
+            className="flex items-center justify-center gap-2 border-t border-slate-800 bg-slate-900 px-4 py-2.5 text-xs font-semibold text-slate-100 hover:bg-slate-800"
+          >
+            <Download className="h-4 w-4" />
+            Tải video{watch.fileName ? ` · ${watch.fileName}` : ""}
+          </a>
+        )}
+      </div>
+    );
+  }
+
+  if (watch.state === "order_open") {
+    // Đơn chưa kết thúc → chưa biết biên clip. Không cắt, không bắt user
+    // bấm gì: hook vẫn poll, đơn đóng xong là tự chuyển sang cắt.
+    const opened = watch.openDurationSeconds;
+    return (
+      <MessageBox
+        title="Đơn đang được đóng gói"
+        message={
+          (opened != null
+            ? `Đơn đã mở ${formatOfflineDuration(opened)}. `
+            : "") +
+          "Clip đầy đủ sẽ có sau khi đơn kết thúc (quét mã đơn kế tiếp hoặc nhân viên ra ca). Cửa sổ này tự cập nhật, không cần đóng."
+        }
+        icon={Package}
+      />
+    );
+  }
+
+  if (watch.state === "preparing_cut") {
+    return (
+      <ProgressBox
+        title="Đang tải clip, vui lòng đợi..."
+        message="Agent kho đang cắt clip từ segment gốc. Thường mất 10–30s."
+        elapsedSeconds={watch.elapsedSeconds}
+      />
+    );
+  }
+
+  if (watch.state === "warehouse_offline") {
+    const dur = watch.offlineDurationSeconds ?? 0;
+    return (
+      <MessageBox
+        title="Kho đang offline"
+        message={`Agent kho không phản hồi ${formatOfflineDuration(dur)}. Đang tự động chờ agent về mạng và thử lại — không cần đóng cửa sổ này.`}
+        icon={WifiOff}
+      />
+    );
+  }
+
+  if (watch.state === "offline_giveup") {
+    const dur = watch.offlineDurationSeconds ?? 0;
+    return (
+      <MessageBox
+        title="Kho offline quá lâu"
+        message={`Agent kho đã offline ${formatOfflineDuration(dur)}. Kiểm tra agent trên máy kho, rồi thử lại.`}
+        actionLabel="Thử lại"
+        onAction={watch.retry}
+        icon={WifiOff}
+      />
+    );
+  }
+
+  if (watch.state === "failed") {
+    return (
+      <MessageBox
+        title="Cắt clip thất bại"
+        message={watch.errorMessage ?? "Không rõ lý do."}
+        actionLabel="Thử lại"
+        onAction={watch.retry}
+        icon={AlertTriangle}
+      />
+    );
+  }
+
+  // Fallback an toàn — không kỳ vọng rơi vào đây (mọi state đã handle).
+  // KHÔNG render <video> khi state không phải ready (ca âm chặn video-đen).
+  return (
+    <MessageBox
+      title="Trạng thái chưa xác định"
+      message="Đóng cửa sổ và mở lại, hoặc bấm Thử lại."
+      actionLabel="Thử lại"
+      onAction={watch.retry}
+    />
+  );
+}
+
+/**
+ * Hộp hiển thị lúc đang chờ (preparing_cut / preparing_upload). Có
+ * elapsed counter + spinner để user thấy hệ đang chạy, không đứng yên.
+ */
+function ProgressBox({
+  title,
+  message,
+  elapsedSeconds,
+}: {
+  title: string;
+  message: string;
+  elapsedSeconds: number;
+}) {
+  return (
+    <div className="w-full aspect-video bg-slate-900 flex flex-col items-center justify-center gap-3 p-6 text-center">
+      <Loader2 className="h-8 w-8 text-emerald-400 animate-spin" />
+      <div className="text-white text-sm font-medium">{title}</div>
+      <div className="text-slate-300 text-xs max-w-md">{message}</div>
+      <div className="text-slate-400 text-[11px] font-mono">
+        Đã chờ {elapsedSeconds}s
+      </div>
+    </div>
+  );
+}
+
+function MessageBox({
+  title,
+  message,
+  actionLabel,
+  onAction,
+  icon: Icon,
+}: {
+  title: string;
+  message: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  icon?: ComponentType<{ className?: string }>;
+}) {
+  return (
+    <div className="w-full aspect-video bg-slate-900 flex flex-col items-center justify-center gap-3 p-6 text-center">
+      {Icon && <Icon className="h-8 w-8 text-slate-300" />}
+      <div className="text-white text-sm font-medium">{title}</div>
+      <div className="text-slate-300 text-xs max-w-md">{message}</div>
+      {actionLabel && onAction && (
+        <button
+          onClick={onAction}
+          className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold"
+        >
+          {actionLabel}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function DetailField({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div>
+      <div className="inline-flex items-center gap-1 text-[11px] text-slate-500">
+        <Icon className="h-3.5 w-3.5 text-slate-400" />
+        {label}
+      </div>
+      <p className="text-xs text-slate-800 mt-0.5 font-medium truncate">
+        {value}
+      </p>
+    </div>
+  );
+}

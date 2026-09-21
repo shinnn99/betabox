@@ -1,6 +1,7 @@
 import "server-only";
 import type { createAdminClient } from "@/lib/supabase/admin";
 import { resolveVietnamDayScope } from "@/lib/warehouse/time-range";
+import { classifyReturnEvent, describeControlCard } from "@/lib/warehouse/live/returns";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
@@ -17,7 +18,14 @@ export type ActivityKind =
   | "waybill_unmapped"
   | "waybill_invalid"
   | "waybill_return_suspect"
-  | "qr_invalid";
+  | "qr_invalid"
+  // Luồng hoàn hàng — xem src/lib/warehouse/live/returns.ts
+  | "return_open"
+  | "return_ok"
+  | "return_problem"
+  | "return_duplicated"
+  | "return_suspect"
+  | "control_card";
 
 export type ActivityCategory = "ok" | "warning" | "error" | "info";
 
@@ -129,6 +137,7 @@ export async function buildLiveActivity(
       .select(
         `raw_event_id, status, assignment_method, waybill_code, previous_event_id,
          work_started_at, work_ended_at, work_duration_seconds, timing_status,
+         event_kind, return_kind, inspection_result, close_reason,
          staff_profiles ( staff_code, full_name ),
          packing_stations ( code, name ),
          warehouses ( code )`,
@@ -258,7 +267,13 @@ export async function buildLiveActivity(
       workEndedAt = pe.work_ended_at;
       workDuration = pe.work_duration_seconds;
       timingStatus = pe.timing_status;
-      if (pe.status === "valid") {
+      if (pe.event_kind === "return" && pe.status !== "return_suspect") {
+        // Lượt quét ở bàn đang nhận hoàn. Trước đây rơi vào nhánh 'valid'
+        // bên dưới và hiện "Hợp lệ" như một đơn đi — sai nghĩa và lọt cả
+        // vào tab Hợp lệ. Giờ gắn nhãn kiện hoàn; tab Hợp lệ chỉ khớp
+        // waybill_valid nên không còn lẫn.
+        ({ kind, category, note } = classifyReturnEvent(pe));
+      } else if (pe.status === "valid") {
         kind = "waybill_valid";
         category = "ok";
         note =
@@ -286,6 +301,17 @@ export async function buildLiveActivity(
         category = "error";
         note = "Mã không hợp lệ";
       }
+    } else if (r.scan_type === "control") {
+      // Thẻ điều khiển không sinh bản ghi đơn nào — trước đây rơi xuống
+      // nhánh mồ côi và hiện "Đang chờ xử lý" như một mã bị kẹt.
+      const orphan = orphanResolved.get(r.id);
+      if (orphan) {
+        station = { code: orphan.station_code, name: orphan.station_name };
+        warehouseCode = orphan.warehouse_code;
+      }
+      kind = "control_card";
+      category = "info";
+      waybill = describeControlCard(r.raw_value);
     } else {
       // Orphan raw event (no downstream record). Use scanner→station
       // resolver so the table at least shows where it happened.

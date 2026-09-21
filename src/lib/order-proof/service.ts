@@ -43,6 +43,24 @@ export interface ScanEventPublic {
   agent_offline_seconds: number;
   agent_time_drift_seconds: number | null;
   manual_error: boolean;
+  /** 'outbound' = đơn đi, 'return' = kiện hoàn. */
+  event_kind: "outbound" | "return";
+  /** Chỉ có ở kiện hoàn: rts / customer_return / suspect. */
+  return_kind: string | null;
+  /** Chỉ có ở kiện hoàn: ok / damaged / missing / swapped / unchecked. */
+  inspection_result: string | null;
+  close_reason: string | null;
+  /** Kiện hoàn nối được với lượt đóng gói gửi đi của cùng mã. */
+  outbound_event_id: string | null;
+  /** Hồ sơ của kiện hoàn có vấn đề. null = không có (hàng ổn, hoặc đơn đi). */
+  claim: ScanClaimSummary | null;
+}
+
+export interface ScanClaimSummary {
+  id: string;
+  status: "open" | "submitted" | "dismissed" | "expired";
+  deadline_at: string;
+  platform_claim_ref: string | null;
 }
 
 export interface ScanClipSummary {
@@ -66,6 +84,7 @@ export interface ScanClipSummary {
 const PACKING_COLUMNS = `
   id, waybill_code, scanned_at, status, assignment_method,
   timing_status, work_duration_seconds, manual_error,
+  event_kind, return_kind, inspection_result, close_reason, outbound_event_id,
   station:packing_stations ( id, code, name ),
   warehouse:warehouses ( id, name ),
   staff:staff_profiles ( id, full_name, staff_code ),
@@ -81,6 +100,11 @@ type PackingJoinRow = {
   timing_status: string;
   work_duration_seconds: number | null;
   manual_error: boolean | null;
+  event_kind: string | null;
+  return_kind: string | null;
+  inspection_result: string | null;
+  close_reason: string | null;
+  outbound_event_id: string | null;
   station: { id: string; code: string; name: string } | { id: string; code: string; name: string }[] | null;
   warehouse: { id: string; name: string } | { id: string; name: string }[] | null;
   staff: { id: string; full_name: string; staff_code: string } | { id: string; full_name: string; staff_code: string }[] | null;
@@ -201,6 +225,26 @@ async function attachClipsToEvents(
   const agentOfflineSeconds = liveness.offline_duration_seconds;
   const agentTimeDriftSeconds = liveness.time_drift_seconds;
 
+  // Hồ sơ kiện hoàn: chỉ hỏi khi trang có kiện hoàn — trang đơn đi không
+  // tốn thêm query nào.
+  const returnIds = events.filter((e) => e.event_kind === "return").map((e) => e.id);
+  const claimByEvent = new Map<string, ScanClaimSummary>();
+  if (returnIds.length > 0) {
+    const { data: claims } = await admin
+      .from("return_claims")
+      .select("id, packing_event_id, status, deadline_at, platform_claim_ref")
+      .eq("organization_id", organizationId)
+      .in("packing_event_id", returnIds);
+    for (const c of (claims ?? []) as Array<ScanClaimSummary & { packing_event_id: string }>) {
+      claimByEvent.set(c.packing_event_id, {
+        id: c.id,
+        status: c.status,
+        deadline_at: c.deadline_at,
+        platform_claim_ref: c.platform_claim_ref,
+      });
+    }
+  }
+
   return events.map((e) => ({
     id: e.id,
     waybill_code: e.waybill_code,
@@ -217,6 +261,12 @@ async function attachClipsToEvents(
     agent_offline_seconds: agentOfflineSeconds,
     agent_time_drift_seconds: agentTimeDriftSeconds,
     manual_error: e.manual_error === true,
+    event_kind: e.event_kind === "return" ? "return" : "outbound",
+    return_kind: e.return_kind,
+    inspection_result: e.inspection_result,
+    close_reason: e.close_reason,
+    outbound_event_id: e.outbound_event_id,
+    claim: claimByEvent.get(e.id) ?? null,
   }));
 }
 
@@ -266,6 +316,11 @@ export interface ListScansFilter {
   scanStatus?: "any" | "valid" | "duplicated";
   // "any" | "none" (no clip row) | "ready" | "pending" | "failed".
   clipStatus?: "any" | "none" | "ready" | "pending" | "failed";
+  /**
+   * Đơn đi hay kiện hoàn. Mặc định đơn đi: trước khi có tham số này trang
+   * Bằng chứng giao hàng liệt kê lẫn cả kiện hoàn (cùng status 'valid').
+   */
+  eventKind?: "outbound" | "return";
   limit?: number;
   offset?: number;
 }
@@ -283,14 +338,20 @@ export async function listScans(
   const limit = Math.max(1, Math.min(200, filter.limit ?? 50));
   const offset = Math.max(0, filter.offset ?? 0);
 
+  const eventKind = filter.eventKind ?? "outbound";
   let q = admin
     .from("packing_events")
     .select(PACKING_COLUMNS)
     .eq("organization_id", organizationId)
+    .eq("event_kind", eventKind)
     .order("scanned_at", { ascending: false })
     .range(offset, offset + limit - 1);
 
-  if (filter.scanStatus === "valid") {
+  if (eventKind === "return") {
+    // Kiện hoàn: mọi kiện có video. 'duplicated_return' là quét lại kiện
+    // đã ghi — không có video riêng nên không liệt kê.
+    q = q.in("status", ["valid", "return_suspect"]);
+  } else if (filter.scanStatus === "valid") {
     q = q.eq("status", "valid");
   } else if (filter.scanStatus === "duplicated") {
     q = q.eq("status", "duplicated");

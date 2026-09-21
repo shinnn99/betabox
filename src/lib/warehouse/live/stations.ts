@@ -6,6 +6,9 @@ type Admin = ReturnType<typeof createAdminClient>;
 
 const IDLE_WARNING_AFTER_MINUTES = 10;
 
+/** Luồng mà màn hình giám sát đang xem. */
+export type LiveFlow = "outbound" | "return";
+
 export interface StationCard {
   station_id: string;
   station_code: string;
@@ -27,22 +30,34 @@ export interface StationCard {
     scans_per_hour: number;
     idle_status: "active" | "idle";
   } | null;
+  /** Số lượt của ĐÚNG luồng đang xem: đơn đi, hoặc kiện hoàn. */
   packing_count_today: number;
+  /** Chế độ bàn lúc này (đợt 2 hàng hoàn). */
+  mode: LiveFlow;
+  /** Phiên ghi hoàn của bàn, nếu bàn đang ở chế độ nhận hoàn. */
+  capture_state: "none" | "active" | "draining" | "finished" | "abandoned";
 }
 
-/** Thẻ bàn đóng gói + ca đang mở. Xem chú thích ở buildLiveSummary. */
+/**
+ * Thẻ bàn + ca đang mở. Xem chú thích ở buildLiveSummary.
+ *
+ * `flow` quyết định đếm gì: trước đây hàm này đếm MỌI lượt của bàn, nên
+ * sau khi có hàng hoàn thẻ bàn trên Giám sát đóng hàng cộng lẫn cả kiện
+ * hoàn vào "Hôm nay N đơn".
+ */
 export async function buildLiveStations(
   admin: Admin,
   orgId: string,
+  flow: LiveFlow = "outbound",
 ): Promise<{ stations: StationCard[] }> {
   const { startIso, endIso } = vietnamTodayUtcRange();
   const now = new Date();
 
-  const [stations, warehouses, assignments, sessions, packingToday] =
+  const [stations, warehouses, assignments, sessions, packingToday, modePeriods] =
     await Promise.all([
       admin
         .from("packing_stations")
-        .select("id, code, name, warehouse_id, status")
+        .select("id, code, name, warehouse_id, status, purpose")
         .eq("organization_id", orgId)
         .eq("status", "active")
         .order("code"),
@@ -64,11 +79,28 @@ export async function buildLiveStations(
         .eq("status", "active"),
       admin
         .from("packing_events")
-        .select("station_id, work_session_id, scanned_at, status")
+        .select("station_id, work_session_id, scanned_at, status, inspection_result")
         .eq("organization_id", orgId)
+        .eq("event_kind", flow)
         .gte("scanned_at", startIso)
         .lt("scanned_at", endIso),
+      admin
+        .from("station_mode_periods")
+        .select("station_id, mode, capture_state")
+        .eq("organization_id", orgId)
+        .is("ended_at", null),
     ]);
+
+  const modeByStation = new Map<
+    string,
+    { mode: LiveFlow; capture_state: StationCard["capture_state"] }
+  >();
+  for (const m of modePeriods.data ?? []) {
+    modeByStation.set(m.station_id as string, {
+      mode: m.mode === "return" ? "return" : "outbound",
+      capture_state: (m.capture_state ?? "none") as StationCard["capture_state"],
+    });
+  }
 
   const warehouseById = new Map(
     (warehouses.data ?? []).map((w) => [w.id, w] as const),
@@ -124,7 +156,14 @@ export async function buildLiveStations(
         packingBySession.get(p.work_session_id) ??
         { total: 0, errors: 0, lastScanIso: null };
       cur.total += 1;
-      if (p.status !== "valid") cur.errors += 1;
+      // "Cảnh báo trong phiên": với đơn đi là lượt quét hỏng; với kiện hoàn
+      // là kiện có vấn đề (kết quả khác OK) hoặc quét lại / bị lưới an toàn bắt.
+      const problem =
+        flow === "return"
+          ? p.status !== "valid" ||
+            (p.inspection_result !== null && p.inspection_result !== "ok")
+          : p.status !== "valid";
+      if (problem) cur.errors += 1;
       if (!cur.lastScanIso || p.scanned_at > cur.lastScanIso) {
         cur.lastScanIso = p.scanned_at;
       }
@@ -187,6 +226,10 @@ export async function buildLiveStations(
       scanner_device_code: deviceByStation.get(st.id) ?? null,
       active_session: sessionStats,
       packing_count_today: packingByStation.get(st.id) ?? 0,
+      // Chưa có kỳ nào thì chế độ là mặc định của bàn — cùng luật với
+      // station_current_mode() ở DB.
+      mode: modeByStation.get(st.id)?.mode ?? (st.purpose === "return" ? "return" : "outbound"),
+      capture_state: modeByStation.get(st.id)?.capture_state ?? "none",
     };
   });
 

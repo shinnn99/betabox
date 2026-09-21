@@ -12,7 +12,11 @@ export type IssueKind =
   | "unmapped_scanner"
   | "duplicated"
   | "invalid_code"
-  | "qr_invalid";
+  | "qr_invalid"
+  // Luồng hoàn hàng — xem src/lib/warehouse/live/returns.ts
+  | "claim_open"
+  | "return_suspect"
+  | "duplicated_return";
 
 export interface Issue {
   id: string;

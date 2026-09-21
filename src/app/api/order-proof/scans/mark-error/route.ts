@@ -57,6 +57,9 @@ export async function POST(req: NextRequest) {
     .from("packing_events")
     .update(patch)
     .eq("organization_id", ctx.organizationId)
+    // "Đơn lỗi" là lỗi ĐÓNG GÓI, tính vào báo cáo hiệu suất nhân viên. Kiện
+    // hoàn không bao giờ được mang dấu này — nó có hồ sơ riêng.
+    .eq("event_kind", "outbound")
     .in("id", ids)
     .select("id");
 

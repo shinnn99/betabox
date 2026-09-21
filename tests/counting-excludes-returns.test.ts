@@ -35,12 +35,41 @@ const FILTERED_QUERY_FILES: Array<{ file: string; expected: number; why: string 
     expected: 2,
     why: "tổng quan hôm nay và hôm trước",
   },
-  {
-    file: "src/lib/warehouse/live/summary.ts",
-    expected: 1,
-    why: "bảng tổng hợp Giám sát kho",
-  },
 ];
+
+// ---------------------------------------------------------------------------
+// Màn hình giám sát: hàm dùng chung cho Giám sát đóng hàng và Giám sát hoàn
+// hàng, nhận luồng làm tham số. Canh ba điều:
+//   1. mọi truy vấn packing_events lọc theo đúng luồng;
+//   2. luồng mặc định là ĐƠN ĐI;
+//   3. route của Giám sát đóng hàng không truyền luồng khác.
+// Thẻ bàn (stations.ts) trước đây KHÔNG lọc gì — "Hôm nay N đơn" cộng lẫn
+// kiện hoàn. Giờ canh luôn.
+// ---------------------------------------------------------------------------
+
+for (const file of [
+  "src/lib/warehouse/live/summary.ts",
+  "src/lib/warehouse/live/stations.ts",
+]) {
+  test(`${file} lọc đúng luồng, mặc định đơn đi`, () => {
+    const source = readFileSync(file, "utf8");
+    const queries = source.split(`.from("packing_events")`).length - 1;
+    const filters = source.split(`.eq("event_kind", flow)`).length - 1;
+    assert.ok(queries > 0);
+    assert.equal(filters, queries, "có truy vấn packing_events chưa lọc theo luồng");
+    assert.ok(
+      source.includes(`flow: LiveFlow = "outbound"`),
+      "luồng mặc định phải là đơn đi — gọi quên tham số không được đếm lẫn kiện hoàn",
+    );
+  });
+}
+
+test("Giám sát đóng hàng gọi các hàm dùng chung với luồng đơn đi", () => {
+  const source = readFileSync("src/app/api/warehouse/live/overview/route.ts", "utf8");
+  assert.ok(source.includes("buildLiveSummary(admin, orgId)"), "summary phải dùng luồng mặc định");
+  assert.ok(source.includes("buildLiveStations(admin, orgId)"), "stations phải dùng luồng mặc định");
+  assert.ok(!source.includes(`"return"`), "route đóng hàng không được nhắc tới luồng hoàn");
+});
 
 for (const target of FILTERED_QUERY_FILES) {
   test(`${target.file} chỉ đếm đơn đi (${target.why})`, () => {
