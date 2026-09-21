@@ -126,6 +126,9 @@ async function fetchEvents(
         "id, business_date, status, timing_status, work_duration_seconds, order_id, staff_id, manual_error",
       )
       .eq("organization_id", organizationId)
+      // Chỉ đơn đi. Kiện hoàn không vào số đơn của nhân viên, và cũng không
+      // vào cột lỗi — nó có trang Hàng hoàn riêng.
+      .eq("event_kind", "outbound")
       .gte("business_date", fromDate)
       .lte("business_date", toDate)
       .range(offset, offset + pageSize - 1);

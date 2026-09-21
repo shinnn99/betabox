@@ -122,6 +122,7 @@ type ActivityKind =
   | "waybill_no_session"
   | "waybill_unmapped"
   | "waybill_invalid"
+  | "waybill_return_suspect"
   | "qr_invalid";
 
 type ActivityCategory = "ok" | "warning" | "error" | "info";
@@ -266,6 +267,7 @@ const ACTIVITY_KIND_LABEL: Record<ActivityKind, string> = {
   waybill_no_session: "Chưa vào ca",
   waybill_unmapped: "Máy quét chưa gán",
   waybill_invalid: "Mã sai",
+  waybill_return_suspect: "Hàng hoàn",
   qr_invalid: "QR sai",
 };
 
@@ -356,6 +358,13 @@ function describeActivityToast(ev: ActivityItem): {
       return {
         variant: "error",
         message: `Máy quét ${ev.scanner_device_code} chưa gán bàn`,
+      };
+    case "waybill_return_suspect":
+      // Toast của trang này chỉ có success/error/info. Hàng hoàn không phải
+      // lỗi đóng gói, nên để mức thông tin; dòng trong bảng vẫn tô cảnh báo.
+      return {
+        variant: "info",
+        message: `${ev.waybill_code} đã đóng trước đó — hàng hoàn, không tính đơn`,
       };
     case "qr_invalid":
       return {

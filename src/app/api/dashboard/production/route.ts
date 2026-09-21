@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isError, requirePermission } from "@/lib/supabase/guard";
 import { vnHour } from "@/lib/time/vietnam";
+import { COUNTED_OUTBOUND_EVENTS } from "@/lib/warehouse/outbound-only";
 
 export const runtime = "nodejs";
 
@@ -63,11 +64,11 @@ export async function GET(req: Request) {
   if (range === "today" || range === "yesterday") {
     const businessDate = range === "today" ? today : addDays(today, -1);
     const { data, error } = await admin
-      .from("packing_events")
+      // View chỉ chứa đơn đi hợp lệ — xem src/lib/warehouse/outbound-only.ts
+      .from(COUNTED_OUTBOUND_EVENTS)
       .select("status, scanned_at")
       .eq("organization_id", ctx.organizationId)
-      .eq("business_date", businessDate)
-      .eq("status", "valid");
+      .eq("business_date", businessDate);
     if (error) {
       return NextResponse.json(
         { error: "production_failed", message: error.message },
@@ -98,10 +99,9 @@ export async function GET(req: Request) {
   const days = range === "7d" ? 7 : 30;
   const fromDate = addDays(today, -(days - 1));
   const { data, error } = await admin
-    .from("packing_events")
+    .from(COUNTED_OUTBOUND_EVENTS)
     .select("status, business_date")
     .eq("organization_id", ctx.organizationId)
-    .eq("status", "valid")
     .gte("business_date", fromDate)
     .lte("business_date", today);
   if (error) {

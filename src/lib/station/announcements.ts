@@ -121,6 +121,15 @@ export function buildPackingScanAnnouncement(input: {
         message: "Chưa mở ca nên không quay được",
         speech: "Chưa mở ca, chưa quay được video",
       };
+    // Lưới an toàn: mã này đã đóng gửi đi ở một ngày trước, nên gần như
+    // chắc chắn là kiện hàng hoàn quay về. Không tính vào số đơn.
+    case "return_suspect":
+      return {
+        ...base,
+        level: "warning",
+        message: `Hàng hoàn · ${waybill} đã đóng trước đó`,
+        speech: "Mã này đã đóng trước đó. Đây là hàng hoàn, không tính đơn",
+      };
     default:
       return {
         ...base,

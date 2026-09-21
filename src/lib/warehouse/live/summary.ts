@@ -43,6 +43,8 @@ export async function buildLiveSummary(admin: Admin, orgId: string) {
       .from("packing_events")
       .select("status, timing_status", { count: "exact" })
       .eq("organization_id", orgId)
+      // Chỉ đơn đi — xem src/lib/warehouse/outbound-only.ts
+      .eq("event_kind", "outbound")
       .gte("scanned_at", startIso)
       .lt("scanned_at", endIso),
     admin

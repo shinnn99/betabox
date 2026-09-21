@@ -170,12 +170,15 @@ export async function GET() {
         .from("packing_events")
         .select("id, waybill_code, status, timing_status, scanned_at, work_duration_seconds, work_started_at, staff_id, station_id, warehouse_id")
         .eq("organization_id", ctx.organizationId)
+        // Chỉ đơn đi — xem src/lib/warehouse/outbound-only.ts
+        .eq("event_kind", "outbound")
         .eq("business_date", businessDate)
         .order("scanned_at", { ascending: false }),
       admin
         .from("packing_events")
         .select("status, timing_status, work_duration_seconds")
         .eq("organization_id", ctx.organizationId)
+        .eq("event_kind", "outbound")
         .eq("business_date", previousDate),
       admin
         .from("cameras")

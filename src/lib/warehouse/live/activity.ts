@@ -16,6 +16,7 @@ export type ActivityKind =
   | "waybill_no_session"
   | "waybill_unmapped"
   | "waybill_invalid"
+  | "waybill_return_suspect"
   | "qr_invalid";
 
 export type ActivityCategory = "ok" | "warning" | "error" | "info";
@@ -276,6 +277,10 @@ export async function buildLiveActivity(
         kind = "waybill_unmapped";
         category = "error";
         note = "Máy quét chưa gán bàn";
+      } else if (pe.status === "return_suspect") {
+        kind = "waybill_return_suspect";
+        category = "warning";
+        note = "Mã đã đóng trước đó — hàng hoàn, không tính đơn";
       } else {
         kind = "waybill_invalid";
         category = "error";

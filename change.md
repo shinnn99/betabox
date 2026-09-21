@@ -1,6 +1,7 @@
 # 📋 Change Log - Betabox Project
 
 > **Quy trình làm việc:**
+>
 > - Mỗi task phải được ghi vào file này **trước khi bắt đầu code**.
 > - Sau khi hoàn thành và test thành công → cập nhật trạng thái thành `Đã hoàn thành`.
 > - Nếu có lỗi nghiêm trọng không thể sửa nhanh → hoàn tác các file vừa thay đổi (không dùng Git) → ghi chú lỗi → xin ý kiến người dùng.
@@ -10,15 +11,15 @@
 
 ## Thông tin dự án
 
-| Mục | Chi tiết |
-|-----|---------|
-| **Framework** | Next.js 16.2.9 |
-| **Runtime** | React 19.2.4 |
-| **Ngôn ngữ** | TypeScript |
-| **Package Manager** | pnpm |
-| **Lệnh typecheck** | `pnpm typecheck` |
-| **Lệnh lint** | `pnpm lint` |
-| **Lệnh build** | `pnpm build` |
+| Mục                 | Chi tiết         |
+| ------------------- | ---------------- |
+| **Framework**       | Next.js 16.2.9   |
+| **Runtime**         | React 19.2.4     |
+| **Ngôn ngữ**        | TypeScript       |
+| **Package Manager** | pnpm             |
+| **Lệnh typecheck**  | `pnpm typecheck` |
+| **Lệnh lint**       | `pnpm lint`      |
+| **Lệnh build**      | `pnpm build`     |
 
 ---
 
@@ -65,7 +66,7 @@ docs([Module]):     Cập nhật tài liệu
 
 - **Mục tiêu:** Đồng bộ `change.md` với yêu cầu quản lý trạng thái, kiểm tra lỗi và hoàn tác ở mức file mà không dùng Git.
 - **Files tạo/sửa:**
-  - `change.md` *(sửa)*
+  - `change.md` _(sửa)_
 - **Chi tiết thay đổi:**
   - Loại bỏ hướng dẫn commit/reset bằng Git khỏi quy trình.
   - Ghi rõ mỗi task phải được kiểm tra trước khi chốt và không chuyển task khi còn lỗi TypeScript/ESLint.
@@ -244,8 +245,8 @@ docs([Module]):     Cập nhật tài liệu
 
 - **Mục tiêu:** Bổ sung metadata proof/clip, hàng đợi yêu cầu xem video và logic tự động điều khiển recording theo ca làm việc.
 - **Files tạo/sửa:**
-  - `supabase/migrations/20260914080000_two_cameras_logic_schema.sql` *(mới)*
-  - `change.md` *(sửa)*
+  - `supabase/migrations/20260914080000_two_cameras_logic_schema.sql` _(mới)_
+  - `change.md` _(sửa)_
 - **Chi tiết thay đổi:** Bổ sung metadata proof/clip, bảng `order_proof_requests`, trigger chụp camera QR tại thời điểm tạo event và trigger xếp lệnh recording theo thay đổi trạng thái ca (stop có `delay_seconds=60`).
 - **Kết quả kiểm tra:**
   - Rà soát cú pháp/cấu trúc SQL tĩnh: đạt.
@@ -256,8 +257,8 @@ docs([Module]):     Cập nhật tài liệu
 
 - **Mục tiêu:** Mở rộng schema cho luồng 2 camera và liên kết agent, bàn đóng gói, file recording, command cùng quyền truy cập.
 - **Files tạo/sửa:**
-  - `supabase/migrations/20260914072044_two_cameras_base_schema.sql` *(đã có)*
-  - `change.md` *(sửa)*
+  - `supabase/migrations/20260914072044_two_cameras_base_schema.sql` _(đã có)_
+  - `change.md` _(sửa)_
 - **Chi tiết thay đổi:** Đã xác nhận migration bao gồm `station_id`, `scan_source`, các trường camera/recording agent, 4 command type mới và 3 permission mới; unique partial index giới hạn 1 agent active/bàn.
 - **Kết quả kiểm tra:**
   - Rà soát SQL tĩnh: đạt.
@@ -268,7 +269,7 @@ docs([Module]):     Cập nhật tài liệu
 
 - **Mục tiêu:** Tạo migration SQL mở rộng schema DB cho luồng 2 camera (M1–M5, M14, M16 theo tuan-tu-xu-ly-2-camera.md).
 - **Files tạo/sửa:**
-  - `supabase/migrations/20260914072044_two_cameras_base_schema.sql` *(mới)*
+  - `supabase/migrations/20260914072044_two_cameras_base_schema.sql` _(mới)_
 - **Chi tiết thay đổi:**
   1. `warehouse_agents.station_id` (uuid, FK → packing_stations, nullable, unique khi status='active')
   2. `user_profiles.station_id` (uuid, FK → packing_stations, nullable)
@@ -284,7 +285,7 @@ docs([Module]):     Cập nhật tài liệu
 ### [INIT-001] - Khởi tạo hệ thống quản lý change log
 
 - **Mục tiêu:** Tạo file `change.md` để theo dõi mọi thay đổi trong dự án theo quy trình Atomic Commit & Rollback.
-- **Files tạo/sửa:** `change.md` *(mới)*
+- **Files tạo/sửa:** `change.md` _(mới)_
 - **Chi tiết thay đổi:**
   - Tạo file `change.md` với cấu trúc đầy đủ: thông tin dự án, quy ước commit, template task.
   - Định nghĩa quy trình làm việc: ghi dự định → code → test → commit hoặc rollback.
@@ -308,6 +309,7 @@ docs([Module]):     Cập nhật tài liệu
 - **Trạng thái:** 🔄 Đang xử lý / ✅ Đã hoàn thành / ⏪ Rollback
 - **Ghi chú lỗi (nếu rollback):** ...
 ```
+
 ### [C.1.4-CAMERA-H264-TEST] - Chuẩn hoá H.264 và kiểm thử hai camera LAN
 
 - **Mục tiêu:** Cấu hình hai camera kiểm thử Hikvision và Dahua dùng H.264 cho các profile main/sub; tạo Bàn 3 trong tổ chức Kho Đại Kim, đổi mã hai camera thành `dahua_3` ở vai trò `proof_qr` và `hik_3` ở vai trò `proof_primary`.
@@ -315,6 +317,7 @@ docs([Module]):     Cập nhật tài liệu
 - **Chi tiết thay đổi:** Hikvision vốn đã H.264; Dahua được đổi các profile H.265 sang H.264 nhưng giữ độ phân giải/FPS/bitrate/GOP. Tạo `BAN_03` trong đúng tenant UI `Betacom`, gán `AGENT_KHO_HN_01`, `hik_3` vai trò `proof_primary`, `dahua_3` vai trò `proof_qr` và scanner ảo `qrcam_dahua_3`. Tenant tạo nhầm trước đó được chuyển inactive/archive, credential camera cũ được xoá nhưng lịch sử được giữ nguyên. Không ép clip xuống 50 MB; giữ trần 90 MiB. Credential chỉ dùng trong RAM.
 - **Kết quả kiểm tra:** FFprobe qua MediaMTX đạt: Hik H.264 2688×1520, Dahua H.264 1920×1080; Dahua đọc QR ngay frame xử lý đầu; chữ nhãn đọc rõ; WHEP/CORS localhost đạt; hậu kiểm tenant/agent/device/assignment đạt.
 - **Trạng thái:** Đã hoàn thành
+
 ### [C.1.4-LIVE-TOGGLE] - Bấm thẻ bàn để mở hoặc đóng live
 
 - **Mục tiêu:** Trên Giám sát đóng hàng, bấm thẻ bàn để mở live hai camera; bấm lại cùng bàn để đóng; đổi sang bàn khác sẽ chuyển live, không tác động tới ghi hình/QR trên agent.
@@ -322,12 +325,14 @@ docs([Module]):     Cập nhật tài liệu
 - **Chi tiết thay đổi:** Chỉ mount `StationLivePanel` khi bàn đang mở; bấm lại cùng bàn unmount viewer, đóng peer/session WHEP nhưng không gọi lệnh dừng recording/camera. Sửa xung đột class `relative` ghi đè `absolute` khiến Dahua PiP nằm ngoài vùng hiển thị; QR PiP có lớp `z-10` đúng góc trên phải.
 - **Kết quả kiểm tra:** `pnpm typecheck` đạt; 5/5 test live đạt; 88/88 test agent đạt; ESLint mục tiêu 0 lỗi, còn 1 warning polling cũ ngoài thay đổi. Log trình duyệt xác nhận đồng thời hai peer WHEP Hik/Dahua established.
 - **Trạng thái:** Đã hoàn thành
+
 ### [SEC-CAMERA-CREDENTIAL-REDACTION] - Không để lộ tài khoản camera trong log
 
 - **Mục tiêu:** Bảo đảm username/password camera do admin nhập không bị ghi nguyên văn hoặc xuất hiện trong RTSP URL tại file cấu hình, hàng đợi lệnh và log; credential chỉ được giải mã tạm thời trong RAM lúc Agent kết nối thiết bị.
 - **Files tạo/sửa:** `src/lib/camera/rtsp.ts`, `src/lib/camera/ffmpeg.ts`, `warehouse-agent/src/recording.ts`, `tests/rtsp-redaction.test.ts`, `warehouse-agent/tests/recording-redaction.test.ts`, `warehouse-agent/tests/relay-hub.test.ts`, `plans/completed/SEC-CAMERA-CREDENTIAL-REDACTION.md`, log runtime đã phát sinh và `change.md`; đã xóa `scratch_url.mjs`.
 - **Chi tiết thay đổi:** Giữ nguyên luồng kết nối camera cũ qua UI và password mã hóa trong database. Redaction giờ che toàn bộ RTSP userinfo, lọc mọi URL trong FFmpeg stderr thay vì chỉ thay đúng chuỗi đầu vào. Đã làm sạch log Agent cũ, xóa scratch chứa URL credential, khởi động lại Agent nguồn ngoài sandbox và xác nhận MediaMTX nghe tại 8554/8889, hai FFmpeg hoạt động, log cũ/mới đều có 0 credential chưa che. Root test 339/339, Agent test 89/89, hai typecheck và ESLint mục tiêu đều đạt.
 - **Trạng thái:** Đã hoàn thành
+
 ### [DOC-2CAM-HANDOVER] - Chu thich code va README cho luong 2 camera
 
 - **Muc tieu:** Bo sung chu thich dung cho va README cho cac folder lien quan den luong 2 camera de dev khac doc hieu nhanh pham vi, vai tro va nhung phan da xu ly.
@@ -600,3 +605,54 @@ docs([Module]):     Cập nhật tài liệu
 - **Files tao/sua:** `.gitattributes`, `warehouse-agent/releases/BetacomAgentSetup-v0.9.1.exe` (LFS), `warehouse-agent/releases/README.md` (moi), `change.md`.
 - **Chi tiet thay doi:** Bo cai 116 MB vuot gioi han 100 MB/file cua GitHub nen luu qua Git LFS (`git lfs install --local`, rule `warehouse-agent/releases/*.exe`). De o thu muc rieng `releases/`, khong dung `dist-installer/` (van bi .gitignore). README ghi cach tai (`git lfs pull`), cach cai va luu y dung luong LFS (goi mien phi 1 GB, moi ban ~116 MB).
 - **Trang thai:** Da hoan thanh.
+
+### [PA-HOAN-HANG] - Phuong an va luong quay video nhan hang hoan
+
+- **Muc tieu:** Chu du an can phuong an quay video hang hoan phu hop he thong hien tai, trong khi nhan vien nhan luong theo so don dong chieu di.
+- **Files tao/sua:** `plans/active/HOAN-HANG-quay-video-don-hoan.md` (moi), `change.md`.
+- **Chi tiet thay doi:** Tra cuu: don giao that bai hoan ve giu nguyen ma van don; don khach tra (Shopee, TikTok Shop) co ma moi, Shopee cho viet tay. Doi chieu code: quet lai cung ma khac ngay thanh don `valid` moi → tinh luong lan 2 (lo hien co). De xuat: cot `event_kind` + view `outbound_valid_events` cho moi noi dem don; ban co `purpose` + the QR chuyen che do; luoi an toan nhan ma da dong; the ket qua kiem (OK/HONG/THIEU/TRAO); cat clip ngay khi co van de + han khieu nai; video di va hoan canh nhau. Ke hoach 3 dot (0: chan that thoat; 1: MVP; 2: API san).
+- **Cap nhat 18/09/2026:** Chu du an chot: (1) khong tra cong kien hoan; (2) chot cuoi: segment video hoan giu 7 ngay, clip Supabase 72 gio; dung chung cleanup-segments.ps1 them mot buoc, lich chay doi sang hang ngay; (3) KHONG trien khai, chi lap ke hoach. Tai lieu viet lai thanh ke hoach thuc hien + phan tich luong da that: may trang thai che do ban, vong doi kien hoan, ho so khieu nai, vong doi clip (co trang thai cuoi SEGMENTS_EXPIRED), vong doi segment 7 ngay (phan loai 3 dieu kien, mac dinh giu theo retention_days, cleanup chay hang ngay), ma tran xu ly luot quet, 6 bat bien co test, 4 dot thuc hien, 6 kich ban kiem thu.
+- **Trang thai:** Ke hoach, chua trien khai (theo quyet dinh chu du an).
+
+### [LUONG-DI-VA-HOAN] - Thiet ke luong don di va don hoan dat canh nhau, da that luong
+
+- **Muc tieu:** Chu du an yeu cau thiet ke luong hang hoan va viet lai ca luong don di de phan biet, moi luong phai that.
+- **Files tao/sua:** `plans/active/LUONG-DON-DI-DON-HOAN.md` (moi), `plans/active/HOAN-HANG-quay-video-don-hoan.md` (them lien ket), `change.md`.
+- **Chi tiet thay doi:** Phan chung: diem vao luot quet (thu tu phan loai: nguon quet → the dieu khien → QR nhan vien → may quet → ma → ca → che do), ca lam viec va ghi hinh theo ca, che do ban. Don di: quet o che do DI (co luoi an toan ngay khac), vong doi don (6 cach dong, tu dung max_order_seconds), video, tinh luong qua view duy nhat. Don hoan: quet o che do HOAN, vong doi kien (8 cach dong, tu dung 10 phut, unchecked van co ho so), ho so khieu nai (tu expired), video (cat ngay khi co van de, 7 ngay segment, 72 gio cloud). Bang so sanh hai luong, bang that luong (moi trang thai co loi ra tu dong, toi da bao lau, hien o dau), bang ngoai le. Luong don di danh dau [hien co] / [moi] theo code hien tai.
+- **Trang thai:** Thiet ke, chua trien khai.
+
+### [THAM-KHAO-DOHANA] - Doi chieu luong hoan hang voi Dohana
+
+- **Muc tieu:** Chu du an yeu cau tham khao luong hoan hang cua Dohana.
+- **Files tao/sua:** `plans/active/LUONG-DON-DI-DON-HOAN.md`, `plans/active/HOAN-HANG-quay-video-don-hoan.md`, `change.md`.
+- **Chi tiet thay doi:** Dohana cong khai: che do "Ghi hinh mo hang hoan", video toi da 20 phut, luu 25 ngay (gia han 30-35), theo doi ty le thanh cong / so tien thu hoi / trang thai tung don hoan, "Quan ly gui van chuyen" (bang chung ban giao shipper), 2 camera. Khong co tai lieu chi tiet thao tac (video YouTube, mo ta Google Play khong doc duoc). Da ap dung: tran video hoan 20 phut (`return_max_seconds=1200`); ho so khieu nai them `claim_amount`, `recovered_amount` + o tong hop thang (ty le thang, tien thu hoi). Ghi nhan: che do BAN GIAO shipper la huong mo rong. Khuyen nghi (chua doi): han luu segment hoan 7 ngay ngan hon Dohana 25 ngay.
+- **Trang thai:** Thiet ke, chua trien khai.
+
+### [LUONG-HOAN-CHOT-PHAM-VI] - Chot pham vi luong hoan hang: khong xu ly tien, thoi gian theo chu du an
+
+- **Muc tieu:** Chu du an: chua xu ly gi ve tien bac, chi luong hoan hang; thoi gian theo y chu du an; luong tham khao Dohana va dua tren he thong hien tai.
+- **Files tao/sua:** `plans/active/LUONG-DON-DI-DON-HOAN.md`, `plans/active/HOAN-HANG-quay-video-don-hoan.md`, `change.md`.
+- **Chi tiet thay doi:** Bo `claim_amount`, `recovered_amount`, o tong hop tien thu hoi, trang thai Thang/Thua (ho so: open → submitted / dismissed / expired). Bo khuyen nghi nang han luu; giu segment hoan 7 ngay, clip Supabase 72 gio. Muc 7 viet lai thanh "Giai phap chot": lay gi tu Dohana (che do hoan rieng, video 20 phut, tra theo ma, trang thai tung don hoan), dung lai gi cua he thong hien tai, diem hon Dohana. Doi cach goi "tinh luong" → "dem vao so don dong" (he thong chi dem don); view doi ten `counted_outbound_events`. Them quyet dinh #4 (pham vi).
+- **Trang thai:** Thiet ke, chua trien khai.
+
+### [LUONG-HOAN-VIET-LAI-RO] - Viet lai ro rang hai tai lieu luong don di / don hoan; kien hoan tu dung sau 5 phut
+
+- **Muc tieu:** Chu du an yeu cau viet lai moi thong tin that ro rang; he thong tu dung kien hoan sau 5 phut.
+- **Files tao/sua:** `plans/active/LUONG-DON-DI-DON-HOAN.md` (viet lai), `plans/active/HOAN-HANG-quay-video-don-hoan.md` (viet lai), `change.md`.
+- **Chi tiet thay doi:** Tach ro vai tro: tai lieu LUONG = nghiep vu (thuat ngu, bang moc thoi gian duy nhat, phan chung: phan loai luot quet 7 buoc / ca va ghi hinh / che do ban; don di: viec nhan vien, bang xu ly ma, 6 cach ket thuc, video, dem don; don hoan: viec nhan vien, bang xu ly, 8 cach ket thuc, ho so, video va luu tru; so sanh, bang that luong, tinh huong bat thuong, giai phap chot Dohana + he thong). Tai lieu HOAN-HANG = ky thuat (quyet dinh, hien trang co vi tri code, mo hinh du lieu, han luu 7 ngay, 6 bat bien, 4 dot, 7 kich ban, rui ro, ngoai pham vi). Kien hoan tu dung **5 phut** (`return_max_seconds=300`, clip toi da 5 phut + 10 giay dem) thay 20 phut.
+- **Trang thai:** Thiet ke, chua trien khai.
+
+### [HOAN-TU-VE-5-PHUT] - Ban tu ve che do DONG HANG sau 5 phut khong thao tac
+
+- **Muc tieu:** Chu du an doi thoi gian ban tu ve che do dong hang tu 10 phut xuong 5 phut.
+- **Files tao/sua:** `plans/active/LUONG-DON-DI-DON-HOAN.md`, `plans/active/HOAN-HANG-quay-video-don-hoan.md`, `change.md`.
+- **Chi tiet thay doi:** `return_idle_revert_seconds` = 300; moi cho ghi 10 phut doi thanh 5 phut. Vi trung moc tu dung kien hoan (5 phut), them quy tac thu tu: kien tu dung truoc (ly do timeout), ban ve che do sau — kien khong bao gio mang hai ly do dong.
+- **Trang thai:** Thiet ke, chua trien khai.
+
+### [HOAN-D1] - Dot 1: tach kien hoan khoi so don dong + luoi an toan
+
+- **Muc tieu:** Theo `plans/active/HOAN-HANG-quay-video-don-hoan.md` dot 1: them `event_kind` va cac cot hoan vao `packing_events`, view `counted_outbound_events` lam nguon dem don duy nhat, luoi an toan trong `process_waybill_scan` (ma da dong ngay khac trong 60 ngay → kien hoan `suspect`, khong dem, khong dong don dang mo).
+- **Files tao/sua:** `supabase/migrations/20260921090000_return_flow_base.sql` (moi), `src/lib/warehouse/outbound-only.ts` (moi), `src/lib/reports/service.ts`, `src/app/api/dashboard/overview/route.ts`, `src/app/api/dashboard/production/route.ts`, `src/lib/warehouse/live/summary.ts`, `src/lib/warehouse/live/activity.ts`, `src/lib/station/announcements.ts`, `src/app/dashboard/operations/page.tsx`, `tests/counting-excludes-returns.test.ts` (moi), `tests/return-suspect-announcement.test.ts` (moi), `change.md`.
+- **Chi tiet thay doi:** DB: them `event_kind`/`return_kind`/`outbound_event_id`/`inspection_result`/`close_reason` + rang buoc (don di khong duoc mang thong tin hoan), noi rong `status` (`return_suspect`, `duplicated_return`) va `timing_status` (`finalized_by_mode_switch`), 2 index (tra ma da dong, loc kien hoan), view `counted_outbound_events` (security_invoker), them 5 tham so thoi gian luong hoan vao `packing_timing_default_config`, sua `process_waybill_scan` (loc duplicate theo event_kind + luoi an toan: ma da dong `valid` o ngay khac trong `return_lookback_days` → kien hoan `suspect` dong ngay, co moc cat clip, KHONG dem, KHONG dong don dang mo), `lark_digest_per_staff` chi dem don di. Code: 4 noi dem don loc theo loai (san luong doc view), cau loa + nhan dong thoi gian cho `return_suspect`.
+- **Ket qua kiem tra:** Chay thu tren ban sao local trong transaction + ROLLBACK, 6 kich ban: ma moi → valid duoc dem; quet lai cung ngay → duplicated; ma da dong hom qua → `return_suspect` (event_kind=return, return_kind=suspect, inspection=unchecked, close_reason=suspect, timing=not_applicable, noi duoc voi don di, co moc cat clip), don dang mo VAN o trang thai open, khong vao view dem don; digest Lark khong dem kien hoan. Web `pnpm test` 401/401, `pnpm typecheck` dat, ESLint 0 loi.
+- **Trang thai:** Da hoan thanh phan code. Chua ap migration len production (cho chu du an).
