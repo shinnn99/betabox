@@ -777,3 +777,19 @@ docs([Module]):     Cập nhật tài liệu
   - Agent 148/149: test còn lại là MediaMTX smoke, lỗi do cổng 8554 đang bị agent đang chạy chiếm, không liên quan.
   - `tsc` agent đạt. Bộ cài `BetacomAgentSetup-v0.10.1.exe` build xong (116 MB, không vào git).
 - **Trạng thái:** Chưa push.
+
+### [HOAN-E2E-AGENT-2] - Chạy lại đầu-cuối trên agent 0.10.1 sau khi áp migration đợt 6, 7
+
+- **Mục tiêu:** Xác nhận tách bạch video đóng hàng / hoàn hàng ở tầng agent sau khi sửa. Chỉ AGENT_KHO_HN_01 / tổ chức thử.
+- **Kết quả:**
+  - Migration 6, 7 đã có hiệu lực trên production. `set_return_capture` qua được ràng buộc; loại lệnh lạ vẫn bị chặn.
+  - Agent nhận tín hiệu BẬT → TẮT → XONG phiên hoàn.
+  - Đoạn đang ghi dở lúc đổi module lưu nốt và thuộc module cũ, cả hai chiều. Đoạn 13:54:41 vẫn là đơn đi; 13:55:41 và 13:56:41 mang nhãn hoàn; từ 13:57:41 là đơn đi.
+  - Agent cắt và ghép PiP được clip đơn đi và clip khiếu nại kiện hoàn. Chủ dự án xác nhận test đạt.
+- **Sự cố khi cài 0.10.1:** khoá bí mật của agent được tạo lại trên database trong lúc trình cài bị huỷ (mã thoát 5), nên `.env` giữ khoá cũ và agent bị từ chối `401 bad_signature`. Đã sửa bằng cách ghi khoá từ database vào `.env` của agent rồi khởi động lại dịch vụ.
+- **Dọn dẹp:**
+  - `hik_3` / `dahua_3` trả về cấu hình gốc.
+  - Ca thử BAN_04 đã đóng.
+  - Camera ảo đã tắt.
+  - Xoá script tạm.
+- **Trạng thái:** Hoàn tất.
