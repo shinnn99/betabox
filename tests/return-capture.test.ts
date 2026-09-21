@@ -157,8 +157,12 @@ test("agent giữ nhãn cho đoạn đang ghi dở rồi mới báo xong", () =>
   const source = readFileSync("warehouse-agent/src/return-capture.ts", "utf8");
   assert.ok(source.includes("pending_cameras"), "thiếu danh sách đoạn còn dở lúc tắt");
   assert.ok(
-    source.includes("if (s.draining && !s.pending_cameras.includes(cameraId)) return null"),
-    "đang rút thì chỉ gán tiếp cho đoạn dở, không gán cho đoạn mới mở sau đó",
+    source.includes("if (c.draining && c.pending_cameras.includes(cameraId)) return c.capture_id"),
+    "đoạn dở lúc thoát phải thuộc phiên đang rút, ưu tiên hơn phiên mới bật",
+  );
+  assert.ok(
+    source.includes("private readonly captures = new Map<string, CaptureEntry>()"),
+    "agent phải giữ được nhiều phiên cùng lúc (nhiều bàn, chuyển qua lại nhanh)",
   );
   assert.ok(source.includes("finishIfDrained"), "thiếu điều kiện kết thúc phiên");
   // Trạng thái phải sống qua một lần khởi động lại agent.

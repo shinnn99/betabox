@@ -168,3 +168,92 @@ test("agent khởi động lại giữa phiên: nhớ đoạn nào còn là củ
     process.chdir(cwd);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Chuyển qua lại giữa hai module (chủ dự án chốt 21/09/2026): đoạn dở luôn
+// ghi nốt cho module cũ, module mới nhận từ đoạn kế tiếp — cả hai chiều,
+// bao nhiêu lần cũng vậy.
+// ---------------------------------------------------------------------------
+
+test("chuyển qua lại nhiều lần: mỗi đoạn thuộc đúng module lúc nó BẮT ĐẦU ghi", async () => {
+  const { store, cam, sent } = setup();
+  try {
+    cam.start(); // seg-1: đóng hàng
+    const A = { ...on, capture_id: "cap-A" };
+    const B = { ...on, capture_id: "cap-B" };
+
+    await store.apply(A); // → HOÀN giữa seg-1
+    let r = await cam.roll(); // seg-1 đóng, seg-2 mở
+    assert.equal(r.closedLabel, null, "seg-1 ghi nốt cho đóng hàng");
+    assert.equal(r.openedLabel, "cap-A", "seg-2 là của hoàn");
+
+    await store.apply({ ...A, active: false }); // → ĐÓNG HÀNG giữa seg-2
+    r = await cam.roll(); // seg-2 đóng, seg-3 mở
+    assert.equal(r.closedLabel, "cap-A", "seg-2 ghi nốt cho hoàn");
+    assert.equal(r.openedLabel, null, "seg-3 là của đóng hàng");
+    assert.equal(sent.filter((p) => p.action === "finish" && p.capture_id === "cap-A").length, 1);
+
+    await store.apply(B); // → HOÀN lần nữa giữa seg-3
+    r = await cam.roll(); // seg-3 đóng, seg-4 mở
+    assert.equal(r.closedLabel, null, "seg-3 ghi nốt cho đóng hàng");
+    assert.equal(r.openedLabel, "cap-B", "chuyển lại thì bắt đầu nhận từ đoạn kế tiếp");
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+test("hoàn → đóng hàng → hoàn trong CÙNG một đoạn: đoạn đó vẫn của phiên cũ, phiên cũ không bị báo xong sớm", async () => {
+  const { store, cam, sent } = setup();
+  try {
+    const A = { ...on, capture_id: "cap-A" };
+    const B = { ...on, capture_id: "cap-B" };
+    await store.apply(A);
+    assert.equal(cam.start(), "cap-A"); // seg-1 của phiên A
+
+    await store.apply({ ...A, active: false }); // thoát giữa seg-1
+    await store.apply(B); // vào lại ngay, seg-1 vẫn đang ghi
+
+    assert.equal(
+      sent.filter((p) => p.action === "finish").length,
+      0,
+      "phiên A chưa được xong: đoạn cuối của nó còn đang ghi",
+    );
+    assert.equal(store.labelFor(CAM), "cap-A", "đoạn dở không bị phiên mới cướp nhãn");
+
+    const r = await cam.roll();
+    assert.equal(r.closedLabel, "cap-A", "seg-1 lưu nốt cho phiên A");
+    assert.equal(r.openedLabel, "cap-B", "phiên B nhận từ seg-2");
+
+    const finish = sent.filter((p) => p.action === "finish");
+    assert.equal(finish.length, 1);
+    assert.equal(finish[0].capture_id, "cap-A");
+    assert.equal(finish[0].last_segment_ended_at, "2026-09-21T02:01:00.000Z");
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+test("hai bàn cùng nhận hoàn: bàn thứ hai bật không đè mất phiên bàn thứ nhất", async () => {
+  const { store } = setup();
+  try {
+    await store.apply({ capture_id: "cap-1", station_id: "ban-1", camera_ids: ["cam-a"], active: true });
+    await store.apply({ capture_id: "cap-2", station_id: "ban-2", camera_ids: ["cam-b"], active: true });
+    assert.equal(store.labelFor("cam-a"), "cap-1");
+    assert.equal(store.labelFor("cam-b"), "cap-2");
+    assert.equal(store.labelFor("cam-khac"), null, "camera không thuộc bàn nào đang hoàn thì không nhãn");
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+test("lệnh BẬT giao trễ sau khi phiên đã xong không làm phiên sống lại", async () => {
+  const { store, cam } = setup();
+  try {
+    await store.apply(on);
+    await store.apply(off); // không có đoạn dở → xong ngay
+    await store.apply(on); // lệnh BẬT cũ bị giao lại
+    assert.equal(cam.start(), null, "sống lại là gán nhãn mãi không dừng");
+  } finally {
+    process.chdir(cwd);
+  }
+});

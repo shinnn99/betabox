@@ -97,6 +97,8 @@ Hệ quả: đoạn bọc chỗ kết thúc video đơn đi luôn giữ hạn l�
 
 Bật rồi tắt ngay trong cùng một đoạn đóng hàng → phiên kết thúc luôn, không chờ đoạn không thuộc mình.
 
+**Chuyển qua lại bao nhiêu lần cũng vậy:** mỗi đoạn thuộc về module đang bật **lúc đoạn đó bắt đầu ghi**. Chuyển lại thì module kia nhận từ đoạn kế tiếp. Vì thế agent giữ **nhiều phiên cùng lúc**: chuyển hoàn → đóng hàng → hoàn trong cùng một đoạn thì phiên cũ vẫn đang chờ đoạn dở lưu xong trong khi phiên mới đã bật; nhiều bàn nhận hoàn cùng lúc thì mỗi bàn một phiên. Lệnh BẬT giao trễ sau khi phiên đã kết thúc bị bỏ qua (agent nhớ 100 phiên gần nhất), để phiên không sống lại rồi gán nhãn mãi.
+
 ## 5. Đường tín hiệu
 
 | Bước | Ai gọi ai | Nội dung |
