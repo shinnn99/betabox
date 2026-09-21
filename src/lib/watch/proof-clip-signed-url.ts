@@ -112,12 +112,13 @@ async function resolveDownloadFileName(packingEventId: string | null): Promise<s
   if (!packingEventId) return buildProofClipFileName({ waybillCode: null, scannedAt: null });
   const { data: event } = await createAdminClient()
     .from("packing_events")
-    .select("waybill_code, scanned_at")
+    .select("waybill_code, scanned_at, event_kind")
     .eq("id", packingEventId)
     .maybeSingle();
   return buildProofClipFileName({
     waybillCode: event?.waybill_code ?? null,
     scannedAt: event?.scanned_at ?? null,
+    eventKind: event?.event_kind ?? null,
   });
 }
 

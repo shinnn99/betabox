@@ -230,13 +230,14 @@ export async function POST(req: Request) {
     // nghiệp vụ. Xem `src/lib/order-proof/clip-file-name.ts`.
     const { data: packingEvent } = await admin
       .from("packing_events")
-      .select("waybill_code, scanned_at")
+      .select("waybill_code, scanned_at, event_kind")
       .eq("id", body.packing_event_id)
       .eq("organization_id", agent.organization_id)
       .maybeSingle();
     const clipName = buildProofClipFileName({
       waybillCode: packingEvent?.waybill_code ?? null,
       scannedAt: packingEvent?.scanned_at ?? null,
+      eventKind: packingEvent?.event_kind ?? null,
     });
 
     let coveredRange: string | null = null;

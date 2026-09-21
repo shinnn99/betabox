@@ -10,6 +10,28 @@ type Admin = ReturnType<typeof createAdminClient>;
 const MAX_PER_SWEEP = 5;
 
 /**
+ * Chờ bao lâu sau khi kiện đóng mới xin cắt clip.
+ *
+ * Clip kéo dài quá lúc đóng kiện một đoạn đệm (post-roll, mặc định 60 giây),
+ * và segment trên agent chỉ "xong" khi cuộn sang đoạn kế (tối đa 60 giây
+ * nữa). Xin cắt trước lúc đó thì đoạn cuối còn đang ghi dở: bộ ghép bỏ luôn
+ * góc camera đó. Bắt được khi chạy thử đầu-cuối 21/09/2026 — clip kiện TRÁO
+ * xin cắt ngay lúc đóng kiện ra một góc, MẤT góc quét mã, đúng video quan
+ * trọng nhất khi khiếu nại tráo hàng.
+ *
+ * 60 (post-roll) + 60 (một segment) + 60 (đệm báo segment lên cloud).
+ * Hồ sơ sống 7 ngày nên chờ thêm ba phút không đáng kể.
+ */
+export const RETURN_CLIP_SETTLE_SECONDS = 180;
+
+/** Kiện đã đóng đủ lâu để mọi đoạn video phủ nó đã ghi xong chưa. */
+export function returnClipSettled(workEndedAt: string | null, now: number = Date.now()): boolean {
+  if (!workEndedAt) return false;
+  const ended = Date.parse(workEndedAt);
+  return Number.isFinite(ended) && now - ended >= RETURN_CLIP_SETTLE_SECONDS * 1000;
+}
+
+/**
  * Cắt clip NGAY cho kiện hoàn có vấn đề, không chờ ai mở xem.
  *
  * Vì sao khác đơn đi: đơn đi chỉ cắt khi có người mở, vì phần lớn đơn không
@@ -52,7 +74,17 @@ export async function requestClipsForOpenReturnClaims(params: {
     .in("packing_event_id", eventIds);
   const hasClip = new Set((clips ?? []).map((c) => c.packing_event_id as string));
 
-  const pending = eventIds.filter((id) => !hasClip.has(id));
+  // Chỉ kiện đã đóng đủ lâu — xem RETURN_CLIP_SETTLE_SECONDS.
+  const { data: ended } = await params.admin
+    .from("packing_events")
+    .select("id, work_ended_at")
+    .in("id", eventIds);
+  const settled = new Set(
+    (ended ?? [])
+      .filter((e) => returnClipSettled(e.work_ended_at as string | null))
+      .map((e) => e.id as string),
+  );
+  const pending = eventIds.filter((id) => !hasClip.has(id) && settled.has(id));
   if (pending.length === 0) return 0;
 
   // Máy kho phải online mới cắt được; offline thì để lần quét sau.

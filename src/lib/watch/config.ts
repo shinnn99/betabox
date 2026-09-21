@@ -93,11 +93,24 @@ export const OFFLINE_POLL_GIVEUP_MINUTES = Number(
  * Cấu trúc cũ `{org}/{pe}.mp4` vẫn hoạt động vì code đọc `bucket_path`
  * từ DB, không tự dựng lại — coexistence. KHÔNG tự tính path để LOOKUP.
  * Chỉ dùng hàm này khi TẠO clip mới (enqueue/upload/verify path mới).
+ *
+ * Kiện hoàn nằm trong thư mục riêng `{org}/hoan/{pe}/{clip_id}.mp4` (chủ dự
+ * án yêu cầu 21/09/2026: video đẩy lên phải phân biệt được đóng hàng hay
+ * hoàn hàng). Trước đó hai loại cùng dạng đường dẫn, nhìn object trong
+ * bucket không biết video nào là gì. Đơn đi giữ nguyên dạng cũ.
  */
 export function bucketPathFor(
   orgId: string,
   packingEventId: string,
   clipId: string,
+  eventKind: "outbound" | "return" | null | undefined = "outbound",
 ): string {
-  return `${orgId}/${packingEventId}/${clipId}.mp4`;
+  return eventKind === "return"
+    ? `${orgId}/hoan/${packingEventId}/${clipId}.mp4`
+    : `${orgId}/${packingEventId}/${clipId}.mp4`;
+}
+
+/** Loại lượt từ cột `packing_events.event_kind` — lạ hoặc thiếu thì là đơn đi. */
+export function asEventKind(value: unknown): "outbound" | "return" {
+  return value === "return" ? "return" : "outbound";
 }

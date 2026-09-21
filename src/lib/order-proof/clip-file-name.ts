@@ -17,6 +17,11 @@ import { vnParts } from "@/lib/time/vietnam";
  *
  * Định dạng ngày `yyyyMMdd-HHmmss` (không phải dd/MM) để sắp xếp theo tên
  * trong thư mục cũng là sắp xếp theo thời gian.
+ *
+ * Video kiện hoàn có tiền tố `HOAN-`: `HOAN-<mã vận đơn>-<ngày>-<giờ>.mp4`.
+ * Kiện giao thất bại mang ĐÚNG mã vận đơn của lượt gửi đi, nên không có
+ * tiền tố thì hai file (lúc gửi đi và lúc hoàn về) chỉ khác nhau ở giờ —
+ * gửi nhầm file cho sàn khi khiếu nại là chuyện dễ xảy ra.
  */
 
 /** Ký tự an toàn cho tên file trên Windows, macOS và header HTTP. */
@@ -44,8 +49,11 @@ export function buildProofClipFileName(input: {
   waybillCode: string | null | undefined;
   /** `packing_events.scanned_at`. */
   scannedAt: string | number | Date | null | undefined;
+  /** `packing_events.event_kind`. Thiếu = đơn đi (tên như cũ). */
+  eventKind?: string | null;
 }): string {
-  const waybill = sanitizeWaybillForFileName(input.waybillCode);
+  const prefix = input.eventKind === "return" ? "HOAN-" : "";
+  const waybill = prefix + sanitizeWaybillForFileName(input.waybillCode);
   const parts = input.scannedAt != null ? vnParts(input.scannedAt) : null;
   if (!parts) {
     // Row hỏng thời gian: vẫn trả tên hợp lệ, có mã đơn để tra cứu được.

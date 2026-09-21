@@ -6,7 +6,7 @@ import {
 } from "@/lib/warehouse/agent-auth";
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
-import { BUCKET_NAME, bucketPathFor } from "@/lib/watch/config";
+import { BUCKET_NAME, asEventKind, bucketPathFor } from "@/lib/watch/config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -120,19 +120,29 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "clip_pe_mismatch" }, { status: 400 });
   }
 
-  // Backend tự tính bucket path v2.
+  // Backend tự tính bucket path v2 — PHẢI cùng công thức với clip-upload-url
+  // (kiện hoàn nằm thư mục riêng), nếu không bước xác minh tìm sai chỗ.
+  const { data: pe } = await admin
+    .from("packing_events")
+    .select("event_kind")
+    .eq("id", body.packing_event_id)
+    .eq("organization_id", agent.organization_id)
+    .maybeSingle();
   const bucketPath = bucketPathFor(
     agent.organization_id,
     body.packing_event_id,
     body.clip_id,
+    asEventKind(pe?.event_kind),
   );
 
   // Verify object THẬT SỰ tồn tại trong bucket. Dùng list parent với
   // search bằng đúng basename để lấy object metadata (Supabase SDK
   // không expose head trực tiếp — list + search theo tên chính xác đủ
   // an toàn ở đây vì tên = clip_id là UUID duy nhất).
-  const parentDir = `${agent.organization_id}/${body.packing_event_id}`;
-  const fileName = `${body.clip_id}.mp4`;
+  // Tách từ bucketPath chứ không tự ghép lại: ghép tay là hai công thức
+  // chực lệch nhau (đã lệch thật khi kiện hoàn có thư mục riêng).
+  const parentDir = bucketPath.slice(0, bucketPath.lastIndexOf("/"));
+  const fileName = bucketPath.slice(bucketPath.lastIndexOf("/") + 1);
   const { data: files, error: listErr } = await admin.storage
     .from(BUCKET_NAME)
     .list(parentDir, { limit: 10, search: fileName });

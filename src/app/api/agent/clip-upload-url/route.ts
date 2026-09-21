@@ -6,7 +6,7 @@ import {
 } from "@/lib/warehouse/agent-auth";
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
-import { BUCKET_NAME, bucketPathFor } from "@/lib/watch/config";
+import { BUCKET_NAME, asEventKind, bucketPathFor } from "@/lib/watch/config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -115,10 +115,18 @@ export async function POST(req: Request) {
     );
   }
 
+  // Kiện hoàn vào thư mục riêng — xem bucketPathFor.
+  const { data: pe } = await admin
+    .from("packing_events")
+    .select("event_kind")
+    .eq("id", body.packing_event_id)
+    .eq("organization_id", agent.organization_id)
+    .maybeSingle();
   const bucketPath = bucketPathFor(
     agent.organization_id,
     body.packing_event_id,
     body.clip_id,
+    asEventKind(pe?.event_kind),
   );
 
   const { data: signed, error: signedErr } = await admin.storage

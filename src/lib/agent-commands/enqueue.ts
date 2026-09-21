@@ -553,7 +553,7 @@ export async function enqueueCutClip(
   const { data: pe, error: peErr } = await admin
     .from("packing_events")
     .select(
-      "id, organization_id, warehouse_id, station_id, staff_id, work_session_id, scanned_at, proof_camera_id, waybill_code, work_started_at, work_ended_at, work_duration_seconds, timing_status, event_kind",
+      "id, organization_id, warehouse_id, station_id, staff_id, work_session_id, scanned_at, proof_camera_id, waybill_code, work_started_at, work_ended_at, work_duration_seconds, timing_status, event_kind, return_kind, inspection_result",
     )
     .eq("id", args.packingEventId)
     .eq("organization_id", args.organizationId)
@@ -798,6 +798,10 @@ export async function enqueueCutClip(
       information_strip: "bottom",
     },
     information_strip: [
+      // Kiện hoàn tự khai là kiện hoàn ngay trên hình: file đi ra khỏi hệ
+      // thống (tải về, gửi sàn khi khiếu nại) thì dải chữ này là thứ duy
+      // nhất còn đi theo. Đơn đi giữ nguyên như cũ.
+      returnStripLabel(pe),
       pe.waybill_code,
       warehouse?.name,
       station ? `${station.code} · ${station.name}` : null,
@@ -877,4 +881,32 @@ export async function enqueueCutClip(
     is_partial: isPartial,
     segment_count: sortedSegments.length,
   };
+}
+
+const RETURN_KIND_STRIP: Record<string, string> = {
+  rts: "Giao thất bại",
+  customer_return: "Khách trả",
+  suspect: "Quét ở bàn đóng hàng",
+};
+
+const INSPECTION_STRIP: Record<string, string> = {
+  ok: "Hàng ổn",
+  damaged: "Hỏng",
+  missing: "Thiếu",
+  swapped: "Tráo",
+  unchecked: "Chưa kiểm",
+};
+
+/** Nhãn đầu dải chữ của video kiện hoàn; đơn đi trả null (không đổi gì). */
+export function returnStripLabel(pe: {
+  event_kind?: string | null;
+  return_kind?: string | null;
+  inspection_result?: string | null;
+}): string | null {
+  if (pe.event_kind !== "return") return null;
+  return [
+    "HÀNG HOÀN",
+    pe.return_kind ? (RETURN_KIND_STRIP[pe.return_kind] ?? pe.return_kind) : null,
+    pe.inspection_result ? (INSPECTION_STRIP[pe.inspection_result] ?? pe.inspection_result) : null,
+  ].filter(Boolean).join(" · ");
 }
