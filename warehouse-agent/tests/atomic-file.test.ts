@@ -113,10 +113,20 @@ test("quarantineCorruptQueue: file không tồn tại → null", async () => {
 
 test("SerializedWriter: coalesce nhiều schedule → chỉ 1 write cuối", async () => {
   const writes: string[] = [];
-  const w = new SerializedWriter(30, async (payload: string) => {
+  // Cửa sổ gộp 500ms chứ không phải 30ms: hai nhịp `setTimeout(5)` bên dưới
+  // có thể overshoot mạnh (granularity timer Windows ~15,6ms, cộng máy đang
+  // bận). Với cửa sổ 30ms thì chỉ cần lần ngủ đầu vượt 30ms là "a" đã được
+  // ghi trước khi "b" kịp xếp hàng → test fail dù SerializedWriter đúng.
+  // Đã thấy fail 2 lần trong ngày 2026-08-06 trên máy dev.
+  //
+  // Biên 500ms/5ms giữ nguyên ý nghĩa cần khẳng định (nhiều schedule trong
+  // cùng cửa sổ → đúng 1 write, payload cuối thắng) nhưng bỏ khoảng nhấp
+  // nháy. Đổi lại test tốn ~500ms — rẻ hơn một test mà cách xử lý mặc định
+  // là chạy lại.
+  const w = new SerializedWriter(500, async (payload: string) => {
     writes.push(payload);
   });
-  // 3 schedule cách nhau 5ms, coalesce 30ms → chỉ 1 write cuối.
+  // 3 schedule cách nhau 5ms, coalesce 500ms → chỉ 1 write cuối.
   const p1 = w.schedule("a");
   await new Promise((r) => setTimeout(r, 5));
   const p2 = w.schedule("b");

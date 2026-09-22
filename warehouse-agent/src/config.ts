@@ -68,6 +68,22 @@ const EnvSchema = z.object({
    * <RECORDING_DIR>/<camera_code>/<YYYY>/<MM>/<DD>/<code>_<YYYYMMDD>_<HHMMSS>.mp4
    */
   RECORDING_DIR: z.string().min(1).default("./recordings"),
+  /**
+   * Disk guard — ngưỡng tính bằng GIỜ GHI còn lại (không phải % ổ).
+   *
+   * Mặc định 48/12 hợp với Đại Kim (2 cam, ~1,8 GB mỗi giờ ghi → cảnh báo ở
+   * ~86 GB trống, hành động ở ~22 GB). Có env để:
+   *   - kho có tốc độ ăn đĩa khác hẳn thì chỉnh không cần build lại;
+   *   - VERIFY được trên máy thật: nâng tạm ACTION_HOURS lên rất cao để ép
+   *     guard vào mức hành động, xem nó chọn đúng file và đòi được chỗ.
+   *     Chỉ làm trên máy dev Betacom — trên máy khách nó sẽ xoá segment thật.
+   *
+   * SÀN 7 ngày KHÔNG có env: sàn là thứ chặn guard chạy loạn, không phải
+   * tham số vận hành. Muốn đổi thì đổi code + đọc lại lý do ở disk-guard.ts.
+   */
+  DISK_GUARD_WARN_HOURS: z.coerce.number().positive().default(48),
+  DISK_GUARD_ACTION_HOURS: z.coerce.number().positive().default(12),
+  DISK_GUARD_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(300000),
   FFMPEG_PATH: z.string().min(1).default("ffmpeg"),
   FFPROBE_PATH: z.string().min(1).default("ffprobe"),
   /**
@@ -174,6 +190,9 @@ export interface AgentConfig {
   qrConfirmFrames: number;
   qrAbsenceMs: number;
   recordingDir: string;
+  diskGuardWarnHours: number;
+  diskGuardActionHours: number;
+  diskGuardCheckIntervalMs: number;
   ffmpegPath: string;
   ffprobePath: string;
   recordingCredentialsRetryMs: number;
@@ -224,6 +243,9 @@ export function loadConfig(): AgentConfig {
     qrConfirmFrames: env.QR_CONFIRM_FRAMES,
     qrAbsenceMs: env.QR_ABSENCE_MS,
     recordingDir: env.RECORDING_DIR,
+    diskGuardWarnHours: env.DISK_GUARD_WARN_HOURS,
+    diskGuardActionHours: env.DISK_GUARD_ACTION_HOURS,
+    diskGuardCheckIntervalMs: env.DISK_GUARD_CHECK_INTERVAL_MS,
     ffmpegPath: env.FFMPEG_PATH,
     ffprobePath: env.FFPROBE_PATH,
     recordingCredentialsRetryMs: env.RECORDING_CREDENTIALS_RETRY_MS,

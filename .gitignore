@@ -42,6 +42,12 @@ yarn-error.log*
 # Local warehouse-agent queue spillover (offline scan retry buffer).
 warehouse-agent/data/pending-scans.jsonl
 
+# Local warehouse-agent runtime state — agent tự sinh khi chạy, tự tạo lại
+# sau mỗi heartbeat/boot. Không phải cấu hình, không được commit.
+warehouse-agent/retention-cache.json
+warehouse-agent/data/pending-segment-reports.jsonl
+warehouse-agent/logs/
+
 # Local warehouse-agent recording output — MP4 segments from real cameras.
 # Sensitive footage; must never be pushed to git.
 warehouse-agent/recordings/

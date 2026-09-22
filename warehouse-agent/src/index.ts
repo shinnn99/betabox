@@ -54,6 +54,7 @@ import {
   probeDurationSeconds,
   probeFileVideoCodec,
   type CutClipResult,
+  writeClipSourcesSidecar,
   type CutSegmentInput,
 } from "./clip-cutter";
 import { composeProofClip } from "./compose/clip-composer";
@@ -76,6 +77,8 @@ import {
 } from "./ffmpeg-marker-sweep";
 import { callBootDeclare } from "./boot-declare";
 import { FfmpegRuntimeWatchdog } from "./ffmpeg-runtime-watchdog";
+import { DiskGuard } from "./disk-guard";
+import { CleanupLogRelay } from "./cleanup-log-relay";
 import { listActiveRecordings } from "./recording";
 import { connectCamera } from "./camera-connect";
 import { RelayHub, relayPathName, type RelayPath } from "./live/relay-hub";
@@ -199,6 +202,32 @@ async function main(): Promise<void> {
     resolve(dataDir, "pending-clip-results.jsonl"),
   );
   const recordingRoot = resolve(process.cwd(), config.recordingDir);
+
+  // `--disk-guard-dry-run`: chạy thử disk guard rồi THOÁT. Không mở scanner,
+  // không heartbeat, không ghi hình, không xoá byte nào.
+  //
+  // Dùng lúc onboarding kho mới để trả lời "ngưỡng đặt đúng chưa" ngay ngày
+  // lắp máy — mỗi kho có ổ khác, số camera khác, tốc độ ăn đĩa khác (Đại Kim
+  // 900 MB/cam-giờ, máy dev 142). Trước đó chỉ có hai cách biết: chờ đủ lâu,
+  // hoặc để nó xoá thật.
+  //
+  // Chạy ĐƯỢC trong lúc service đang ghi: tiến trình này không thấy camera
+  // nào đang recording nên guard tự suy tốc độ từ segment trên ổ.
+  if (process.argv.includes("--disk-guard-dry-run")) {
+    const dg = new DiskGuard(
+      {
+        recordingRoot,
+        getActiveCameras: () => [],
+        isCutInFlight: () => false,
+      },
+      {
+        warnHours: config.diskGuardWarnHours,
+        actionHours: config.diskGuardActionHours,
+      },
+    );
+    await dg.dryRun();
+    return;
+  }
 
   /**
    * Giao callback clip-cut-result CÓ HẬU KIỂM (2026-08-11).
@@ -1390,6 +1419,22 @@ async function main(): Promise<void> {
         await fsp.unlink(bakAbs).catch(() => {});
       }
 
+      // Sidecar nguồn: chưa ai đọc, ghi cho disk guard v2 (xem clip-cutter.ts).
+      // Không được làm hỏng lượt cắt — nuốt lỗi, chỉ warn.
+      await writeClipSourcesSidecar({
+        clipsDir: resolve(recordingRoot, CLIPS_SUBDIR),
+        packingEventId: p.packing_event_id,
+        clipId: p.clip_id,
+        cameraId: p.camera_id,
+        targetStart: p.target_start,
+        targetEnd: p.target_end,
+        sourceFiles: p.segments.map((s) => s.file_path),
+      }).catch((err) => {
+        console.warn(
+          `[clip-cutter] ghi sidecar nguồn thất bại pe=${p.packing_event_id}: ${(err as Error).message}`,
+        );
+      });
+
       console.log(
         `[clip-cutter] promoted clip=${p.clip_id} pe=${p.packing_event_id} ` +
           `size=${cutResult.fileSizeBytes} bucket=${urlResult.bucketPath} ` +
@@ -1829,6 +1874,8 @@ async function main(): Promise<void> {
   // capture reference. Runtime chỉ được assign sau khi tạo dưới đây, nên
   // ping() đầu tiên có thể gọi khi watchdog chưa sẵn — dùng `?.` an toàn.
   const runtimeWatchdog: { current?: FfmpegRuntimeWatchdog } = {};
+  let diskGuard: DiskGuard | undefined;
+  let cleanupLogRelay: CleanupLogRelay | undefined;
 
   // Heartbeat so the backend dashboard knows the agent is alive.
   // sendHeartbeat đã retry 3 lần với backoff — chỉ đến đây khi tất cả
@@ -2165,6 +2212,59 @@ async function main(): Promise<void> {
   });
   runtimeWatchdog.current.start();
 
+  // Disk guard — tầng HÀNH ĐỘNG (cục bộ, không phụ thuộc cloud).
+  // `cleanup-segments.ps1` thi hành retention theo LỊCH (Chủ nhật hàng tuần),
+  // đĩa thì đầy theo giây. Guard đo mỗi 5' bằng statfs (không duyệt cây), và
+  // chỉ duyệt cây khi thật sự phải chọn file để xoá.
+  // Ngưỡng tính bằng GIỜ GHI, suy từ segment kho đó vừa ghi — tự hiệu chỉnh
+  // khi thêm camera hoặc camera đổi bitrate (Đại Kim đã nhảy 5,3× trong 12
+  // ngày). Sàn tuyệt đối 7 ngày: chạm sàn thì DỪNG + báo động, không xoá tiếp.
+  diskGuard = new DiskGuard({
+    recordingRoot,
+    getActiveCameras: () =>
+      listActiveRecordings().map((r) => ({
+        cameraCode: r.spec.cameraCode,
+        segmentSeconds: r.spec.segmentSeconds,
+      })),
+    // Đang cắt clip thì hoãn: job cắt có thể đọc segment cũ bất kỳ. Ở hiện
+    // trạng (bucket TTL 72h nên hầu hết clip phải cắt lại từ segment) đây
+    // không phải ca hiếm.
+    isCutInFlight: () => encodeGate.isBusy(),
+  }, {
+    checkIntervalMs: config.diskGuardCheckIntervalMs,
+    warnHours: config.diskGuardWarnHours,
+    actionHours: config.diskGuardActionHours,
+  });
+  // Tự tố giác: env ngưỡng đi theo binary tới mọi máy khách và có thể bị đặt
+  // nhầm ở đó. Blast radius đã bị sàn 7 ngày chặn (tệ nhất là xoá xuống sàn,
+  // không xoá sạch), nhưng rủi ro im lặng thì phải biến thành rủi ro nhìn
+  // thấy được: console.error đi thẳng lên `agent_log_events`, nên nếu dòng
+  // này xuất hiện ở máy khách thì thấy ngay, không phải đi kiểm từng máy.
+  const forcedThresholdEnv = [
+    "DISK_GUARD_WARN_HOURS",
+    "DISK_GUARD_ACTION_HOURS",
+    "DISK_GUARD_CHECK_INTERVAL_MS",
+  ].filter((k) => process.env[k] !== undefined && process.env[k] !== "");
+  if (forcedThresholdEnv.length > 0) {
+    console.error(
+      `[disk-guard] NGƯỠNG ĐANG BỊ ÉP THỦ CÔNG qua env: ` +
+        forcedThresholdEnv.map((k) => `${k}=${process.env[k]}`).join(", ") +
+        `. Đây là cấu hình để VERIFY trên máy dev — nếu thấy dòng này trên ` +
+        `máy khách thì gỡ khỏi .env và restart service.`,
+    );
+  }
+  diskGuard.start();
+
+  // Phát lại log cleanup-segments.ps1 lên cloud + báo động khi nó im lặng.
+  // Script ghi log ra file cục bộ và không ai chuyển đi đâu; agent đọc hộ
+  // rồi phát qua console.warn/error (remote-logger đẩy lên agent_log_events).
+  // Đường log dùng cùng quy ước process.cwd() với retention-cache.json.
+  cleanupLogRelay = new CleanupLogRelay({
+    logPath: resolve(process.cwd(), "logs", "cleanup-segments.log"),
+    statePath: resolve(dataDir, "cleanup-log-offset.json"),
+  });
+  cleanupLogRelay.start();
+
   // Camera probe (mở rộng):
   //   Nguồn A — lifecycle.probeTargets(): camera đang recording hoặc đang
   //     long-retry vì tắt vật lý (giữ nguyên hành vi cũ).
@@ -2439,6 +2539,8 @@ async function main(): Promise<void> {
     clearInterval(clipOutboxTimer);
     clearInterval(retentionPlanTimer);
     runtimeWatchdog.current?.stop();
+    diskGuard?.stop();
+    cleanupLogRelay?.stop();
     for (const s of sessions.values()) s.stop();
 
     const SHUTDOWN_TIMEOUT_MS = 4500;
