@@ -16,6 +16,7 @@ import DashboardLayout from "@/components/layout/DashboardLayout";
 import { useSession } from "@/lib/useSession";
 import { ROLE_OPTIONS, ROLE_LABEL, canAssignRole, type Role } from "@/lib/auth";
 import { usePermissions } from "@/lib/usePermissions";
+import { deniedClass } from "@/lib/useGuard";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
 import Select from "@/components/ui/Select";
@@ -34,7 +35,7 @@ interface UserRow {
 
 export default function UsersPage() {
   const { session } = useSession();
-  const { can } = usePermissions(session?.userId);
+  const { can, ready: permsReady } = usePermissions(session?.userId);
   // Cùng luật cấp bậc với API (canAssignRole): chỉ thao tác được tài khoản
   // vai trò THẤP HƠN mình, chỉ cấp được vai trò thấp hơn mình. Trưởng kho
   // quản lý trưởng ca / nhân viên đóng gói / viewer; không đụng admin, owner.
@@ -44,9 +45,27 @@ export default function UsersPage() {
   const roleOptions = actorRole
     ? ROLE_OPTIONS.filter((r) => canAssignRole(actorRole, r.value))
     : [];
+  const toast = useToast();
+  // Sửa / xoá: chặn ngay khi bấm, nói rõ vì sao không được — thiếu quyền,
+  // tài khoản vai trò ngang/cao hơn, hay chính mình. Không mở form.
+  const tryManage = (u: UserRow, perm: string, verb: string, fn: () => void) => {
+    if (!permsReady) return;
+    if (!can(perm)) {
+      toast.error(`Bạn không có quyền ${verb} người dùng.`);
+      return;
+    }
+    if (u.id === session?.userId) {
+      toast.error(`Không thể ${verb} chính tài khoản của bạn tại đây.`);
+      return;
+    }
+    if (!canManage(u)) {
+      toast.error(`Bạn không có quyền ${verb} tài khoản vai trò ${ROLE_LABEL[u.role] ?? u.role}.`);
+      return;
+    }
+    fn();
+  };
   const impersonatingOrgId = useImpersonatingOrgId();
   const confirm = useConfirm();
-  const toast = useToast();
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -121,14 +140,19 @@ export default function UsersPage() {
             <div className="text-xs text-slate-500">
               Tổ chức: <b>{session?.organizationName ?? "..."}</b>
             </div>
-            {can("user.create") && roleOptions.length > 0 && (
-              <button
-                onClick={() => setShowCreate(true)}
-                className="ml-auto h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2"
-              >
-                <UserPlus className="h-4 w-4" /> Thêm người dùng
-              </button>
-            )}
+            <button
+              onClick={() => {
+                if (!permsReady) return;
+                if (!can("user.create") || roleOptions.length === 0) {
+                  toast.error("Bạn không có quyền thêm người dùng.");
+                  return;
+                }
+                setShowCreate(true);
+              }}
+              className={`ml-auto h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2${deniedClass(can("user.create") && roleOptions.length > 0)}`}
+            >
+              <UserPlus className="h-4 w-4" /> Thêm người dùng
+            </button>
           </div>
 
           {error && (
@@ -202,36 +226,20 @@ export default function UsersPage() {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="inline-flex items-center justify-center gap-1 w-20">
-                          {!(can("user.update") || can("user.delete")) || !canManage(u) ? (
-                            <span
-                              className="text-slate-300"
-                              title={u.id === session?.userId ? "Tài khoản của bạn" : "Vai trò ngang hoặc cao hơn bạn"}
-                            >
-                              —
-                            </span>
-                          ) : (
-                          <>
-                          {can("user.update") && (
                           <button
-                            onClick={() => setEditing(u)}
-                            className="h-8 w-8 rounded-lg hover:bg-slate-100 inline-flex items-center justify-center text-slate-600"
+                            onClick={() => tryManage(u, "user.update", "sửa", () => setEditing(u))}
+                            className={`h-8 w-8 rounded-lg hover:bg-slate-100 inline-flex items-center justify-center text-slate-600${deniedClass(can("user.update") && canManage(u))}`}
                             title="Sửa"
                           >
                             <Pencil className="h-4 w-4" />
                           </button>
-                          )}
-                          {can("user.delete") && (
                           <button
-                            onClick={() => onDelete(u)}
-                            disabled={u.id === session?.userId}
-                            className="h-8 w-8 rounded-lg hover:bg-red-50 inline-flex items-center justify-center text-red-600 disabled:opacity-30 disabled:cursor-not-allowed"
-                            title={u.id === session?.userId ? "Không thể xoá chính bạn" : "Xoá"}
+                            onClick={() => tryManage(u, "user.delete", "xoá", () => void onDelete(u))}
+                            className={`h-8 w-8 rounded-lg hover:bg-red-50 inline-flex items-center justify-center text-red-600${deniedClass(can("user.delete") && canManage(u))}`}
+                            title="Xoá"
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
-                          )}
-                          </>
-                          )}
                         </div>
                       </td>
                     </tr>

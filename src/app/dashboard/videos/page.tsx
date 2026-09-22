@@ -1246,7 +1246,16 @@ function BulkActionBar({
 }) {
   // Viewer chỉ xem và tải video — không đánh dấu lỗi.
   const can = useCan();
-  if (!can("order_proof.generate")) return null;
+  const toast = useToast();
+  const allowed = can("order_proof.generate");
+  // Không có quyền: vẫn thấy thanh chọn, bấm nút chỉ báo — không gửi request.
+  const g = (fn: () => void) => () => {
+    if (!allowed) {
+      toast.error("Bạn không có quyền đánh dấu lỗi video.");
+      return;
+    }
+    fn();
+  };
   const allFlagged = flaggedSelectedCount === selectedCount;
   const noneFlagged = flaggedSelectedCount === 0;
   return (
@@ -1267,7 +1276,7 @@ function BulkActionBar({
       </div>
       {!allFlagged && (
         <button
-          onClick={onMarkError}
+          onClick={g(onMarkError)}
           disabled={marking}
           className="h-8 px-3 rounded-lg bg-rose-500 hover:bg-rose-600 text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
         >
@@ -1281,7 +1290,7 @@ function BulkActionBar({
       )}
       {!noneFlagged && (
         <button
-          onClick={onUnmarkError}
+          onClick={g(onUnmarkError)}
           disabled={marking}
           className="h-8 px-3 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
         >

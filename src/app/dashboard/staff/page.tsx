@@ -25,8 +25,7 @@ import DashboardLayout from "@/components/layout/DashboardLayout";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import Select from "@/components/ui/Select";
 import { useToast } from "@/components/ui/Toast";
-import { useSession } from "@/lib/useSession";
-import { usePermissions } from "@/lib/usePermissions";
+import { deniedClass, usePageGuard } from "@/lib/useGuard";
 
 function useQrDataUrl(payload: string | null, size: number) {
   const [url, setUrl] = useState<string | null>(null);
@@ -103,9 +102,8 @@ const STATUS_COLOR: Record<StaffStatus, string> = {
 export default function StaffPage() {
   const confirm = useConfirm();
   // Chỉ chủ sở hữu, admin, trưởng kho được thêm/sửa/xoá nhân sự; vai trò
-  // khác chỉ xem. API tự chặn theo quyền — ẩn nút cho khỏi bấm nhầm.
-  const { session } = useSession();
-  const { can } = usePermissions(session?.userId);
+  // khác chỉ xem. Nút kiểm quyền ngay khi bấm: không có quyền thì chỉ báo.
+  const { can, guard, session } = usePageGuard();
   const allow = {
     create: can("staff.create"),
     update: can("staff.update"),
@@ -113,7 +111,6 @@ export default function StaffPage() {
     link: can("staff.invite"),
     qr: can("staff.qr.regenerate"),
   };
-  const anyRowAction = allow.link || allow.update || allow.remove;
   const toast = useToast();
   const [staff, setStaff] = useState<StaffRow[]>([]);
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
@@ -194,14 +191,12 @@ export default function StaffPage() {
               className="bg-transparent text-sm outline-none flex-1 placeholder:text-slate-400"
             />
           </div>
-          {allow.create && (
-            <button
-              onClick={() => setShowCreate(true)}
-              className="ml-auto h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2"
-            >
-              <UserPlus className="h-4 w-4" /> Thêm nhân viên
-            </button>
-          )}
+          <button
+            onClick={guard(allow.create, "thêm nhân viên", () => setShowCreate(true))}
+            className={`ml-auto h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2${deniedClass(allow.create)}`}
+          >
+            <UserPlus className="h-4 w-4" /> Thêm nhân viên
+          </button>
         </div>
 
         {error && (
@@ -293,34 +288,27 @@ export default function StaffPage() {
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex items-center justify-center gap-1 w-28">
-                        {!anyRowAction && <span className="text-slate-300">—</span>}
-                        {allow.link && (
                         <button
-                          onClick={() => setLinkFor(s)}
-                          className="h-8 w-8 rounded-lg hover:bg-blue-50 inline-flex items-center justify-center text-blue-600"
+                          onClick={guard(allow.link, "liên kết tài khoản web", () => setLinkFor(s))}
+                          className={`h-8 w-8 rounded-lg hover:bg-blue-50 inline-flex items-center justify-center text-blue-600${deniedClass(allow.link)}`}
                           title="Liên kết tài khoản web"
                         >
                           <Link2 className="h-4 w-4" />
                         </button>
-                        )}
-                        {allow.update && (
                         <button
-                          onClick={() => setEditing(s)}
-                          className="h-8 w-8 rounded-lg hover:bg-slate-100 inline-flex items-center justify-center text-slate-600"
+                          onClick={guard(allow.update, "sửa nhân viên", () => setEditing(s))}
+                          className={`h-8 w-8 rounded-lg hover:bg-slate-100 inline-flex items-center justify-center text-slate-600${deniedClass(allow.update)}`}
                           title="Sửa"
                         >
                           <Pencil className="h-4 w-4" />
                         </button>
-                        )}
-                        {allow.remove && (
                         <button
-                          onClick={() => onDelete(s)}
-                          className="h-8 w-8 rounded-lg hover:bg-red-50 inline-flex items-center justify-center text-red-600"
+                          onClick={guard(allow.remove, "xoá nhân viên", () => void onDelete(s))}
+                          className={`h-8 w-8 rounded-lg hover:bg-red-50 inline-flex items-center justify-center text-red-600${deniedClass(allow.remove)}`}
                           title="Xoá"
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
-                        )}
                       </div>
                     </td>
                   </tr>
@@ -988,6 +976,11 @@ function QrDialog({
   };
 
   const regenerate = async () => {
+    // Chặn trước cả hộp xác nhận: không có quyền thì không hỏi gì thêm.
+    if (!canRegenerate) {
+      toast.error("Bạn không có quyền cấp QR cho nhân viên.");
+      return;
+    }
     if (prefix) {
       const ok = await confirm({
         title: "Cấp QR mới?",
@@ -1045,11 +1038,6 @@ function QrDialog({
         </div>
         <div className="flex gap-2">
           {payload === null ? (
-            !canRegenerate ? (
-              <p className="flex-1 text-center text-xs text-slate-500">
-                Bạn chỉ có quyền xem. Liên hệ trưởng kho để cấp QR.
-              </p>
-            ) : (
             <button
               onClick={regenerate}
               disabled={regenerating}
@@ -1062,7 +1050,6 @@ function QrDialog({
               )}
               {prefix ? "Cấp lại QR" : "Cấp QR"}
             </button>
-            )
           ) : (
             <>
               <button
@@ -1079,7 +1066,6 @@ function QrDialog({
               >
                 <Printer className="h-4 w-4" /> In
               </button>
-              {canRegenerate && (
               <button
                 onClick={regenerate}
                 disabled={regenerating}
@@ -1092,7 +1078,6 @@ function QrDialog({
                   <RefreshCcw className="h-4 w-4" />
                 )}
               </button>
-              )}
             </>
           )}
         </div>

@@ -101,13 +101,14 @@ test("trưởng kho: mọi trang trừ Máy trạm kho; Thiết bị kho chỉ x
 test("Thiết bị kho: mỗi thao tác chỉ hiện khi có đúng quyền (trưởng kho chỉ xem)", () => {
   const src = readFileSync("src/app/dashboard/devices/page.tsx", "utf8");
   for (const needle of [
-    "{allow.add && (",          // Thêm thiết bị
-    "readOnly={!allow.assign}", // đổi bàn ngay trong bảng
-    "{allow.edit && (",         // Chỉnh sửa
-    "{allow.assign && (",       // Gán / Đổi bàn trong menu
-    "{showDelete && onDelete && (",
+    'guard(allow.add, "thêm thiết bị"',
+    "readOnly={!allow.assign}",
+    'guard(allow.edit, "chỉnh sửa thiết bị"',
+    'guard(allow.assign, "đổi bàn cho thiết bị"',
+    'guard(allow.remove, "xoá thiết bị"',
+    'guard(allow.test, "test kết nối camera"',
   ]) {
-    assert.ok(src.includes(needle), `thiếu chốt ẩn: ${needle}`);
+    assert.ok(src.includes(needle), `thiếu chốt chặn: ${needle}`);
   }
   const can = (p: string) => MANAGER.has(p);
   // Trưởng kho: không có quyền nào trong các nhóm thao tác của trang.
@@ -188,8 +189,15 @@ test("nhân sự kho: chỉ owner/admin/trưởng kho được ghi, vai trò kh�
     "trưởng ca / nhân viên đóng gói phải bị rút mọi quyền ghi nhân sự",
   );
   const page = readFileSync("src/app/dashboard/staff/page.tsx", "utf8");
-  for (const needle of ["{allow.create && (", "{allow.update && (", "{allow.remove && (", "{allow.link && (", "canRegenerate={allow.qr}"]) {
-    assert.ok(page.includes(needle), `trang Nhân sự thiếu chốt ẩn: ${needle}`);
+  for (const needle of [
+    'guard(allow.create, "thêm nhân viên"',
+    'guard(allow.update, "sửa nhân viên"',
+    'guard(allow.remove, "xoá nhân viên"',
+    'guard(allow.link, "liên kết tài khoản web"',
+    "canRegenerate={allow.qr}",
+    "if (!canRegenerate) {",
+  ]) {
+    assert.ok(page.includes(needle), `trang Nhân sự thiếu chốt chặn: ${needle}`);
   }
   // Mã QR vào ca chỉ trả cho người được cấp QR — người chỉ xem không lấy được.
   const api = readFileSync("src/app/api/staff/route.ts", "utf8");
@@ -263,4 +271,47 @@ test("danh sách thiết bị cùng quyền với trang Thiết bị kho — vie
   assert.ok(src.includes('requirePermission("station_device.view")'));
   assert.ok(!VIEWER.includes("station_device.view"));
   assert.ok(MANAGER.has("station_device.view"), "trưởng kho vẫn xem được thiết bị");
+});
+
+// ---------------------------------------------------------------------------
+// Chặn NGAY TỪ NÚT (chủ dự án 22/09/2026): không có quyền thì bấm vào chỉ báo
+// "Bạn không có quyền …" — không mở form, không gửi request. Không được để
+// người dùng thao tác xong mới nhận "không thành công" từ API.
+// ---------------------------------------------------------------------------
+
+test("guard: không có quyền thì báo và KHÔNG chạy thao tác; chưa tải quyền thì bỏ qua", async () => {
+  const { runGuarded } = await import("../src/lib/guard-core.ts");
+  const said: string[] = [];
+  let ran = 0;
+  const fn = () => { ran++; };
+  assert.equal(runGuarded(true, false, "thêm kho", fn, (m) => said.push(m)), "denied");
+  assert.equal(ran, 0, "không có quyền thì tuyệt đối không mở form / gửi request");
+  assert.deepEqual(said, ["Bạn không có quyền thêm kho."]);
+  assert.equal(runGuarded(false, false, "thêm kho", fn, (m) => said.push(m)), "skipped");
+  assert.equal(said.length, 1, "chưa tải xong quyền thì không báo nhầm");
+  assert.equal(runGuarded(true, true, "thêm kho", fn, (m) => said.push(m)), "ran");
+  assert.equal(ran, 1);
+});
+
+test("mọi trang có nút ghi dữ liệu đều chặn từ nút, không ẩn-rồi-để-API-báo-lỗi", () => {
+  const PAGES: Array<[string, string[]]> = [
+    ["src/app/dashboard/warehouses/page.tsx", ['"sửa thông tin tổ chức"', '"thêm kho"', '"quản lý kho"', '"xoá kho"']],
+    ["src/app/dashboard/packing-stations/page.tsx", ['"thêm bàn"', '"sửa bàn"', '"lưu trữ bàn"', "allowed={allow.edit}"]],
+    ["src/components/stations/StationPurposeCell.tsx", ["Bạn không có quyền đổi chế độ bàn."]],
+    ["src/app/dashboard/settings/warehouse-config/page.tsx", ['"đổi số ngày giữ video"', '"sửa cấu hình kho"', '"test webhook"', '"xoá cấu hình thông báo"']],
+    ["src/app/dashboard/devices/page.tsx", ['"thêm thiết bị"', '"xoá thiết bị"']],
+    ["src/components/devices/StationAssignCell.tsx", ["Bạn không có quyền đổi bàn cho thiết bị.", "Bạn không có quyền đổi nguồn quét của bàn."]],
+    ["src/app/dashboard/staff/page.tsx", ['"thêm nhân viên"', "Bạn không có quyền cấp QR cho nhân viên."]],
+    ["src/app/dashboard/users/page.tsx", ["Bạn không có quyền thêm người dùng.", 'tryManage(u, "user.update"', 'tryManage(u, "user.delete"']],
+    ["src/app/dashboard/videos/page.tsx", ["Bạn không có quyền đánh dấu lỗi video.", "onClick={g(onMarkError)}"]],
+    ["src/app/dashboard/(return-module)/return-videos/page.tsx", ["Bạn không có quyền đổi trạng thái hồ sơ khiếu nại.", "onClick={g(onSubmitted)}"]],
+    ["src/components/returns/ReturnCapturePanel.tsx", ["Bạn không có quyền bật/tắt nhận hoàn.", "onClick={g(() => void start([s.id]))}"]],
+  ];
+  for (const [file, needles] of PAGES) {
+    const src = readFileSync(file, "utf8");
+    for (const n of needles) assert.ok(src.includes(n), `${file}: thiếu chốt chặn ${n}`);
+    // Kiểu cũ: ẩn cả nút/khung theo quyền — người dùng không biết vì sao.
+    assert.ok(!/^\s*\{allow\.[a-z]+ && \(/m.test(src), `${file}: còn ẩn nút theo quyền, phải chặn-khi-bấm`);
+    assert.ok(!/if \(!can\("[a-z_.]+"\)\) return null;/.test(src), `${file}: còn ẩn cả khung theo quyền`);
+  }
 });

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
+import { deniedClass } from "@/lib/useGuard";
 
 /**
  * Ô "Chế độ bàn" trong bảng bàn đóng gói.
@@ -19,9 +20,12 @@ import { useToast } from "@/components/ui/Toast";
 export default function StationPurposeCell({
   station,
   onSaved,
+  allowed = true,
 }: {
   station: { id: string; code: string; purpose?: "outbound" | "return" | null };
   onSaved: () => void;
+  /** Không có quyền sửa bàn: ô chọn không mở được, bấm vào chỉ báo. */
+  allowed?: boolean;
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -70,8 +74,18 @@ export default function StationPurposeCell({
           value={current}
           disabled={busy}
           onChange={(e) => onPick(e.target.value)}
+          onMouseDown={(e) => {
+            if (allowed) return;
+            e.preventDefault();
+            toast.error("Bạn không có quyền đổi chế độ bàn.");
+          }}
+          onKeyDown={(e) => {
+            if (allowed) return;
+            e.preventDefault();
+            toast.error("Bạn không có quyền đổi chế độ bàn.");
+          }}
           aria-label={`Chế độ bàn ${station.code}`}
-          className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 outline-none focus:border-emerald-400 disabled:bg-slate-50"
+          className={`h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 outline-none focus:border-emerald-400 disabled:bg-slate-50${deniedClass(allowed)}`}
         >
           <option value="outbound">Đóng hàng</option>
           <option value="return">Chuyên nhận hoàn</option>

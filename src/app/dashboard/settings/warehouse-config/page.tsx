@@ -34,6 +34,7 @@ import Select from "@/components/ui/Select";
 import { useToast } from "@/components/ui/Toast";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { apiFetch } from "@/lib/api-fetch";
+import { deniedClass, usePageGuard } from "@/lib/useGuard";
 
 const LARK_WEBHOOK_PREFIX = "https://open.larksuite.com/open-apis/bot/v2/hook/";
 const RETENTION_MIN = 7;
@@ -71,6 +72,9 @@ const EVENT_LABEL: Record<string, string> = {
 };
 
 export default function WarehouseConfigPage() {
+  const { can, guard } = usePageGuard();
+  const allowOrg = can("organization.update");
+  const allowWarehouse = can("warehouse.update");
   const toast = useToast();
 
   // ==================== Retention state ====================
@@ -296,9 +300,9 @@ export default function WarehouseConfigPage() {
                         <span className="text-sm text-slate-500">ngày</span>
                         <button
                           type="button"
-                          onClick={handleSaveRetention}
+                          onClick={guard(allowOrg, "đổi số ngày giữ video", () => void handleSaveRetention())}
                           disabled={retentionSaving || !retentionDirty}
-                          className="ml-auto inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                          className={`ml-auto inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed${deniedClass(allowOrg)}`}
                         >
                           {retentionSaving ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
@@ -504,6 +508,8 @@ export default function WarehouseConfigPage() {
                         isEditing={editing?.id === w.id}
                         onEdit={() => setEditing(w)}
                         onChanged={loadWarehouses}
+                        allowed={allowWarehouse}
+                        guard={guard}
                       />
                     ))}
                   </tbody>
@@ -742,11 +748,16 @@ function WarehouseRowView({
   isEditing,
   onEdit,
   onChanged,
+  allowed,
+  guard,
 }: {
   warehouse: WarehouseRow;
   isEditing: boolean;
   onEdit: () => void;
   onChanged: () => void;
+  /** Có quyền sửa cấu hình kho (warehouse.update). */
+  allowed: boolean;
+  guard: ReturnType<typeof usePageGuard>["guard"];
 }) {
   const state = deriveState(warehouse);
   const [revealed, setRevealed] = useState(false);
@@ -891,24 +902,24 @@ function WarehouseRowView({
       <td className="px-4 py-3 text-right whitespace-nowrap">
         <div className="inline-flex items-center gap-1">
           <button
-            onClick={onEdit}
-            className="h-8 w-8 rounded-lg text-slate-500 hover:bg-emerald-50 hover:text-emerald-600 inline-flex items-center justify-center transition-colors"
+            onClick={guard(allowed, "sửa cấu hình kho", onEdit)}
+            className={`h-8 w-8 rounded-lg text-slate-500 hover:bg-emerald-50 hover:text-emerald-600 inline-flex items-center justify-center transition-colors${deniedClass(allowed)}`}
             title="Sửa cấu hình"
           >
             <Pencil className="h-4 w-4" />
           </button>
           <button
-            onClick={runTest}
+            onClick={guard(allowed, "test webhook", () => void runTest())}
             disabled={testing || !warehouse.notify_lark_webhook_url}
-            className="h-8 w-8 rounded-lg text-slate-500 hover:bg-sky-50 hover:text-sky-600 inline-flex items-center justify-center disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500 transition-colors"
+            className={`${deniedClass(allowed)} h-8 w-8 rounded-lg text-slate-500 hover:bg-sky-50 hover:text-sky-600 inline-flex items-center justify-center disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500 transition-colors`}
             title={!warehouse.notify_lark_webhook_url ? "Chưa có webhook để test" : "Test webhook"}
           >
             {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </button>
           <button
-            onClick={clearConfig}
+            onClick={guard(allowed, "xoá cấu hình thông báo", () => void clearConfig())}
             disabled={!warehouse.notify_lark_webhook_url}
-            className="h-8 w-8 rounded-lg text-slate-500 hover:bg-rose-50 hover:text-rose-600 inline-flex items-center justify-center disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500 transition-colors"
+            className={`${deniedClass(allowed)} h-8 w-8 rounded-lg text-slate-500 hover:bg-rose-50 hover:text-rose-600 inline-flex items-center justify-center disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500 transition-colors`}
             title={!warehouse.notify_lark_webhook_url ? "Chưa có cấu hình để xoá" : "Xoá cấu hình"}
           >
             <Trash2 className="h-4 w-4" />

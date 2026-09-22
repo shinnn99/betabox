@@ -926,3 +926,23 @@ docs([Module]):     Cập nhật tài liệu
   - `src/lib/useGuard.ts` (mới): chặn thao tác ngay từ nút cho mọi trang.
   - `tests/role-permissions.test.ts`: chốt "vào phân hệ không tự bật bàn nào".
 - **Trạng thái:** Hoàn tất.
+
+### [CHAN-TU-NUT] - Không có quyền thì chặn ngay từ nút, báo "Bạn không có quyền …"
+
+- **Mục tiêu:** Chủ dự án chỉ ra lỗi logic nghiêm trọng: có nút vẫn cho thao tác (mở form, điền xong) rồi mới báo không thành công từ API. Quy tắc mới cho MỌI nút ghi dữ liệu: không có quyền thì nút mờ, bấm vào chỉ báo "Bạn không có quyền …", không mở form, không gửi request.
+- **Nguyên nhân:** chỉ vài trang được chặn theo quyền, và chặn bằng cách ẩn nút. Chưa rà toàn bộ giao diện. Các trang lọt:
+  - Tổ chức & Kho: sửa tổ chức, thêm/sửa/xoá kho.
+  - Bàn đóng hàng: thêm/sửa/lưu trữ bàn, đổi chế độ bàn.
+  - Cấu hình kho.
+  - Các nút phụ trong ô gán bàn: đổi nguồn quét, đổi vị trí camera.
+- **Files tạo/sửa:**
+  - `src/lib/guard-core.ts` (mới, lõi thuần `runGuarded`).
+  - `src/lib/useGuard.ts` (`usePageGuard`, `deniedClass`).
+  - `src/app/dashboard/warehouses/page.tsx`, `src/app/dashboard/packing-stations/page.tsx`, `src/components/stations/StationPurposeCell.tsx`, `src/app/dashboard/settings/warehouse-config/page.tsx`.
+  - `src/app/dashboard/devices/page.tsx`, `src/components/devices/StationAssignCell.tsx`: bỏ ẩn, chuyển sang chặn-khi-bấm.
+  - `src/app/dashboard/staff/page.tsx`: cấp QR chặn trước cả hộp xác nhận.
+  - `src/app/dashboard/users/page.tsx`: báo rõ lý do — thiếu quyền / vai trò ngang hoặc cao hơn / chính mình.
+  - `src/app/dashboard/videos/page.tsx`, `src/app/dashboard/(return-module)/return-videos/page.tsx`, `src/components/returns/ReturnCapturePanel.tsx`.
+  - `tests/role-permissions.test.ts`: test `runGuarded` (không quyền thì KHÔNG chạy thao tác), và test mọi trang có nút ghi phải có chốt chặn, không còn kiểu ẩn nút.
+- **Kết quả kiểm tra:** `pnpm test` 501/501, `tsc` đạt. Mở thật 9 trang đã sửa bằng tài khoản tạm (xoá ngay sau): đều 200.
+- **Trạng thái:** Hoàn tất.

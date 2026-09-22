@@ -4,6 +4,7 @@ import { useCallback } from "react";
 import { useToast } from "@/components/ui/Toast";
 import { useSession } from "./useSession";
 import { usePermissions } from "./usePermissions";
+import { runGuarded } from "./guard-core";
 
 /**
  * Chặn thao tác NGAY TỪ NÚT: không có quyền thì bấm vào chỉ báo "Bạn không
@@ -26,12 +27,7 @@ export function usePageGuard() {
   const guard = useCallback(
     <A extends unknown[]>(allowed: boolean, action: string, fn: (...args: A) => void) =>
       (...args: A) => {
-        if (!ready) return;
-        if (!allowed) {
-          toast.error(`Bạn không có quyền ${action}.`);
-          return;
-        }
-        fn(...args);
+        runGuarded(ready, allowed, action, () => fn(...args), toast.error);
       },
     [ready, toast],
   );

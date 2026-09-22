@@ -74,7 +74,7 @@ export default function StationAssignCell({
   /** Mọi camera đang gắn bàn, để biết chỗ nào đã có người. */
   occupants: StationOccupant[];
   onSaved: () => void;
-  /** Không có quyền gán bàn (VD Trưởng kho): chỉ hiện bàn đang gắn. */
+  /** Không có quyền gán bàn (VD Trưởng kho): ô chọn không mở, bấm vào chỉ báo. */
   readOnly?: boolean;
 }) {
   const toast = useToast();
@@ -222,19 +222,6 @@ export default function StationAssignCell({
     }
   };
 
-  if (readOnly) {
-    return currentStation ? (
-      <span className="text-xs font-medium text-slate-700">
-        {currentStation.station_code} · {currentStation.station_name}
-        {isCamera && currentRole && (
-          <span className="text-slate-500"> — {ROLE_LABEL[currentRole]}</span>
-        )}
-      </span>
-    ) : (
-      <span className="text-xs text-slate-400">Chưa gắn</span>
-    );
-  }
-
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-1.5">
@@ -242,6 +229,16 @@ export default function StationAssignCell({
           value={pending?.stationId ?? currentStation?.station_id ?? ""}
           disabled={disabled}
           onChange={(e) => onPickStation(e.target.value)}
+          onMouseDown={(e) => {
+            if (!readOnly) return;
+            e.preventDefault();
+            toast.error("Bạn không có quyền đổi bàn cho thiết bị.");
+          }}
+          onKeyDown={(e) => {
+            if (!readOnly) return;
+            e.preventDefault();
+            toast.error("Bạn không có quyền đổi bàn cho thiết bị.");
+          }}
           className="h-7 max-w-[11rem] rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 outline-none disabled:bg-slate-50 focus:border-emerald-400"
           aria-label="Bàn đang phục vụ"
         >
@@ -389,7 +386,13 @@ export default function StationAssignCell({
           <button
             type="button"
             disabled={busy}
-            onClick={() => void setScanSource(readsQr ? "scanner" : "camera")}
+            onClick={() => {
+              if (readOnly) {
+                toast.error("Bạn không có quyền đổi nguồn quét của bàn.");
+                return;
+              }
+              void setScanSource(readsQr ? "scanner" : "camera");
+            }}
             className={`h-6 px-2 rounded-md text-[11px] font-semibold disabled:opacity-50 ${
               readsQr
                 ? "bg-white border border-slate-300 text-slate-700 hover:bg-slate-100"
@@ -405,8 +408,14 @@ export default function StationAssignCell({
         <button
           type="button"
           disabled={busy}
-          onClick={() => setPending({ stationId: currentStation.station_id, step: "pick-role" })}
-          className="text-[11px] text-emerald-600 hover:text-emerald-700 underline underline-offset-2"
+          onClick={() => {
+            if (readOnly) {
+              toast.error("Bạn không có quyền đổi vị trí camera.");
+              return;
+            }
+            setPending({ stationId: currentStation.station_id, step: "pick-role" });
+          }}
+          className={`text-[11px] text-emerald-600 hover:text-emerald-700 underline underline-offset-2${readOnly ? " opacity-50 cursor-not-allowed" : ""}`}
         >
           Đổi vị trí
         </button>

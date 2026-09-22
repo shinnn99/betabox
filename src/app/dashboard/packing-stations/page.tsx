@@ -21,6 +21,7 @@ import { useToast } from "@/components/ui/Toast";
 import Select from "@/components/ui/Select";
 import { Modal, Field } from "@/components/warehouse-config/Modal";
 import StationPurposeCell from "@/components/stations/StationPurposeCell";
+import { deniedClass, usePageGuard } from "@/lib/useGuard";
 
 interface Station {
   id: string;
@@ -86,6 +87,12 @@ const STATUS_COLOR: Record<string, string> = {
 
 export default function PackingStationsPage() {
   const toast = useToast();
+  const { can, guard } = usePageGuard();
+  const allow = {
+    create: can("packing_station.create"),
+    edit: can("packing_station.update"),
+    archive: can("packing_station.archive"),
+  };
   const confirm = useConfirm();
   const [stations, setStations] = useState<Station[]>([]);
   const [warehouses, setWarehouses] = useState<WarehouseRef[]>([]);
@@ -256,9 +263,9 @@ export default function PackingStationsPage() {
             />
           </div>
           <button
-            onClick={() => setShowCreate(true)}
+            onClick={guard(allow.create, "thêm bàn", () => setShowCreate(true))}
             disabled={warehouses.length === 0}
-            className="ml-auto h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2 disabled:opacity-50"
+            className={`ml-auto h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2 disabled:opacity-50${deniedClass(allow.create)}`}
           >
             <Plus className="h-4 w-4" /> Thêm bàn
           </button>
@@ -340,7 +347,7 @@ export default function PackingStationsPage() {
                       <DeviceChips devices={stDevices} />
                     </td>
                     <td className="px-4 py-3">
-                      <StationPurposeCell station={s} onSaved={load} />
+                      <StationPurposeCell station={s} onSaved={load} allowed={allow.edit} />
                     </td>
                     <td className="px-4 py-3">
                       <span
@@ -354,16 +361,16 @@ export default function PackingStationsPage() {
                     <td className="px-4 py-3 text-right whitespace-nowrap">
                       <div className="inline-flex items-center justify-center gap-1 w-24">
                         <button
-                          onClick={() => setEditing(s)}
-                          className="h-8 w-8 rounded-lg hover:bg-slate-100 inline-flex items-center justify-center text-slate-600"
+                          onClick={guard(allow.edit, "sửa bàn", () => setEditing(s))}
+                          className={`h-8 w-8 rounded-lg hover:bg-slate-100 inline-flex items-center justify-center text-slate-600${deniedClass(allow.edit)}`}
                           title="Sửa"
                         >
                           <Pencil className="h-4 w-4" />
                         </button>
                         {s.status === "active" && (
                           <button
-                            onClick={() => onArchive(s)}
-                            className="h-8 w-8 rounded-lg hover:bg-amber-50 inline-flex items-center justify-center text-amber-600"
+                            onClick={guard(allow.archive, "lưu trữ bàn", () => void onArchive(s))}
+                            className={`h-8 w-8 rounded-lg hover:bg-amber-50 inline-flex items-center justify-center text-amber-600${deniedClass(allow.archive)}`}
                             title="Lưu trữ"
                           >
                             <Archive className="h-4 w-4" />

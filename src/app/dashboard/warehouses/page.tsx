@@ -22,6 +22,7 @@ import DashboardLayout from "@/components/layout/DashboardLayout";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
 import Select from "@/components/ui/Select";
+import { deniedClass, usePageGuard } from "@/lib/useGuard";
 
 interface WarehouseRow {
   id: string;
@@ -77,6 +78,13 @@ interface Overview {
 }
 
 export default function OrganizationWarehousePage() {
+  const { can, guard } = usePageGuard();
+  const allow = {
+    org: can("organization.update"),
+    create: can("warehouse.create"),
+    edit: can("warehouse.update"),
+    remove: can("warehouse.delete"),
+  };
   const confirm = useConfirm();
   const toast = useToast();
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -149,7 +157,11 @@ export default function OrganizationWarehousePage() {
           <StatCards overview={overview} />
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <OrganizationCard overview={overview} onEdit={() => setEditOrg(true)} />
+            <OrganizationCard
+              overview={overview}
+              allowed={allow.org}
+              onEdit={guard(allow.org, "sửa thông tin tổ chức", () => setEditOrg(true))}
+            />
             <StructureCard overview={overview} />
           </div>
 
@@ -157,9 +169,10 @@ export default function OrganizationWarehousePage() {
             <WarehouseTable
               loading={loading}
               warehouses={overview.warehouses}
-              onCreate={() => setShowCreate(true)}
-              onEdit={(w) => setEditing(w)}
-              onDelete={onDelete}
+              allow={allow}
+              onCreate={guard(allow.create, "thêm kho", () => setShowCreate(true))}
+              onEdit={guard(allow.edit, "quản lý kho", (w: WarehouseRow) => setEditing(w))}
+              onDelete={guard(allow.remove, "xoá kho", (w: WarehouseRow) => void onDelete(w))}
             />
           </div>
 
@@ -281,9 +294,11 @@ function StatCards({ overview }: { overview: Overview }) {
 
 function OrganizationCard({
   overview,
+  allowed,
   onEdit,
 }: {
   overview: Overview;
+  allowed: boolean;
   onEdit: () => void;
 }) {
   const org = overview.organization;
@@ -298,7 +313,7 @@ function OrganizationCard({
         <p className="font-bold text-slate-800">Thông tin tổ chức</p>
         <button
           onClick={onEdit}
-          className="h-8 px-3 rounded-lg border border-slate-200 text-slate-700 text-xs font-medium inline-flex items-center gap-1.5 hover:bg-slate-50"
+          className={`h-8 px-3 rounded-lg border border-slate-200 text-slate-700 text-xs font-medium inline-flex items-center gap-1.5 hover:bg-slate-50${deniedClass(allowed)}`}
         >
           <Pencil className="h-3.5 w-3.5" /> Chỉnh sửa thông tin
         </button>
@@ -425,12 +440,14 @@ function StructureCard({ overview }: { overview: Overview }) {
 function WarehouseTable({
   loading,
   warehouses,
+  allow,
   onCreate,
   onEdit,
   onDelete,
 }: {
   loading: boolean;
   warehouses: WarehouseRow[];
+  allow: { create: boolean; edit: boolean; remove: boolean };
   onCreate: () => void;
   onEdit: (w: WarehouseRow) => void;
   onDelete: (w: WarehouseRow) => void;
@@ -441,7 +458,7 @@ function WarehouseTable({
         <p className="font-semibold text-slate-800">Danh sách kho hàng</p>
         <button
           onClick={onCreate}
-          className="h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2"
+          className={`h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2${deniedClass(allow.create)}`}
         >
           <Plus className="h-4 w-4" /> Thêm kho
         </button>
@@ -510,14 +527,14 @@ function WarehouseTable({
                   <div className="inline-flex items-center justify-end gap-1">
                     <button
                       onClick={() => onEdit(w)}
-                      className="h-8 px-3 rounded-lg text-emerald-600 hover:bg-emerald-50 text-xs font-medium inline-flex items-center gap-1"
+                      className={`h-8 px-3 rounded-lg text-emerald-600 hover:bg-emerald-50 text-xs font-medium inline-flex items-center gap-1${deniedClass(allow.edit)}`}
                       title="Quản lý"
                     >
                       <Pencil className="h-3.5 w-3.5" /> Quản lý
                     </button>
                     <button
                       onClick={() => onDelete(w)}
-                      className="h-8 w-8 rounded-lg hover:bg-red-50 inline-flex items-center justify-center text-red-500"
+                      className={`h-8 w-8 rounded-lg hover:bg-red-50 inline-flex items-center justify-center text-red-500${deniedClass(allow.remove)}`}
                       title="Xoá"
                     >
                       <Trash2 className="h-4 w-4" />
