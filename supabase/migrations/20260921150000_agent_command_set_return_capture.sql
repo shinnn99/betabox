@@ -38,9 +38,21 @@ BEGIN
     RAISE EXCEPTION 'khong tim thay rang buoc agent_commands_type_check — dung lai, khong doan danh sach';
   END IF;
 
-  SELECT array_agg(DISTINCT m[1] ORDER BY m[1])
+  -- Postgres in ràng buộc theo HAI dạng tuỳ cách tạo:
+  --   a) từng giá trị có nháy:  type = ANY (ARRAY['ping'::text, 'cut_clip'::text])
+  --   b) một mảng literal:      type = ANY ('{ping,cut_clip}'::text[])
+  -- Production (dựng bằng file gộp) đang ở dạng (b) — regex bắt 'x' không ra
+  -- gì, guard bên dưới tưởng đọc thiếu và huỷ cả file. Đọc cả hai dạng.
+  SELECT array_agg(DISTINCT t ORDER BY t)
     INTO v_types
-  FROM regexp_matches(v_def, '''([a-z_]+)''', 'g') AS m;
+  FROM (
+    SELECT m[1] AS t FROM regexp_matches(v_def, '''([a-z_]+)''', 'g') AS m
+    UNION
+    SELECT btrim(x)
+    FROM regexp_matches(v_def, '''\{([a-z_,]+)\}''', 'g') AS a,
+         unnest(string_to_array(a[1], ',')) AS x
+  ) s
+  WHERE t <> '';
 
   IF v_types IS NULL OR array_length(v_types, 1) < 5 THEN
     RAISE EXCEPTION 'doc duoc qua it loai lenh tu rang buoc hien tai (%): dung lai', v_def;
