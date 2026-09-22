@@ -48,7 +48,10 @@ async function readBody(req: Request): Promise<DiscoverBody> {
 export async function POST(req: Request) {
   // Dò camera là bước setup (ra lệnh cho agent quét mạng) — cùng quyền thêm
   // camera, không phải quyền xem. Trưởng kho / Viewer không setup camera.
-  const ctx = await requirePermission("camera.create");
+  //
+  // Truyền `req` để guard so `x-render-org-id` với org sắp ghi (fail-closed,
+  // sự cố 2026-09-16) — đây là POST, tức lệnh GHI.
+  const ctx = await requirePermission("camera.create", req);
   if (isError(ctx)) return ctx;
 
   const body = await readBody(req);

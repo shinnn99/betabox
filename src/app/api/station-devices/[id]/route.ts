@@ -17,7 +17,7 @@ export const runtime = "nodejs";
 const VALID_TYPES = ["scanner", "camera", "printer", "scale"];
 
 export async function PATCH(req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("station_device.update");
+  const ctx = await requirePermissionStrict("station_device.update", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 
@@ -115,8 +115,8 @@ export async function PATCH(req: Request, { params }: RouteContext) {
   return NextResponse.json({ ok: true });
 }
 
-export async function DELETE(_req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("station_device.archive");
+export async function DELETE(req: Request, { params }: RouteContext) {
+  const ctx = await requirePermissionStrict("station_device.archive", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 

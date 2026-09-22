@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
+import { apiFetch } from "@/lib/api-fetch";
 
 /**
  * Ô "Bàn đang phục vụ" trong bảng thiết bị kho — chọn bàn ngay tại chỗ.
@@ -94,7 +95,7 @@ export default function StationAssignCell({
     setErr(null);
     try {
       if (isCamera && role && cameraId) {
-        const res = await fetch(`/api/station-devices/${deviceId}`, {
+        const res = await apiFetch(`/api/station-devices/${deviceId}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ config_json: { camera_id: cameraId, role } }),
@@ -104,7 +105,7 @@ export default function StationAssignCell({
           throw new Error(j.message ?? j.error ?? "Không đặt được vị trí camera.");
         }
       }
-      const res = await fetch("/api/station-device-assignments", {
+      const res = await apiFetch("/api/station-device-assignments", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ device_id: deviceId, station_id: stationId }),
@@ -136,7 +137,7 @@ export default function StationAssignCell({
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch("/api/station-device-assignments", {
+      const res = await apiFetch("/api/station-device-assignments", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ device_id: deviceId }),
@@ -200,7 +201,7 @@ export default function StationAssignCell({
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch(`/api/packing-stations/${currentStation.station_id}`, {
+      const res = await apiFetch(`/api/packing-stations/${currentStation.station_id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ scan_source: next }),

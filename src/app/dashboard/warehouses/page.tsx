@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "../../../lib/api-fetch";
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import {
@@ -124,7 +125,7 @@ export default function OrganizationWarehousePage() {
       variant: "danger",
     });
     if (!ok) return;
-    const res = await fetch(`/api/warehouses/${w.id}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/warehouses/${w.id}`, { method: "DELETE" });
     const data = await res.json();
     if (!res.ok) {
       toast.error(data.message ?? data.error ?? "Xoá thất bại");
@@ -809,7 +810,7 @@ function WarehouseDialog({
       // Lark webhook: cấu hình ở trang riêng /dashboard/settings/warehouse-config
       // — không nhét vào form này (nhiều thông tin lẫn lộn).
     }
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -987,7 +988,7 @@ function OrganizationDialog({
     e.preventDefault();
     setErr("");
     setSaving(true);
-    const res = await fetch("/api/organization", {
+    const res = await apiFetch("/api/organization", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(form),

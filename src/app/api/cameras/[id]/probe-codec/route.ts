@@ -21,8 +21,8 @@ export const dynamic = "force-dynamic";
  * Async: endpoint trả 202 với command_id ngay. UI có thể poll cameras
  * row để thấy codec_probed_at cập nhật, hoặc chỉ chờ vài giây rồi reload.
  */
-export async function POST(_req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("camera.test");
+export async function POST(req: Request, { params }: RouteContext) {
+  const ctx = await requirePermissionStrict("camera.test", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 

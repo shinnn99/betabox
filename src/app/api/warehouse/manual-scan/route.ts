@@ -45,7 +45,7 @@ interface PackingRpcRow {
 }
 
 export async function POST(req: Request) {
-  const ctx = await requirePermission("station_device.view");
+  const ctx = await requirePermission("station_device.view", req);
   if (isError(ctx)) return ctx;
 
   const body = await req.json().catch(() => null);

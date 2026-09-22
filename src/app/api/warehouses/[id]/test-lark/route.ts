@@ -23,8 +23,8 @@ interface RouteContext {
  * thật vs tin test (query "thông báo gần nhất" phải loại loại này ra).
  * Cập nhật warehouses.notify_lark_last_test_at dù gửi thành công hay lỗi.
  */
-export async function POST(_req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("warehouse.update");
+export async function POST(req: Request, { params }: RouteContext) {
+  const ctx = await requirePermissionStrict("warehouse.update", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 

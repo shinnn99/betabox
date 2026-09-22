@@ -11,7 +11,7 @@ interface RouteContext {
 // DELETE /api/platform/admins/[id] — xóa/revoke platform admin
 // GATE: platform_owner. Chặn tự xóa mình (kill-switch bảo vệ).
 // ============================================================================
-export async function DELETE(_req: Request, { params }: RouteContext) {
+export async function DELETE(req: Request, { params }: RouteContext) {
   const ctx = await requirePlatformRole("platform_owner");
   if (ctx instanceof NextResponse) return ctx;
 

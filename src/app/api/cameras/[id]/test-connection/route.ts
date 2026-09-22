@@ -32,7 +32,7 @@ function readTransport(req: NextRequest): "tcp" | "udp" | "auto" {
 }
 
 export async function POST(req: NextRequest, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("camera.test");
+  const ctx = await requirePermissionStrict("camera.test", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 

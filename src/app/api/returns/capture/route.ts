@@ -63,7 +63,7 @@ function statusView(status: StationCaptureStatus | undefined, holder: string) {
 export async function POST(req: NextRequest) {
   // Mở/đóng phiên nhận hoàn là THAO TÁC kho (ra lệnh cho agent) — Viewer
   // chỉ xem, nên không dùng quyền xem bằng chứng như GET.
-  const ctx = await requirePermission("return.operate");
+  const ctx = await requirePermission("return.operate", req);
   if (isError(ctx)) return ctx;
 
   let body: { station_id?: unknown; station_ids?: unknown; action?: unknown; tab_id?: unknown };

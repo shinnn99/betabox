@@ -39,7 +39,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const ctx = await requirePermissionStrict("camera.create");
+  const ctx = await requirePermissionStrict("camera.create", req);
   if (isError(ctx)) return ctx;
 
   const body = (await req.json().catch(() => null)) as Partial<CameraInput> | null;

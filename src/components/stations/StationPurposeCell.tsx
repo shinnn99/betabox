@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
 import { deniedClass } from "@/lib/useGuard";
+import { apiFetch } from "@/lib/api-fetch";
 
 /**
  * Ô "Chế độ bàn" trong bảng bàn đóng gói.
@@ -35,7 +36,7 @@ export default function StationPurposeCell({
   const save = async (purpose: "outbound" | "return") => {
     setBusy(true);
     try {
-      const res = await fetch(`/api/packing-stations/${station.id}`, {
+      const res = await apiFetch(`/api/packing-stations/${station.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ purpose }),

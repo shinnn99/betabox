@@ -35,7 +35,7 @@ interface RouteContext {
   params: Promise<{ pe_id: string }>;
 }
 
-export async function POST(_req: Request, ctx: RouteContext) {
+export async function POST(req: Request, ctx: RouteContext) {
   const { pe_id: packingEventId } = await ctx.params;
   if (!/^[0-9a-f-]{36}$/i.test(packingEventId)) {
     return NextResponse.json(

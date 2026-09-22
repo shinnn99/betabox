@@ -30,8 +30,8 @@ export const dynamic = "force-dynamic";
  *   3. Enqueue stop_recording command cho agent → agent kill ffmpeg.
  *   4. Trả 202 với command_id.
  */
-export async function POST(_req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("camera.recording.control");
+export async function POST(req: Request, { params }: RouteContext) {
+  const ctx = await requirePermissionStrict("camera.recording.control", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 

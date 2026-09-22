@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "../../../lib/api-fetch";
 import {
   Suspense,
   useCallback,
@@ -406,7 +407,7 @@ function DevicesPage() {
 
     setRecBusy((m) => ({ ...m, [cam.id]: action }));
     try {
-      const res = await fetch(`/api/cameras/${cam.id}/recording/${action}`, {
+      const res = await apiFetch(`/api/cameras/${cam.id}/recording/${action}`, {
         method: "POST",
       });
       if (!res.ok) {
@@ -444,7 +445,7 @@ function DevicesPage() {
       variant: "danger",
     });
     if (!ok) return;
-    const res = await fetch(`/api/station-devices/${s.id}`, {
+    const res = await apiFetch(`/api/station-devices/${s.id}`, {
       method: "DELETE",
     });
     if (!res.ok) {
@@ -464,7 +465,7 @@ function DevicesPage() {
       variant: "danger",
     });
     if (!ok) return;
-    const res = await fetch(`/api/cameras/${c.id}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/cameras/${c.id}`, { method: "DELETE" });
     const j = await res.json().catch(() => ({}));
 
     // 409 has_proof_clips: camera còn clip pháp lý gắn đơn hàng, không hard-delete
@@ -477,7 +478,7 @@ function DevicesPage() {
         variant: "danger",
       });
       if (!archiveOk) return;
-      const putRes = await fetch(`/api/cameras/${c.id}`, {
+      const putRes = await apiFetch(`/api/cameras/${c.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: "inactive" }),
@@ -880,7 +881,7 @@ function AddDeviceModal({
         config_json: {},
         device_identity: pickedIdentity ?? {},
       };
-      const res = await fetch("/api/station-devices", {
+      const res = await apiFetch("/api/station-devices", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -1049,7 +1050,8 @@ function AssignStationDialog({
         // nen camera QR sua xong la thanh camera toan canh, im lang.
         const currentRole = device.current_station?.role ?? null;
         if (role !== currentRole) {
-          const res = await fetch(`/api/station-devices/${deviceId}`, {
+          // apiFetch: lệnh GHI phải mang x-render-org-id (sự cố 2026-09-16).
+          const res = await apiFetch(`/api/station-devices/${deviceId}`, {
             method: "PATCH",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
@@ -1062,7 +1064,7 @@ function AssignStationDialog({
           }
         }
       }
-      const res = await fetch("/api/station-device-assignments", {
+      const res = await apiFetch("/api/station-device-assignments", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ device_id: deviceId, station_id: stationId }),
@@ -1084,7 +1086,7 @@ function AssignStationDialog({
     if (!deviceId || !device.current_station) return;
     setSaving(true);
     try {
-      const res = await fetch("/api/station-device-assignments", {
+      const res = await apiFetch("/api/station-device-assignments", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ device_id: deviceId }),
@@ -1318,7 +1320,7 @@ function ScannerDetailDialog({
           body.device_identity = pickedIdentity ?? {};
           if (pickedIdentity) body.connection_type = "serial";
         }
-        const res = await fetch(`/api/station-devices/${scanner.id}`, {
+        const res = await apiFetch(`/api/station-devices/${scanner.id}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
@@ -1333,7 +1335,7 @@ function ScannerDetailDialog({
         // Empty stationId means the user cleared the selection → unassign.
         // Non-empty means assign (server closes any existing mapping).
         if (stationId) {
-          const res = await fetch("/api/station-device-assignments", {
+          const res = await apiFetch("/api/station-device-assignments", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
@@ -1346,7 +1348,7 @@ function ScannerDetailDialog({
             throw new Error(j.message ?? "Gán bàn thất bại.");
           }
         } else if (scanner.current_station) {
-          const res = await fetch("/api/station-device-assignments", {
+          const res = await apiFetch("/api/station-device-assignments", {
             method: "DELETE",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ device_id: scanner.id }),
@@ -1375,7 +1377,7 @@ function ScannerDetailDialog({
       variant: "danger",
     });
     if (!ok) return;
-    const res = await fetch(`/api/station-devices/${scanner.id}`, {
+    const res = await apiFetch(`/api/station-devices/${scanner.id}`, {
       method: "DELETE",
     });
     if (!res.ok) {

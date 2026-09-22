@@ -13,7 +13,7 @@ interface Body {
 const MAX_IDS = 200;
 
 export async function POST(req: NextRequest) {
-  const ctx = await requirePermissionStrict("order_proof.generate");
+  const ctx = await requirePermissionStrict("order_proof.generate", req);
   if (isError(ctx)) return ctx;
 
   let body: Body;

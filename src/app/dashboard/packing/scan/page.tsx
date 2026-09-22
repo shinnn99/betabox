@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "../../../../lib/api-fetch";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, ScanLine, CheckCircle2, AlertTriangle } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
@@ -113,7 +114,7 @@ export default function ManualScanPage() {
     setSubmitting(true);
     const agentEventId = crypto.randomUUID();
     const at = new Date();
-    const res = await fetch("/api/warehouse/manual-scan", {
+    const res = await apiFetch("/api/warehouse/manual-scan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

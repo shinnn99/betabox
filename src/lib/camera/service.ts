@@ -352,10 +352,27 @@ export async function ensureCameraSoftLinks(
   }
 
   // Existing device_codes (any type) to dodge unique collisions on insert.
+  //
+  // Bất đối xứng ở đây từng đẻ ra bản sao rác: vòng `claimed` phía trên bỏ
+  // qua hàng `archived`, nên một camera đã có soft-link nhưng hàng đó bị
+  // archive sẽ bị coi là "chưa claim" → rơi vào `missing`. Trước 2026-09-16
+  // câu SELECT này lấy CẢ hàng archived, nên mã `auto_x` vẫn bị coi là đã
+  // dùng → nhánh chống trùng bên dưới sinh `auto_x_la75`. Kết quả: org Đại
+  // Kim có `auto_dahua_3` (archived) song song `auto_dahua_3_la75` (active),
+  // hàng mới mất `role` nên không gắn được vào bàn.
+  //
+  // Hai vòng giờ nhìn cùng một tập hàng: bỏ qua archived ở CẢ hai. Mã của
+  // hàng archived được tái dùng — đúng ý, vì hàng đó không còn hiệu lực.
+  //
+  // UNIQUE thật trên (organization_id, device_code) vẫn bao gồm hàng
+  // archived, nên nếu tái dùng đụng hàng archived thì INSERT trả 23505 và
+  // vòng dưới nuốt đúng mã lỗi đó — không mất dữ liệu, chỉ là camera đó
+  // chờ tới lượt quét sau. Đánh đổi này tốt hơn đẻ bản sao câm lặng.
   const { data: codeRows } = await admin
     .from("station_devices")
     .select("device_code")
-    .eq("organization_id", organizationId);
+    .eq("organization_id", organizationId)
+    .neq("status", "archived");
   const usedCodes = new Set<string>(
     ((codeRows ?? []) as Array<{ device_code: string }>).map(
       (r) => r.device_code,
@@ -790,6 +807,13 @@ export async function createCamera(
 //   - undefined: keep existing password
 //   - "": clear password (set all three columns NULL)
 //   - non-empty string: encrypt and replace
+export interface UpdateCameraResult {
+  camera: CameraPublic | null;
+  /** Giá trị trước/sau của đúng các trường đã đổi — dành cho audit. */
+  auditDiff: Record<string, { from: unknown; to: unknown }>;
+}
+
+/** Giữ chữ ký cũ cho chỗ gọi không cần diff. */
 export async function updateCamera(
   organizationId: string,
   id: string,
@@ -797,6 +821,17 @@ export async function updateCamera(
     status?: "active" | "inactive" | "error";
   },
 ): Promise<CameraPublic | null> {
+  const { camera } = await updateCameraWithAudit(organizationId, id, input);
+  return camera;
+}
+
+export async function updateCameraWithAudit(
+  organizationId: string,
+  id: string,
+  input: Partial<CameraInput> & {
+    status?: "active" | "inactive" | "error";
+  },
+): Promise<UpdateCameraResult> {
   const update: Record<string, unknown> = {};
   if (input.name !== undefined) update.name = input.name.trim();
   if (input.camera_code !== undefined)
@@ -836,7 +871,7 @@ export async function updateCamera(
     }
   }
 
-  if (Object.keys(update).length === 0) return null;
+  if (Object.keys(update).length === 0) return { camera: null, auditDiff: {} };
 
   // HIGH-11: nếu đổi field kết nối (ip/rtsp_port/rtsp_path/username/password),
   // reset codec_detected snapshot cũ + enqueue probe mới. Atomic ở UPDATE
@@ -848,6 +883,60 @@ export async function updateCamera(
   }
 
   const admin = createAdminClient();
+
+  // Chụp giá trị TRƯỚC khi ghi để audit có đường lùi.
+  //
+  // Sự cố 2026-09-16: camera kho Đại Kim bị ghi đè 8 trường. Audit chỉ lưu
+  // TÊN trường (`fields: [...]`) nên không ai biết giá trị cũ là gì —
+  // `camera_code` phải suy ngược từ 18.192 `file_path` đã ghi, còn `ip` thì
+  // không nguồn nào giữ, phải ra tận kho đọc lại. Một SELECT ở đây biến việc
+  // khôi phục từ "truy vết nửa ngày" thành "đọc audit rồi PUT lại".
+  //
+  // Cố ý KHÔNG khoá hàng: đây là bản ghi để người đọc, không phải nguồn chân
+  // lý giao dịch. Hai lượt sửa song song cùng camera là chuyện không xảy ra
+  // trong thực tế vận hành, và nếu có thì audit vẫn kể đúng thứ tự.
+  // Qua fallback MAC như mọi đường đọc khác: database chưa áp migration MAC
+  // mà select thẳng ALL_COLUMNS thì lỗi cột-thiếu, mất luôn ảnh chụp audit.
+  const { data: before } = await selectCamerasWithMacFallback<CameraRow | null>(
+    ALL_COLUMNS,
+    (columns) =>
+      admin
+        .from("cameras")
+        .select(columns)
+        .eq("organization_id", organizationId)
+        .eq("id", id)
+        .maybeSingle() as unknown as PromiseLike<{
+        data: CameraRow | null;
+        error: { code?: string | null; message?: string | null } | null;
+      }>,
+  );
+
+  // Đổi `camera_code` của camera ĐÃ GHI dữ liệu là thao tác gần như luôn sai.
+  //
+  // Agent đặt tên thư mục theo `camera_code` tại thời điểm ghi, nên mã cũ
+  // đóng băng trong `file_path` của mọi segment đã có. Đổi mã làm hàng camera
+  // và kho file nói hai chuyện khác nhau — 2026-09-16 camera kho Đại Kim đổi
+  // `dahua_01` → `dahua_3` trong khi 18.192 file vẫn nằm ở `dahua_01/`.
+  //
+  // Chặn ở đây chứ không phải ở UI: UI nào cũng có thể bị bỏ qua, còn đây là
+  // đường duy nhất mọi lệnh ghi đi qua. Ai thật sự cần đổi thì archive camera
+  // rồi tạo mới — giữ nguyên liên kết giữa file cũ và mã cũ.
+  const oldCode = (before as { camera_code?: string } | null)?.camera_code;
+  const newCode = update.camera_code as string | undefined;
+  if (before && newCode !== undefined && oldCode && newCode !== oldCode) {
+    const { count } = await admin
+      .from("camera_recording_files")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", organizationId)
+      .eq("camera_id", id);
+    if ((count ?? 0) > 0) {
+      throw new CameraCodeLockedError(oldCode, count ?? 0);
+    }
+  }
+
+  // Giữ đường lùi khi database chưa có cột MAC (xem mac-columns.ts): thử kèm
+  // mac_address trước, cột thiếu thì chạy lại bản không có. Hai nhánh gộp ở
+  // đây — chụp-trước + khoá mã ở trên, fallback MAC ở dưới.
   const runUpdate = (withMac: boolean) => {
     const payload = { ...update };
     if (!withMac) delete payload.mac_address;
@@ -898,7 +987,67 @@ export async function updateCamera(
     }
   }
 
-  return data ? toPublicCamera(data as CameraRow) : null;
+  return {
+    camera: data ? toPublicCamera(data as CameraRow) : null,
+    auditDiff: buildCameraAuditDiff(
+      before as Record<string, unknown> | null,
+      data as Record<string, unknown> | null,
+    ),
+  };
+}
+
+// Trường được ghi lại nguyên văn trong audit. Cố ý KHÔNG có password —
+// audit là bản ghi để đọc lâu dài, không phải nơi giữ bí mật.
+const AUDITED_CAMERA_FIELDS = [
+  "name",
+  "camera_code",
+  "ip",
+  "rtsp_port",
+  "username",
+  "rtsp_path",
+  "rtsp_substream_path",
+  "location",
+  "status",
+] as const;
+
+/**
+ * Chụp lại giá trị CŨ của đúng những trường vừa bị đổi.
+ *
+ * Trả về `{ ip: { from, to } }` thay vì chỉ `["ip"]`. Khác biệt này là
+ * khoảng cách giữa "PUT lại giá trị cũ trong một phút" và sự cố 2026-09-16,
+ * nơi `ip` gốc của camera kho Đại Kim không còn tồn tại ở bất kỳ đâu trong
+ * hệ thống và phải ra tận kho đọc lại từ thiết bị.
+ *
+ * Chỉ ghi trường THỰC SỰ đổi giá trị — người sửa tên camera không nên tạo ra
+ * một bản ghi kể cả 9 trường không liên quan.
+ */
+export function buildCameraAuditDiff(
+  before: Record<string, unknown> | null | undefined,
+  after: Record<string, unknown> | null | undefined,
+): Record<string, { from: unknown; to: unknown }> {
+  if (!before || !after) return {};
+  const diff: Record<string, { from: unknown; to: unknown }> = {};
+  for (const field of AUDITED_CAMERA_FIELDS) {
+    const from = before[field] ?? null;
+    const to = after[field] ?? null;
+    if (from !== to) diff[field] = { from, to };
+  }
+  return diff;
+}
+
+export class CameraCodeLockedError extends Error {
+  code = "camera_code_locked" as const;
+  currentCode: string;
+  filesCount: number;
+  constructor(currentCode: string, filesCount: number) {
+    super(
+      `Camera đã ghi ${filesCount.toLocaleString("vi-VN")} file dưới mã "${currentCode}". ` +
+        `Đổi mã sẽ làm dữ liệu cũ không khớp tên thư mục. ` +
+        `Nếu thật sự cần đổi, hãy lưu trữ camera này và tạo camera mới.`,
+    );
+    this.currentCode = currentCode;
+    this.filesCount = filesCount;
+  }
 }
 
 export class HasProofClipsError extends Error {

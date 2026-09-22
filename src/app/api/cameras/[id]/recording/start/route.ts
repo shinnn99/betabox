@@ -38,7 +38,7 @@ const DEFAULT_TRANSPORT = ((): "tcp" | "udp" => {
 })();
 
 export async function POST(req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("camera.recording.control");
+  const ctx = await requirePermissionStrict("camera.recording.control", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 

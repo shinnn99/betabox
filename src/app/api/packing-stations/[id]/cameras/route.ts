@@ -22,7 +22,7 @@ function roleFrom(value: unknown): StationCameraRole | null {
 }
 
 export async function POST(req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("packing_station.camera_setup");
+  const ctx = await requirePermissionStrict("packing_station.camera_setup", req);
   if (isError(ctx)) return ctx;
   const { id: stationId } = await params;
   const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;

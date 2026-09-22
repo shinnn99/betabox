@@ -21,7 +21,7 @@ const MAX_IDS = 200;
 
 export async function POST(req: NextRequest) {
   // Đổi trạng thái hồ sơ khiếu nại là thao tác ghi — Viewer chỉ xem.
-  const ctx = await requirePermissionStrict("return.operate");
+  const ctx = await requirePermissionStrict("return.operate", req);
   if (isError(ctx)) return ctx;
 
   let body: { event_ids?: unknown; status?: unknown };

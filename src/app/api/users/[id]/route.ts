@@ -54,7 +54,7 @@ async function countActiveOwners(orgId: string): Promise<number> {
 }
 
 export async function PATCH(req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("user.update");
+  const ctx = await requirePermissionStrict("user.update", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 
@@ -170,8 +170,8 @@ export async function PATCH(req: Request, { params }: RouteContext) {
   return NextResponse.json({ ok: true });
 }
 
-export async function DELETE(_req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("user.delete");
+export async function DELETE(req: Request, { params }: RouteContext) {
+  const ctx = await requirePermissionStrict("user.delete", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 

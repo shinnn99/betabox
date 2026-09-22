@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "@/lib/api-fetch";
 import {
   createContext,
   useCallback,
@@ -114,6 +115,7 @@ export default function ReturnCaptureProvider({ children }: { children: ReactNod
 
   const refresh = useCallback(async () => {
     try {
+      // Đọc (GET) — không cần x-render-org-id, giữ fetch trần.
       const res = await fetch(`/api/returns/capture?tab_id=${encodeURIComponent(tabId)}`, {
         cache: "no-store",
       });
@@ -153,7 +155,7 @@ export default function ReturnCaptureProvider({ children }: { children: ReactNod
         const held = heldRef.current;
         if (held.length > 0) {
           try {
-            await fetch("/api/returns/capture", {
+            await apiFetch("/api/returns/capture", {
               method: "POST",
               headers: { "content-type": "application/json" },
               body: JSON.stringify({ station_ids: held, action: "heartbeat", tab_id: tabId }),
@@ -190,7 +192,7 @@ export default function ReturnCaptureProvider({ children }: { children: ReactNod
       if (stationIds.length === 0) return;
       setBusyIds((prev) => new Set([...prev, ...stationIds]));
       try {
-        const res = await fetch("/api/returns/capture", {
+        const res = await apiFetch("/api/returns/capture", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ station_ids: stationIds, action, tab_id: tabId }),

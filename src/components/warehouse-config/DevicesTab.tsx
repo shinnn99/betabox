@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "../../lib/api-fetch";
 import { useCallback, useEffect, useState } from "react";
 import {
   Archive,
@@ -115,7 +116,7 @@ export default function DevicesTab({ warehouseId }: { warehouseId: string }) {
       variant: "danger",
     });
     if (!ok) return;
-    const res = await fetch(`/api/station-devices/${dev.id}`, {
+    const res = await apiFetch(`/api/station-devices/${dev.id}`, {
       method: "DELETE",
     });
     const data = await res.json();
@@ -140,7 +141,7 @@ export default function DevicesTab({ warehouseId }: { warehouseId: string }) {
       variant: "danger",
     });
     if (!ok) return;
-    const res = await fetch("/api/station-device-assignments", {
+    const res = await apiFetch("/api/station-device-assignments", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ device_id: dev.id }),
@@ -545,7 +546,7 @@ function DeviceDialog({
       body.device_identity = pickedIdentity ?? {};
       if (pickedIdentity) body.connection_type = "serial";
     }
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -788,7 +789,7 @@ function AssignDialog({
       return;
     }
     setSaving(true);
-    const res = await fetch("/api/station-device-assignments", {
+    const res = await apiFetch("/api/station-device-assignments", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ device_id: device.id, station_id: stationId }),

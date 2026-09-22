@@ -22,9 +22,9 @@ const VALID_ROLES: Role[] = [
  * Yêu cầu quyền staff.invite (đồng nghĩa user.create vì tạo auth user).
  */
 export async function POST(req: Request, { params }: RouteContext) {
-  const ctxInvite = await requirePermissionStrict("staff.invite");
+  const ctxInvite = await requirePermissionStrict("staff.invite", req);
   if (isError(ctxInvite)) return ctxInvite;
-  const ctxCreate = await requirePermissionStrict("user.create");
+  const ctxCreate = await requirePermissionStrict("user.create", req);
   if (isError(ctxCreate)) return ctxCreate;
 
   const { id } = await params;

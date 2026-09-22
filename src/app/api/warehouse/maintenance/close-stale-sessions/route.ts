@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     organizationId = orgParam || null;
   } else {
     // Mode A: user session.
-    const ctx = await requirePermissionStrict("warehouse.update");
+    const ctx = await requirePermissionStrict("warehouse.update", req);
     if (isError(ctx)) return ctx;
     organizationId = ctx.organizationId;
     actorUserId = ctx.userId;

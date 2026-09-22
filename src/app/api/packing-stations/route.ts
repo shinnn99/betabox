@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: Request) {
-  const ctx = await requirePermissionStrict("packing_station.create");
+  const ctx = await requirePermissionStrict("packing_station.create", req);
   if (isError(ctx)) return ctx;
 
   const body = await req.json().catch(() => null);

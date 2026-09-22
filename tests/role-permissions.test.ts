@@ -372,6 +372,16 @@ test("API che thông tin nhạy cảm với người thiếu quyền", () => {
   }
   assert.ok(read("src/app/api/warehouses/notifications-overview/route.ts").includes('requirePermission("warehouse.update")'));
   const discover = read("src/app/api/cameras/discover/route.ts");
-  assert.equal((discover.match(/requirePermission\("camera\.create"\)/g) ?? []).length, 2, "dò mạng: cả lệnh và kết quả");
+  // Cả lệnh (POST) và kết quả (GET) đều đòi camera.create. POST truyền thêm
+  // `req` để guard so x-render-org-id (vế 4 fail-closed) nên khớp cả hai dạng.
+  assert.equal(
+    (discover.match(/requirePermission\("camera\.create"(?:, req)?\)/g) ?? []).length,
+    2,
+    "dò mạng: cả lệnh và kết quả",
+  );
+  assert.ok(
+    discover.includes('requirePermission("camera.create", req)'),
+    "POST dò mạng là lệnh GHI — phải truyền req cho guard chống ghi-nhầm-org",
+  );
   assert.ok(read("src/app/dashboard/agents/page.tsx").includes('guard(allowSetup, "cấp secret mới cho máy trạm"'));
 });

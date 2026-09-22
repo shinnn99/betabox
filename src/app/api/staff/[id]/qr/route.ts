@@ -13,8 +13,8 @@ interface RouteContext {
  * Sau migration `staff_qr_credentials.payload`, raw payload luôn lưu trong DB,
  * không còn ràng buộc "chỉ hiện 1 lần" — list endpoint trả `qr_payload` để UI render lại.
  */
-export async function POST(_req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("staff.qr.regenerate");
+export async function POST(req: Request, { params }: RouteContext) {
+  const ctx = await requirePermissionStrict("staff.qr.regenerate", req);
   if (isError(ctx)) return ctx;
   const { id } = await params;
 

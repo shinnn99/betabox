@@ -22,8 +22,8 @@ interface RouteContext {
  * Không đổi code/name — chỉ secret. Cài lại installer trên máy kho với
  * secret mới, giữ nguyên code.
  */
-export async function POST(_req: Request, ctx: RouteContext) {
-  const authCtx = await requirePermissionStrict("station_device.create");
+export async function POST(req: Request, ctx: RouteContext) {
+  const authCtx = await requirePermissionStrict("station_device.create", req);
   if (isError(authCtx)) return authCtx;
 
   const { id } = await ctx.params;

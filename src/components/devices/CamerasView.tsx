@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "../../lib/api-fetch";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -401,7 +402,7 @@ function ManualForm({
     const url =
       mode === "create" ? "/api/cameras" : `/api/cameras/${initial!.id}`;
     const method = mode === "create" ? "POST" : "PUT";
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -830,7 +831,7 @@ function DiscoverTab({
         // hoặc offline → HTTP 400 với message hiện luôn ở banner đỏ.
         const body: Record<string, unknown> = { mode };
         if (cidr) body.cidr = cidr;
-        const enqueueRes = await fetch("/api/cameras/discover", {
+        const enqueueRes = await apiFetch("/api/cameras/discover", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
@@ -1465,7 +1466,7 @@ function DiscoveredDeviceForm({
       // 1) Probe the RTSP endpoint with the supplied credentials. If this
       // fails we do NOT persist the camera — the user gets a precise
       // error and can correct it in place.
-      const testRes = await fetch("/api/cameras/test-draft", {
+      const testRes = await apiFetch("/api/cameras/test-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1488,7 +1489,10 @@ function DiscoveredDeviceForm({
       //
       // Camera đã có thì CẬP NHẬT chứ không tạo mới: tạo mới sẽ đẻ ra bản
       // ghi trùng IP và làm hỏng liên kết bàn/thiết bị đang chạy.
-      const saveRes = await fetch(
+      //
+      // apiFetch chứ không fetch trần: mọi lệnh GHI phải mang
+      // `x-render-org-id` để guard chặn ghi-nhầm-org (sự cố 2026-09-16).
+      const saveRes = await apiFetch(
         existingCamera ? `/api/cameras/${existingCamera.id}` : "/api/cameras",
         {
           method: existingCamera ? "PUT" : "POST",
