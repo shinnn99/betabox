@@ -31,4 +31,4 @@ Mọi thứ khoá theo **từng bàn**: mỗi bàn một kỳ chế độ mở, 
 ## 5. Triển khai
 
 1. Chủ dự án áp `supabase/migrations/20260921140000_return_parallel_stations.sql` lên production. Code mới **chạy được cả khi chưa áp** — chỉ còn thiếu chốt chống va nhau trong cùng một bàn.
-2. Agent trên máy kho cần bản mới (đợt 5 trở đi) để nhận tín hiệu phiên hoàn — xem `log/README.md`, việc còn tồn.
+2. Agent trên máy kho cần bản mới (đợt 5 trở đi) để nhận tín hiệu phiên hoàn — xem `changelog/README.md`, việc còn tồn.

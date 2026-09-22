@@ -818,3 +818,21 @@ docs([Module]):     Cập nhật tài liệu
   - Chạy thật với 3 tài khoản test trên web: trước khi áp migration, kết quả khớp đúng ma trận cũ (18 dòng lệch như dự đoán). Chờ áp migration để chạy lại.
 - **Sự cố phát hiện:** lỗi 404 ở trang giám sát ("chưa có bàn nào") là do bộ nhớ đệm `.next` của web dev đã cũ. Xoá `.next` rồi khởi động lại là hết.
 - **Trạng thái:** Chờ chủ dự án áp migration. Thứ tự bắt buộc: migration trước, code sau; nếu ngược lại thì không ai mở được phiên nhận hoàn.
+
+### [DON-DEP] - Dọn dữ liệu và file test trước khi merge vào main
+
+- **Mục tiêu:** Chủ dự án yêu cầu dọn sạch dữ liệu rác sinh ra khi kiểm thử, để merge nhánh `2-camera` vào `main`.
+- **Database** (chỉ tổ chức Betacom, không đụng Kho Đại Kim; giữ mọi tài khoản test):
+  - Xoá 28 lượt quét test (cổng `test` / `e2e-test`), kéo theo 14 lượt đóng/hoàn `TEST…`.
+  - Xoá 11 clip (4 file trên bucket), 2 hồ sơ khiếu nại, 8 ca thử, 13 lệnh agent đi kèm.
+  - Xoá 2 kỳ nhận hoàn E2E cùng 2 kỳ đóng hàng sinh ra từ đó. Kỳ đóng hàng BAN_04 được nối liền 11:25 → 15:22.
+  - Giữ 1 ca thử có chứa 2 lượt quét thật của chủ dự án.
+- **File đã xoá:**
+  - `BetacomAgentSetup-v0.8.9.exe/` (11 GB video ghi thử).
+  - `.tmp/` (1,7 GB QA + bản sao production).
+  - Bộ cài agent 0.8.9 / 0.9.0 / 0.9.1 / 0.10.0 (giữ 0.10.1).
+  - `scratch_query.mjs`, `scratch_rpc.mjs` (có ghi cứng service key).
+  - Log agent chạy dev, `auto.crt` / `auto.key` ở thư mục gốc, script tạm.
+- **Nhật ký:** `log/` đổi tên thành `changelog/` theo chủ dự án; bản `changelog/` cũ hơn bị thay. Sửa tham chiếu còn hiệu lực trong `plans/active/HOAN-HANG-song-song-moi-ban.md`; các mục cũ trong `change.md` giữ nguyên như lịch sử.
+- **`.gitignore`:** bỏ qua `dev-server.log`, chứng chỉ MediaMTX tự sinh, file trạng thái khi chạy agent dev.
+- **Trạng thái:** Hoàn tất.

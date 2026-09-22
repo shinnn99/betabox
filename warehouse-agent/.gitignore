@@ -6,3 +6,10 @@ dist-package/
 dist-installer/
 .env
 data/*.jsonl
+
+# Trạng thái khi chạy agent ở chế độ dev (mỗi máy một khác).
+data/*.log
+data/agent-instance-id
+data/ffmpeg-pids.json
+data/mediamtx.generated.yml
+retention-cache.json

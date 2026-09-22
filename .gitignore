@@ -70,3 +70,9 @@ next-env.d.ts
 # Ban sao du lieu production keo xuong local (scripts/copy-prod-to-local.sh).
 # CHUA DU LIEU THAT cua khach — tuyet doi khong commit.
 .tmp/
+
+# Sinh ra khi chạy máy (không phải mã nguồn): log web dev, chứng chỉ WebRTC
+# MediaMTX tự tạo ở thư mục đang chạy.
+dev-server.log
+/auto.crt
+/auto.key
