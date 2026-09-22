@@ -37,7 +37,8 @@ import { enqueueProbeCodec } from "@/lib/agent-commands/enqueue";
 //
 // Process-only (no Redis) because the app is single-Node on-prem.
 // Stashed on globalThis so Next.js dev HMR reloads don't reset the
-// map and flap the warning state — same trick as recording.ts.
+// map and flap the warning state. Đánh đổi: bucket sống qua cả lần đổi
+// code, nên getCache() phải điền từng field — xem chú thích ở đó.
 const SOFT_LINK_TTL_MS = 30_000;
 const STATION_MAP_TTL_MS = 30_000;
 
@@ -51,15 +52,14 @@ interface CacheBucket {
 const CACHE_GLOBAL_KEY = "__beta_cam_camera_service_cache__";
 
 function getCache(): CacheBucket {
-  const g = globalThis as unknown as Record<string, CacheBucket | undefined>;
-  if (!g[CACHE_GLOBAL_KEY]) {
-    g[CACHE_GLOBAL_KEY] = {
-      softLinksDoneAt: new Map(),
-      qrScannersCheckedAt: new Map(),
-      stationMap: new Map(),
-    };
-  }
-  return g[CACHE_GLOBAL_KEY]!;
+  const g = globalThis as unknown as Record<string, Partial<CacheBucket> | undefined>;
+  const c = (g[CACHE_GLOBAL_KEY] ??= {});
+  // Điền từng field thay vì chỉ kiểm tra bucket có tồn tại: sau HMR, bucket
+  // do bản code cũ tạo ra vẫn nằm trên globalThis và thiếu field mới thêm.
+  c.softLinksDoneAt ??= new Map();
+  c.qrScannersCheckedAt ??= new Map();
+  c.stationMap ??= new Map();
+  return c as CacheBucket;
 }
 
 // PUBLIC: mutation routes MUST call this after any change to cameras,
