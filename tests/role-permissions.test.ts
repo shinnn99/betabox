@@ -24,7 +24,15 @@ function sqlArray(name: string): string[] {
 }
 
 const SETUP = sqlArray("v_setup");
-const VIEWER = sqlArray("v_viewer");
+// Viewer = tập gốc của migration phân quyền + phần thêm sau (Báo cáo, Thiết bị kho).
+const VIEWER_EXTRA_SQL = readFileSync(
+  "supabase/migrations/20260922100000_viewer_reports_devices.sql",
+  "utf8",
+);
+const VIEWER = [
+  ...sqlArray("v_viewer"),
+  ...[...VIEWER_EXTRA_SQL.matchAll(/\('viewer', '([a-z_.]+)'\)/g)].map((m) => m[1]),
+];
 
 // Mọi mã quyền đang có (ảnh chụp production 21/09/2026) + mã mới.
 const ALL = [
@@ -68,26 +76,35 @@ test("nhóm setup đúng phạm vi đã chốt: camera, gán vào bàn, thiết 
   }
 });
 
-test("viewer: 4 trang video + xem Nhân sự kho, có quyền tải, không có quyền ghi nào", () => {
+test("viewer: 4 trang video + xem Nhân sự, Thiết bị kho, Báo cáo; không có quyền ghi nào", () => {
   assert.deepEqual(visible(VIEWER_SET).sort(), [
+    "/dashboard",
+    "/dashboard/devices",
     "/dashboard/operations",
+    "/dashboard/reports",
     "/dashboard/return-videos",
     "/dashboard/returns",
     "/dashboard/staff",
     "/dashboard/videos",
   ]);
+  // Không mở thêm Tổ chức & Kho / Bàn đóng hàng / Người dùng / Máy trạm.
+  for (const h of ["/dashboard/warehouses", "/dashboard/packing-stations", "/dashboard/users", "/dashboard/agents"]) {
+    assert.ok(!visible(VIEWER_SET).includes(h), `viewer không được thấy ${h}`);
+  }
   assert.ok(VIEWER_SET.has("video.download"));
   assert.ok(VIEWER_SET.has("live.view_remote"), "xem được camera trực tiếp trên trang giám sát");
   const WRITE = /\.(create|update|delete|archive|manage|generate|invite|control|test|operate|regenerate|force_end|camera_setup)$/;
   assert.deepEqual(VIEWER.filter((p) => WRITE.test(p)), []);
 });
 
-test("viewer vào trang chủ được đưa tới trang video đầu tiên", () => {
-  const can = canFor(VIEWER_SET);
-  assert.equal(canSeeHref(navHrefForPath("/dashboard")!, can), false);
-  assert.equal(firstAllowedHref(can), "/dashboard/operations");
-  assert.equal(canSeeHref(navHrefForPath("/dashboard/devices")!, can), false);
-  assert.equal(canSeeHref(navHrefForPath("/dashboard/users")!, can), false);
+test("trang chủ bị cấm thì đưa tới trang đầu tiên được vào; viewer giờ vào được trang chủ", () => {
+  // Viewer có report.view (Báo cáo) nên Bảng điều khiển mở được.
+  assert.equal(canSeeHref(navHrefForPath("/dashboard")!, canFor(VIEWER_SET)), true);
+  // Tài khoản chỉ có quyền video (không report.view) vẫn được đưa thẳng tới trang video.
+  const videoOnly = canFor(new Set(["warehouse.view", "order_proof.view"]));
+  assert.equal(canSeeHref(navHrefForPath("/dashboard")!, videoOnly), false);
+  assert.equal(firstAllowedHref(videoOnly), "/dashboard/operations");
+  assert.equal(canSeeHref(navHrefForPath("/dashboard/users")!, canFor(VIEWER_SET)), false);
 });
 
 test("trưởng kho: mọi trang trừ Máy trạm kho; Thiết bị kho chỉ xem", () => {
@@ -95,7 +112,8 @@ test("trưởng kho: mọi trang trừ Máy trạm kho; Thiết bị kho chỉ x
     MENU_HREFS.filter((h) => !visible(MANAGER).includes(h)).sort(),
     ["/dashboard/agents"],
   );
-  assert.ok(!visible(VIEWER_SET).includes("/dashboard/devices"), "viewer không thấy Thiết bị kho");
+  // Viewer xem Thiết bị kho nhưng không có quyền setup nào (nút mờ, bấm chỉ báo).
+  for (const p of SETUP) assert.ok(!VIEWER.includes(p), `viewer không được có ${p}`);
 });
 
 test("Thiết bị kho: mỗi thao tác chỉ hiện khi có đúng quyền (trưởng kho chỉ xem)", () => {
@@ -266,10 +284,14 @@ test("trưởng kho quản lý người dùng vai trò THẤP HƠN, không đụ
   assert.ok(!page.includes("options={ROLE_OPTIONS.map"), "không được liệt kê vai trò cao hơn mình");
 });
 
-test("danh sách thiết bị cùng quyền với trang Thiết bị kho — viewer không đọc được", () => {
+test("danh sách thiết bị cùng quyền với trang Thiết bị kho (viewer chỉ xem)", () => {
   const src = readFileSync("src/app/api/devices/route.ts", "utf8");
   assert.ok(src.includes('requirePermission("station_device.view")'));
-  assert.ok(!VIEWER.includes("station_device.view"));
+  assert.ok(VIEWER.includes("station_device.view"), "viewer xem được Thiết bị kho");
+  assert.ok(!VIEWER.includes("packing_station.view"), "không mở kèm trang Bàn đóng hàng / Tổ chức & Kho");
+  // Không tải được danh sách bàn vẫn phải hiện đúng bàn đang gắn.
+  const cell = readFileSync("src/components/devices/StationAssignCell.tsx", "utf8");
+  assert.ok(cell.includes("!stations.some((s) => s.id === currentStation.station_id)"));
   assert.ok(MANAGER.has("station_device.view"), "trưởng kho vẫn xem được thiết bị");
 });
 

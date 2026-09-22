@@ -946,3 +946,14 @@ docs([Module]):     Cập nhật tài liệu
   - `tests/role-permissions.test.ts`: test `runGuarded` (không quyền thì KHÔNG chạy thao tác), và test mọi trang có nút ghi phải có chốt chặn, không còn kiểu ẩn nút.
 - **Kết quả kiểm tra:** `pnpm test` 501/501, `tsc` đạt. Mở thật 9 trang đã sửa bằng tài khoản tạm (xoá ngay sau): đều 200.
 - **Trạng thái:** Hoàn tất.
+
+### [VIEWER-BAO-CAO-THIET-BI] - Viewer xem thêm Báo cáo và Thiết bị kho (chỉ xem)
+
+- **Mục tiêu:** Chủ dự án cho Viewer xem thêm Báo cáo và Thiết bị kho, chỉ xem, không thêm/sửa/xoá.
+- **Files tạo/sửa:**
+  - `supabase/migrations/20260922100000_viewer_reports_devices.sql` (mới, chưa áp): thêm `report.view`, `station_device.view` cho viewer. Không thêm quyền ghi nào. Không thêm `packing_station.view`, vì quyền đó mở luôn Tổ chức & Kho và Bàn đóng hàng.
+  - `src/components/devices/StationAssignCell.tsx`: không tải được danh sách bàn thì vẫn hiện đúng bàn đang gắn (trước đây sẽ rơi về "Chưa gắn").
+  - `tests/role-permissions.test.ts`.
+- **Hệ quả:** `report.view` cũng mở Bảng điều khiển (cùng quyền đọc số liệu). Trên trang Thiết bị kho mọi nút thao tác hiện mờ, bấm vào chỉ báo không có quyền.
+- **Kết quả kiểm tra:** dry-run hai migration trên database cục bộ: viewer 11 quyền, toàn quyền xem. `pnpm test` 501/501.
+- **Trạng thái:** Chờ chủ dự án áp migration `20260922100000`.

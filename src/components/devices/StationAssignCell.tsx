@@ -243,6 +243,13 @@ export default function StationAssignCell({
           aria-label="Bàn đang phục vụ"
         >
           <option value="">Chưa gắn</option>
+          {/* Người chỉ xem có thể không tải được danh sách bàn (không có quyền
+              xem bàn) — vẫn phải hiện đúng bàn đang gắn, không rơi về "Chưa gắn". */}
+          {currentStation && !stations.some((s) => s.id === currentStation.station_id) && (
+            <option value={currentStation.station_id}>
+              {currentStation.station_code} · {currentStation.station_name}
+            </option>
+          )}
           {stations.map((s) => (
             <option key={s.id} value={s.id}>
               {s.code} · {s.name}
