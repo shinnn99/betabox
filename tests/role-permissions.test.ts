@@ -256,3 +256,10 @@ test("trưởng kho quản lý người dùng vai trò THẤP HƠN, không đụ
   assert.ok(page.includes("ROLE_OPTIONS.filter((r) => canAssignRole(actorRole, r.value))"));
   assert.ok(!page.includes("options={ROLE_OPTIONS.map"), "không được liệt kê vai trò cao hơn mình");
 });
+
+test("danh sách thiết bị cùng quyền với trang Thiết bị kho — viewer không đọc được", () => {
+  const src = readFileSync("src/app/api/devices/route.ts", "utf8");
+  assert.ok(src.includes('requirePermission("station_device.view")'));
+  assert.ok(!VIEWER.includes("station_device.view"));
+  assert.ok(MANAGER.has("station_device.view"), "trưởng kho vẫn xem được thiết bị");
+});

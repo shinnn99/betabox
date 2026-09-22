@@ -900,3 +900,19 @@ docs([Module]):     Cập nhật tài liệu
   - `tests/role-permissions.test.ts`.
 - **Kết quả kiểm tra:** `pnpm test` 498/498, `tsc` đạt.
 - **Trạng thái:** Hoàn tất (hiệu lực đầy đủ sau khi áp migration `20260921160000`).
+
+### [PHAN-QUYEN-KIEM-THAT] - Chạy thật phân quyền sau khi áp migration `20260921160000`
+
+- **Mục tiêu:** Chủ dự án đã áp migration phân quyền. Kiểm tra thật trên web với từng vai trò.
+- **Database production:** owner/admin 45 quyền, trưởng kho 36, trưởng ca 15, nhân viên đóng gói 12, viewer 9. Khớp dry-run.
+- **Cách test:**
+  - 3 tài khoản test cũ đã được chủ dự án tự xoá sáng 22/09. Tạo 3 tài khoản TẠM (mật khẩu ngẫu nhiên chỉ nằm trong bộ nhớ), đăng nhập, gọi API thật, rồi xoá ngay.
+  - Kiểm lại: không còn tài khoản tạm nào.
+- **Kết quả:**
+  - Lượt 1: 67/68 đạt. Viewer vẫn đọc được `GET /api/devices` (danh sách thiết bị kèm IP) vì API chỉ đòi `camera.view`. Đã sửa `src/app/api/devices/route.ts` sang `station_device.view`, cùng quyền với trang Thiết bị kho.
+  - Lượt 2: đạt hết.
+    - Admin làm được mọi việc.
+    - Trưởng kho bị chặn thêm camera / thiết bị / gán bàn / dò camera / tạo máy trạm, và bị chặn tạo tài khoản admin (`forbidden_role_escalation`). Vẫn thêm được nhân sự, người dùng thấp hơn và thao tác hàng hoàn.
+    - Viewer chỉ đọc được 4 trang video và danh sách nhân sự; không nhận mã QR vào ca; mọi thao tác ghi bị 403.
+- **Test:** `tests/role-permissions.test.ts` thêm chốt cho `/api/devices`; `pnpm test` 499/499.
+- **Trạng thái:** Hoàn tất.

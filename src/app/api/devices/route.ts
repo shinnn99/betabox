@@ -38,7 +38,10 @@ interface StationAssignmentRow {
 }
 
 export async function GET() {
-  const ctx = await requirePermission("camera.view");
+  // Danh sách thiết bị (kèm IP, cổng, bàn) chỉ phục vụ trang Thiết bị kho —
+  // cùng quyền với trang đó. `camera.view` rộng hơn: Viewer có để xem camera
+  // trực tiếp, nhưng không được xem danh sách thiết bị.
+  const ctx = await requirePermission("station_device.view");
   if (isError(ctx)) return ctx;
 
   const admin = createAdminClient();
