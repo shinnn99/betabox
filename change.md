@@ -957,3 +957,24 @@ docs([Module]):     Cập nhật tài liệu
 - **Hệ quả:** `report.view` cũng mở Bảng điều khiển (cùng quyền đọc số liệu). Trên trang Thiết bị kho mọi nút thao tác hiện mờ, bấm vào chỉ báo không có quyền.
 - **Kết quả kiểm tra:** dry-run hai migration trên database cục bộ: viewer 11 quyền, toàn quyền xem. `pnpm test` 501/501.
 - **Trạng thái:** Chờ chủ dự án áp migration `20260922100000`.
+
+### [VIEWER-XEM-TAT-CA] - Viewer xem mọi trang trừ Quản lý hệ thống; ẩn thông tin nhạy cảm
+
+- **Mục tiêu:** Chủ dự án (22/09/2026):
+  - Viewer xem được tất cả các trang, trừ nhóm Quản lý hệ thống (không có trên giao diện).
+  - Các trang khác chỉ xem, không thêm/sửa/xoá.
+  - Thông tin có thể bị lợi dụng để tác động tới người dùng khác hoặc hệ thống thì ẩn đi.
+- **Files tạo/sửa:**
+  - `supabase/migrations/20260922100000_viewer_reports_devices.sql` (viết lại, chưa áp):
+    - Viewer thêm `report.view`, `packing_station.view`, `station_device.view`, `station_device_assignment.view`.
+    - Quyền mới `sensitive.view` cho mọi vai trò trừ viewer.
+    - Chốt xoá mọi mã nhạy cảm / quản lý hệ thống / ghi khỏi viewer.
+  - `src/lib/sensitive-redact.ts` (mới).
+  - `src/app/api/cameras/route.ts`, `src/app/api/devices/route.ts`: che IP, cổng, RTSP, username, MAC camera; kết quả test cũ chỉ giữ đúng/sai (có thể chứa URL RTSP).
+  - `src/app/api/staff/route.ts`: che SĐT / email.
+  - `src/app/api/warehouses/route.ts`, `src/app/api/warehouses/[id]/route.ts`: URL webhook Lark chỉ cho người có `warehouse.update`, người khác thấy `••••`. `src/app/api/warehouses/notifications-overview/route.ts` đòi `warehouse.update`.
+  - `src/app/api/cameras/discover/route.ts`: kết quả dò mạng (IP/MAC cả LAN) đòi `camera.create` như lệnh dò.
+  - `src/lib/nav-access.ts`, `src/app/dashboard/agents/page.tsx`: Máy trạm kho cho người có `station_device.view` xem; tạo / cấp secret / xoá chặn ở nút.
+  - `tests/role-permissions.test.ts`.
+- **Kết quả kiểm tra:** dry-run hai migration trên database cục bộ: viewer 13 quyền, toàn quyền xem; `sensitive.view` đủ 5 vai trò còn lại. `pnpm test` 503/503, `tsc` đạt.
+- **Trạng thái:** Chờ chủ dự án áp migration `20260922100000`.

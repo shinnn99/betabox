@@ -76,21 +76,16 @@ test("nhóm setup đúng phạm vi đã chốt: camera, gán vào bàn, thiết 
   }
 });
 
-test("viewer: 4 trang video + xem Nhân sự, Thiết bị kho, Báo cáo; không có quyền ghi nào", () => {
-  assert.deepEqual(visible(VIEWER_SET).sort(), [
-    "/dashboard",
-    "/dashboard/devices",
-    "/dashboard/operations",
-    "/dashboard/reports",
-    "/dashboard/return-videos",
-    "/dashboard/returns",
-    "/dashboard/staff",
-    "/dashboard/videos",
-  ]);
-  // Không mở thêm Tổ chức & Kho / Bàn đóng hàng / Người dùng / Máy trạm.
-  for (const h of ["/dashboard/warehouses", "/dashboard/packing-stations", "/dashboard/users", "/dashboard/agents"]) {
+test("viewer: xem mọi trang trừ nhóm Quản lý hệ thống; không có quyền ghi nào", () => {
+  const MANAGE_SYSTEM = ["/dashboard/users", "/dashboard/settings/warehouse-config", "/dashboard/audit"];
+  assert.deepEqual(
+    visible(VIEWER_SET).sort(),
+    MENU_HREFS.filter((h) => !MANAGE_SYSTEM.includes(h)).sort(),
+  );
+  for (const h of MANAGE_SYSTEM) {
     assert.ok(!visible(VIEWER_SET).includes(h), `viewer không được thấy ${h}`);
   }
+  assert.ok(!VIEWER.includes("sensitive.view"), "viewer không xem thông tin nhạy cảm");
   assert.ok(VIEWER_SET.has("video.download"));
   assert.ok(VIEWER_SET.has("live.view_remote"), "xem được camera trực tiếp trên trang giám sát");
   const WRITE = /\.(create|update|delete|archive|manage|generate|invite|control|test|operate|regenerate|force_end|camera_setup)$/;
@@ -107,11 +102,9 @@ test("trang chủ bị cấm thì đưa tới trang đầu tiên được vào; 
   assert.equal(canSeeHref(navHrefForPath("/dashboard/users")!, canFor(VIEWER_SET)), false);
 });
 
-test("trưởng kho: mọi trang trừ Máy trạm kho; Thiết bị kho chỉ xem", () => {
-  assert.deepEqual(
-    MENU_HREFS.filter((h) => !visible(MANAGER).includes(h)).sort(),
-    ["/dashboard/agents"],
-  );
+test("trưởng kho: thấy mọi trang; Thiết bị kho và Máy trạm kho chỉ xem", () => {
+  assert.deepEqual(MENU_HREFS.filter((h) => !visible(MANAGER).includes(h)), []);
+  assert.ok(!MANAGER.has("station_device.create"), "máy trạm: tạo / cấp secret / xoá bị chặn ở nút");
   // Viewer xem Thiết bị kho nhưng không có quyền setup nào (nút mờ, bấm chỉ báo).
   for (const p of SETUP) assert.ok(!VIEWER.includes(p), `viewer không được có ${p}`);
 });
@@ -288,7 +281,6 @@ test("danh sách thiết bị cùng quyền với trang Thiết bị kho (viewer
   const src = readFileSync("src/app/api/devices/route.ts", "utf8");
   assert.ok(src.includes('requirePermission("station_device.view")'));
   assert.ok(VIEWER.includes("station_device.view"), "viewer xem được Thiết bị kho");
-  assert.ok(!VIEWER.includes("packing_station.view"), "không mở kèm trang Bàn đóng hàng / Tổ chức & Kho");
   // Không tải được danh sách bàn vẫn phải hiện đúng bàn đang gắn.
   const cell = readFileSync("src/components/devices/StationAssignCell.tsx", "utf8");
   assert.ok(cell.includes("!stations.some((s) => s.id === currentStation.station_id)"));
@@ -336,4 +328,46 @@ test("mọi trang có nút ghi dữ liệu đều chặn từ nút, không ẩn-
     assert.ok(!/^\s*\{allow\.[a-z]+ && \(/m.test(src), `${file}: còn ẩn nút theo quyền, phải chặn-khi-bấm`);
     assert.ok(!/if \(!can\("[a-z_.]+"\)\) return null;/.test(src), `${file}: còn ẩn cả khung theo quyền`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Thông tin có thể bị lợi dụng để tác động tới người khác / hệ thống: API tự
+// che với người thiếu quyền (Viewer), không chỉ giấu trên giao diện.
+// ---------------------------------------------------------------------------
+
+test("che thông tin nhạy cảm: camera, SĐT, email", async () => {
+  const { redactCameraNetwork, maskPhone, maskEmail, HIDDEN } = await import("../src/lib/sensitive-redact.ts");
+  const cam = redactCameraNetwork({
+    id: "c1", ip: "192.168.1.87", rtsp_port: 554, username: "admin", rtsp_path: "/cam/realmonitor",
+    mac_address: "08:ED:ED:9F:DB:97",
+    last_test_result: { success: true, message: "rtsp://admin@192.168.1.87:554/cam" },
+  });
+  assert.equal(cam.ip, HIDDEN);
+  assert.equal(cam.username, HIDDEN);
+  assert.equal(cam.rtsp_path, HIDDEN);
+  assert.equal(cam.rtsp_port, 0);
+  assert.equal(cam.mac_address, null);
+  assert.deepEqual(cam.last_test_result, { success: true }, "kết quả test cũ chứa URL RTSP");
+  assert.equal(cam.id, "c1");
+  assert.equal(maskPhone("0912345678"), `09${HIDDEN}678`);
+  assert.equal(maskEmail("nguyenvana@gmail.com"), `n${HIDDEN}@gmail.com`);
+  assert.equal(maskPhone(null), null);
+});
+
+test("API che thông tin nhạy cảm với người thiếu quyền", () => {
+  const read = (f: string) => readFileSync(f, "utf8");
+  for (const f of ["src/app/api/cameras/route.ts", "src/app/api/devices/route.ts"]) {
+    const src = read(f);
+    assert.ok(src.includes('roleHasPermission(ctx.role, "sensitive.view")'), `${f}: phải kiểm sensitive.view`);
+    assert.ok(src.includes("redactCameraNetwork"), `${f}: phải che IP/RTSP/username/MAC`);
+  }
+  const staff = read("src/app/api/staff/route.ts");
+  assert.ok(staff.includes("maskPhone(s.phone)") && staff.includes("maskEmail(s.email)"));
+  for (const f of ["src/app/api/warehouses/route.ts", "src/app/api/warehouses/[id]/route.ts"]) {
+    assert.ok(read(f).includes('roleHasPermission(ctx.role, "warehouse.update")'), `${f}: webhook Lark chỉ cho người sửa cấu hình`);
+  }
+  assert.ok(read("src/app/api/warehouses/notifications-overview/route.ts").includes('requirePermission("warehouse.update")'));
+  const discover = read("src/app/api/cameras/discover/route.ts");
+  assert.equal((discover.match(/requirePermission\("camera\.create"\)/g) ?? []).length, 2, "dò mạng: cả lệnh và kết quả");
+  assert.ok(read("src/app/dashboard/agents/page.tsx").includes('guard(allowSetup, "cấp secret mới cho máy trạm"'));
 });

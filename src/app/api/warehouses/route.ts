@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requirePermission, requirePermissionStrict, isError } from "@/lib/supabase/guard";
+import { requirePermission, requirePermissionStrict, isError, roleHasPermission } from "@/lib/supabase/guard";
 import { getScopedClient } from "@/lib/supabase/scoped-client";
 import { audit } from "@/lib/audit";
+import { HIDDEN } from "@/lib/sensitive-redact";
 
 export async function GET() {
   const ctx = await requirePermission("warehouse.view");
@@ -17,7 +18,17 @@ export async function GET() {
     .order("code");
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ warehouses: data ?? [] });
+  // URL webhook Lark = ai có là gửi tin vào nhóm được. Chỉ người sửa được cấu
+  // hình kho mới nhận URL thật; người khác chỉ biết là đã / chưa cấu hình.
+  const canSeeWebhook =
+    ctx.isPlatform || (await roleHasPermission(ctx.role, "warehouse.update"));
+  const warehouses = (data ?? []).map((w) => {
+    const row = w as { notify_lark_webhook_url?: string | null };
+    return canSeeWebhook
+      ? w
+      : { ...w, notify_lark_webhook_url: row.notify_lark_webhook_url ? HIDDEN : null };
+  });
+  return NextResponse.json({ warehouses });
 }
 
 export async function POST(req: Request) {

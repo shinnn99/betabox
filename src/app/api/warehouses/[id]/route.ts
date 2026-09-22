@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requirePermission, requirePermissionStrict, isError } from "@/lib/supabase/guard";
+import { requirePermission, requirePermissionStrict, isError, roleHasPermission } from "@/lib/supabase/guard";
 import { getScopedClient } from "@/lib/supabase/scoped-client";
 import { audit } from "@/lib/audit";
+import { HIDDEN } from "@/lib/sensitive-redact";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -51,7 +52,15 @@ export async function GET(_req: Request, { params }: RouteContext) {
     .maybeSingle();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!data) return NextResponse.json({ error: "not_found" }, { status: 404 });
-  return NextResponse.json({ warehouse: data });
+  // Như danh sách kho: URL webhook thật chỉ cho người sửa được cấu hình kho.
+  const canSeeWebhook =
+    ctx.isPlatform || (await roleHasPermission(ctx.role, "warehouse.update"));
+  const row = data as { notify_lark_webhook_url?: string | null };
+  return NextResponse.json({
+    warehouse: canSeeWebhook
+      ? data
+      : { ...data, notify_lark_webhook_url: row.notify_lark_webhook_url ? HIDDEN : null },
+  });
 }
 
 export async function PATCH(req: Request, { params }: RouteContext) {

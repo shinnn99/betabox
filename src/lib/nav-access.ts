@@ -21,8 +21,9 @@ export const NAV_ACCESS: ReadonlyArray<readonly [string, readonly string[]]> = [
   // Thiết bị kho: ai xem được thiết bị đều vào được (Trưởng kho chỉ xem —
   // trang tự ẩn nút thêm/sửa/xoá/đổi bàn theo quyền). Viewer không thấy.
   ["/dashboard/devices", ["station_device.view"]],
-  // Máy trạm kho là trang thuần setup (tạo agent, reset secret).
-  ["/dashboard/agents", ["station_device.create"]],
+  // Máy trạm kho: ai xem được thiết bị đều xem được trạng thái máy trạm;
+  // tạo / cấp secret / xoá chặn ngay ở nút (station_device.create).
+  ["/dashboard/agents", ["station_device.view"]],
   ["/dashboard/staff", ["staff.view"]],
   ["/dashboard/reports", ["report.view"]],
   ["/dashboard/users", ["user.view"]],

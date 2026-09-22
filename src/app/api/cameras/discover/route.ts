@@ -138,7 +138,9 @@ export async function POST(req: Request) {
 // GET: poll kết quả command. UI gọi mỗi ~1s.
 // Trả 3 state: pending (chưa xong), done (kèm result), failed (kèm error).
 export async function GET(req: Request) {
-  const ctx = await requirePermission("camera.view");
+  // Kết quả dò mạng (IP, MAC mọi thiết bị trong LAN kho) là dữ liệu setup —
+  // cùng quyền với lệnh dò, không phải quyền xem camera.
+  const ctx = await requirePermission("camera.create");
   if (isError(ctx)) return ctx;
 
   const url = new URL(req.url);

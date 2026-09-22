@@ -3,6 +3,7 @@ import {
   isError,
   requirePermission,
   requirePermissionStrict,
+  roleHasPermission,
 } from "@/lib/supabase/guard";
 import { audit } from "@/lib/audit";
 import { bindCameraToDiscoveringAgent } from "@/lib/camera/discovering-agent";
@@ -13,6 +14,7 @@ import {
   validateCameraInput,
   type CameraInput,
 } from "@/lib/camera/service";
+import { redactCameraNetwork } from "@/lib/sensitive-redact";
 
 export const runtime = "nodejs";
 
@@ -22,7 +24,12 @@ export async function GET() {
 
   try {
     const cameras = await listCameras(ctx.organizationId);
-    return NextResponse.json({ cameras });
+    // IP / RTSP / username / MAC chỉ cho người có quyền xem thông tin nhạy cảm.
+    const sensitive =
+      ctx.isPlatform || (await roleHasPermission(ctx.role, "sensitive.view"));
+    return NextResponse.json({
+      cameras: sensitive ? cameras : cameras.map(redactCameraNetwork),
+    });
   } catch (err) {
     return NextResponse.json(
       { error: "list_failed", message: (err as Error).message },

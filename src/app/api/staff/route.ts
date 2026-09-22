@@ -4,6 +4,7 @@ import { requirePermission, requirePermissionStrict, isError, roleHasPermission 
 import { getScopedClient } from "@/lib/supabase/scoped-client";
 import { audit } from "@/lib/audit";
 import { issueAndStoreStaffQr } from "@/lib/qr";
+import { maskEmail, maskPhone } from "@/lib/sensitive-redact";
 
 type StaffStatus = "active" | "inactive" | "on_leave";
 const VALID_STATUS: StaffStatus[] = ["active", "inactive", "on_leave"];
@@ -80,6 +81,9 @@ export async function GET() {
   // chỉ xem nhân sự thấy tiền tố để biết đã có QR, không thấy mã.
   const canSeeQr =
     ctx.isPlatform || (await roleHasPermission(ctx.role, "staff.qr.regenerate"));
+  // SĐT / email là thông tin cá nhân của người khác — người chỉ xem thấy dạng che.
+  const canSeeContact =
+    ctx.isPlatform || (await roleHasPermission(ctx.role, "sensitive.view"));
 
   const result = staff.map((s) => {
     const a = assignments
@@ -95,6 +99,8 @@ export async function GET() {
       });
     return {
       ...s,
+      phone: canSeeContact ? s.phone : maskPhone(s.phone),
+      email: canSeeContact ? s.email : maskEmail(s.email),
       warehouses: a,
       qr_active_prefix: qrPrefix.get(s.id) ?? null,
       qr_payload: canSeeQr ? qrPayload.get(s.id) ?? null : null,

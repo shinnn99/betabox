@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { isError, requirePermission } from "@/lib/supabase/guard";
+import { isError, requirePermission, roleHasPermission } from "@/lib/supabase/guard";
 import { listCameras } from "@/lib/camera/service";
 import {
   AGENT_ONLINE_STALE_MS,
   deriveCameraOnlineState,
   type CameraOnlineState,
 } from "@/lib/camera/online-state";
+import { redactCameraNetwork } from "@/lib/sensitive-redact";
 
 // SESSION_HEARTBEAT stale (session đang ghi, 90s). Cột AGENT + PROBE stale
 // đã tách ra @/lib/camera/online-state để /api/dashboard/overview cùng dùng.
@@ -283,7 +284,11 @@ export async function GET() {
     };
   });
 
+  // Trạng thái online đã tính xong ở trên — giờ mới ẩn IP / RTSP / username /
+  // MAC với người không có quyền xem thông tin nhạy cảm (Viewer).
+  const sensitive =
+    ctx.isPlatform || (await roleHasPermission(ctx.role, "sensitive.view"));
   return NextResponse.json({
-    devices: [...cameraRows, ...scanners],
+    devices: [...(sensitive ? cameraRows : cameraRows.map(redactCameraNetwork)), ...scanners],
   });
 }

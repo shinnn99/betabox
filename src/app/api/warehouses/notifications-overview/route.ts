@@ -17,7 +17,8 @@ export const runtime = "nodejs";
  * Cross-tenant: filter theo ctx.organizationId ở mọi query.
  */
 export async function GET() {
-  const ctx = await requirePermission("warehouse.view");
+  // Trả URL webhook thật — chỉ phục vụ trang Cấu hình kho (sửa được cấu hình).
+  const ctx = await requirePermission("warehouse.update");
   if (isError(ctx)) return ctx;
 
   const admin = createAdminClient();

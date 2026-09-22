@@ -17,6 +17,7 @@ import {
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { useToast } from "@/components/ui/Toast";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
+import { deniedClass, usePageGuard } from "@/lib/useGuard";
 
 interface AgentRow {
   id: string;
@@ -48,6 +49,11 @@ function isOnline(iso: string | null): boolean {
 
 export default function AgentsPage() {
   const toast = useToast();
+  // Tạo máy trạm / cấp secret mới / xoá là setup (station_device.create).
+  // Người chỉ xem (trưởng kho, viewer) vẫn thấy trạng thái máy trạm; bấm nút
+  // chỉ nhận thông báo không có quyền.
+  const { can, guard } = usePageGuard();
+  const allowSetup = can("station_device.create");
   const confirm = useConfirm();
   const [rows, setRows] = useState<AgentRow[] | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -146,8 +152,8 @@ export default function AgentsPage() {
             <RefreshCw className="h-4 w-4 text-slate-500" />
           </button>
           <button
-            onClick={() => setShowCreate(true)}
-            className="h-9 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-1.5"
+            onClick={guard(allowSetup, "thêm máy trạm", () => setShowCreate(true))}
+            className={`h-9 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-1.5${deniedClass(allowSetup)}`}
           >
             <Plus className="h-4 w-4" />
             Thêm máy trạm
@@ -211,8 +217,8 @@ export default function AgentsPage() {
                         <div className="flex items-center justify-end gap-1">
                           <button
                             disabled={busy === r.id}
-                            onClick={() => resetSecret(r)}
-                            className="h-8 px-2 rounded-lg border border-slate-200 hover:bg-slate-100 inline-flex items-center gap-1 text-xs text-slate-700 disabled:opacity-50"
+                            onClick={guard(allowSetup, "cấp secret mới cho máy trạm", () => void resetSecret(r))}
+                            className={`h-8 px-2 rounded-lg border border-slate-200 hover:bg-slate-100 inline-flex items-center gap-1 text-xs text-slate-700 disabled:opacity-50${deniedClass(allowSetup)}`}
                             title="Cấp secret mới (cần cài lại installer)"
                           >
                             <KeyRound className="h-3.5 w-3.5" />
@@ -220,8 +226,8 @@ export default function AgentsPage() {
                           </button>
                           <button
                             disabled={busy === r.id}
-                            onClick={() => deleteAgent(r)}
-                            className="h-8 w-8 rounded-lg text-rose-500 hover:bg-rose-50 inline-flex items-center justify-center disabled:opacity-50"
+                            onClick={guard(allowSetup, "xoá máy trạm", () => void deleteAgent(r))}
+                            className={`h-8 w-8 rounded-lg text-rose-500 hover:bg-rose-50 inline-flex items-center justify-center disabled:opacity-50${deniedClass(allowSetup)}`}
                             title="Xóa máy trạm"
                           >
                             <Trash2 className="h-4 w-4" />
