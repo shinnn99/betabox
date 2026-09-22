@@ -851,3 +851,16 @@ docs([Module]):     Cập nhật tài liệu
 - **Hệ quả đã báo chủ dự án:** kiện hoàn không còn được ghi OK/Hỏng/Thiếu/Tráo và không tự mở hồ sơ khiếu nại.
 - **Kết quả kiểm tra:** `pnpm test` 492/492, `tsc` đạt.
 - **Trạng thái:** Hoàn tất.
+
+### [HOAN-TU-BAT] - Vào phân hệ hàng hoàn là tự chuyển; mọi vai trò có video minh chứng
+
+- **Mục tiêu:** Chủ dự án (22/09/2026):
+  - Bỏ thẻ rồi thì chỉ cần vào phân hệ quay video hoàn hàng là bàn tự chuyển sang nhận hoàn, theo đúng luồng đã chốt.
+  - Mọi vai trò đều có trang Bằng chứng giao hàng và Bằng chứng hoàn hàng (Viewer đang không thấy).
+- **Files sửa:**
+  - `src/components/returns/ReturnCaptureProvider.tsx`: vào phân hệ là tự bật nhận hoàn ở mọi bàn, trừ bàn người dùng đã bấm "Kết thúc" trên trình duyệt đó (nhớ trong localStorage, giữ chạy lai được). Tài khoản không có quyền thao tác thì im lặng bỏ qua. Bỏ chữ "thẻ QR" trên giao diện.
+  - `supabase/migrations/20260921160000_role_permission_redesign.sql` (chưa áp): trưởng ca và nhân viên đóng gói có thêm `order_proof.view`, `video.view`, `video.download`.
+  - `tests/role-permissions.test.ts`.
+- **Nguyên nhân Viewer không thấy 2 trang video:** migration phân quyền chưa áp lên production, Viewer vẫn theo ma trận cũ (không có `order_proof.view`).
+- **Kết quả kiểm tra:** dry-run migration trên database cục bộ: cả 6 vai trò có đủ quyền xem và tải video minh chứng. `pnpm test` đạt.
+- **Trạng thái:** Chờ chủ dự án áp migration `20260921160000`.

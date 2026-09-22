@@ -155,6 +155,25 @@ test("API setup camera / thiết bị / máy trạm đều đòi quyền nhóm s
   }
 });
 
+test("mọi vai trò có hai trang video minh chứng (xem + tải)", () => {
+  for (const code of ["order_proof.view", "video.view", "video.download"]) {
+    assert.ok(VIEWER.includes(code), `viewer thiếu ${code}`);
+    assert.ok(MANAGER.has(code) && ADMIN.has(code), `admin/trưởng kho thiếu ${code}`);
+    const tail = MIGRATION.slice(MIGRATION.indexOf("ARRAY['shift_leader', 'packer'] LOOP"));
+    assert.ok(tail.includes(`'${code}'`), `trưởng ca / nhân viên đóng gói phải được cấp ${code}`);
+  }
+  for (const href of ["/dashboard/videos", "/dashboard/return-videos"]) {
+    assert.ok(canSeeHref(href, canFor(new Set(["order_proof.view"]))), `${href} chỉ cần order_proof.view`);
+  }
+});
+
+test("vào phân hệ hàng hoàn là tự chuyển nhận hoàn, trừ bàn đã chủ động tắt", () => {
+  const src = readFileSync("src/components/returns/ReturnCaptureProvider.tsx", "utf8");
+  assert.ok(src.includes('run(ids, "open", true)'), "phải tự bật khi vào phân hệ");
+  assert.ok(src.includes("OPT_OUT_KEY"), "phải nhớ bàn người dùng đã tắt (chạy lai)");
+  assert.ok(src.includes("auto && res.status === 403"), "Viewer tự bật bị từ chối thì im lặng");
+});
+
 test("thao tác hàng hoàn đòi return.operate — viewer chỉ xem", () => {
   assert.deepEqual(writeGuards("src/app/api/returns/capture/route.ts"), ["POST return.operate"]);
   assert.deepEqual(writeGuards("src/app/api/returns/claims/bulk/route.ts"), ["POST return.operate"]);

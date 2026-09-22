@@ -8,7 +8,11 @@
 --   Quan sát viên (viewer)        : chỉ xem và tải video — trang Giám sát
 --                                   đóng/hoàn hàng và Bằng chứng giao/hoàn
 --                                   hàng; không sửa gì.
---   Trưởng ca, Nhân viên đóng gói : giữ nguyên, chỉ thêm `return.operate`.
+--   Trưởng ca, Nhân viên đóng gói : giữ nguyên, thêm `return.operate` và
+--                                   quyền xem + tải video minh chứng.
+--
+-- MỌI vai trò đều có hai trang video minh chứng (đóng hàng, hoàn hàng):
+-- `order_proof.view`, `video.view`, `video.download` (chủ dự án 22/09/2026).
 --
 -- Quyền mới `return.operate`: mở/đóng phiên nhận hoàn và đổi trạng thái hồ
 -- sơ khiếu nại. Trước đây hai thao tác này chỉ đòi quyền xem bằng chứng nên
@@ -79,12 +83,15 @@ BEGIN
     );
   END LOOP;
 
-  -- Trưởng ca, nhân viên đóng gói: chỉ thêm quyền thao tác hàng hoàn.
+  -- Trưởng ca, nhân viên đóng gói: thêm quyền thao tác hàng hoàn và quyền
+  -- xem + tải video minh chứng (mọi vai trò đều có hai trang video).
   FOREACH v_role IN ARRAY ARRAY['shift_leader', 'packer'] LOOP
-    EXECUTE format(
-      'INSERT INTO public.role_permission_matrix (role, permission_code) VALUES (%L, %L) ON CONFLICT DO NOTHING',
-      v_role, 'return.operate'
-    );
+    FOREACH v_code IN ARRAY ARRAY['return.operate', 'order_proof.view', 'video.view', 'video.download'] LOOP
+      EXECUTE format(
+        'INSERT INTO public.role_permission_matrix (role, permission_code) VALUES (%L, %L) ON CONFLICT DO NOTHING',
+        v_role, v_code
+      );
+    END LOOP;
   END LOOP;
 END;
 $$;

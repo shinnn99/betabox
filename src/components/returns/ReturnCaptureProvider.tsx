@@ -29,17 +29,47 @@ import { useToast } from "@/components/ui/Toast";
  * này thoát là tắt phiên của máy kia. Không lưu tabId vào sessionStorage —
  * "Nhân bản tab" chép luôn sessionStorage và hai tab sẽ trùng người giữ.
  *
+ * Tự bật (22/09/2026, sau khi bỏ thẻ QR): vào phân hệ là mọi bàn tự chuyển
+ * sang nhận hoàn, trừ bàn người dùng đã bấm "Kết thúc" trên trình duyệt này
+ * (để chạy lai: bàn 1-2 đóng hàng, bàn 3-4 nhận hoàn). Tài khoản không có
+ * quyền thao tác (Viewer) thì server từ chối và tab này im lặng bỏ qua.
+ *
  * Kế hoạch: plans/active/HOAN-HANG-song-song-moi-ban.md
  */
 
 const HEARTBEAT_MS = 30_000;
+
+/**
+ * Bàn người dùng đã chủ động "Kết thúc" trên trình duyệt này — lần sau vào
+ * phân hệ không tự bật lại. Nhớ bàn BỊ LOẠI (không nhớ bàn được chọn) để bàn
+ * mới thêm vẫn tự bật như mặc định.
+ */
+const OPT_OUT_KEY = "betabox.returnCapture.optOut";
+
+function readOptOut(): Set<string> {
+  try {
+    const raw = localStorage.getItem(OPT_OUT_KEY);
+    const list = raw ? (JSON.parse(raw) as unknown) : [];
+    return new Set(Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeOptOut(ids: Set<string>) {
+  try {
+    localStorage.setItem(OPT_OUT_KEY, JSON.stringify([...ids]));
+  } catch {
+    // Trình duyệt chặn lưu trữ: lần sau tự bật lại mọi bàn, không sao.
+  }
+}
 
 export type CaptureState = "none" | "active" | "draining" | "finished" | "abandoned";
 
 export interface CaptureView {
   state: CaptureState;
   heldByMe: boolean;
-  /** Số nguồn đang giữ bàn (tab khác, thẻ QR) — kể cả tab này. */
+  /** Số nguồn đang giữ bàn (các tab đang mở phân hệ) — kể cả tab này. */
   holderCount: number;
   agentAcked: boolean;
 }
@@ -146,7 +176,7 @@ export default function ReturnCaptureProvider({ children }: { children: ReactNod
   }, [refresh]);
 
   // Nhịp: gia hạn mọi bàn đang giữ trong MỘT request, rồi đọc lại trạng thái
-  // cả kho (thấy được bàn do tab khác hay thẻ QR bật).
+  // cả kho (thấy được bàn do tab khác bật).
   useEffect(() => {
     const timer = setInterval(() => {
       void (async () => {
@@ -186,7 +216,7 @@ export default function ReturnCaptureProvider({ children }: { children: ReactNod
   }, [tabId]);
 
   const run = useCallback(
-    async (stationIds: string[], action: "open" | "close") => {
+    async (stationIds: string[], action: "open" | "close", auto = false) => {
       if (stationIds.length === 0) return;
       setBusyIds((prev) => new Set([...prev, ...stationIds]));
       try {
@@ -206,6 +236,8 @@ export default function ReturnCaptureProvider({ children }: { children: ReactNod
             still_held?: boolean;
           }>;
         };
+        // Tự bật mà tài khoản không có quyền thao tác (Viewer): im lặng.
+        if (auto && res.status === 403) return;
         if (!res.ok || !body.results) {
           throw new Error(body.message ?? "Máy chủ không phản hồi đúng.");
         }
@@ -222,7 +254,7 @@ export default function ReturnCaptureProvider({ children }: { children: ReactNod
         if (okCount > 0) {
           toast.success(
             action === "open"
-              ? `Đã bật nhận hoàn ở ${okCount} bàn.`
+              ? `${auto ? "Đã tự chuyển" : "Đã bật"} nhận hoàn ở ${okCount} bàn.`
               : `Đã kết thúc nhận hoàn ở ${okCount} bàn. Đoạn video đang ghi dở sẽ được lưu nốt.`,
           );
         }
@@ -237,7 +269,7 @@ export default function ReturnCaptureProvider({ children }: { children: ReactNod
         }
         if (stillHeld.length > 0) {
           toast.info(
-            `${stillHeld.map((r) => codeOf(r.station_id)).join(", ")} vẫn đang nhận hoàn vì còn nguồn khác giữ (tab khác hoặc thẻ QR).`,
+            `${stillHeld.map((r) => codeOf(r.station_id)).join(", ")} vẫn đang nhận hoàn vì còn máy khác đang mở trang Hàng hoàn.`,
           );
         }
       } catch (err) {
@@ -254,8 +286,35 @@ export default function ReturnCaptureProvider({ children }: { children: ReactNod
     [refresh, stations, tabId, toast],
   );
 
-  const start = useCallback((ids: string[]) => run(ids, "open"), [run]);
-  const stop = useCallback((ids: string[]) => run(ids, "close"), [run]);
+  const start = useCallback(
+    (ids: string[]) => {
+      const optOut = readOptOut();
+      for (const id of ids) optOut.delete(id);
+      writeOptOut(optOut);
+      return run(ids, "open");
+    },
+    [run],
+  );
+  const stop = useCallback(
+    (ids: string[]) => {
+      const optOut = readOptOut();
+      for (const id of ids) optOut.add(id);
+      writeOptOut(optOut);
+      return run(ids, "close");
+    },
+    [run],
+  );
+
+  // Vào phân hệ là tự chuyển sang nhận hoàn — MỘT lần mỗi lần vào, ngay khi
+  // biết danh sách bàn. Rời phân hệ thì tín hiệu đóng ở trên nhả hết.
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (autoStarted.current || stations.length === 0) return;
+    autoStarted.current = true;
+    const optOut = readOptOut();
+    const ids = stations.filter((s) => !s.capture.heldByMe && !optOut.has(s.id)).map((s) => s.id);
+    void run(ids, "open", true);
+  }, [stations, run]);
 
   const value = useMemo(
     () => ({ stations, heldIds, busyIds, start, stop }),
