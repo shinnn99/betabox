@@ -4,6 +4,40 @@ Ghi từ 0.8.6 trở đi. Mỗi mục nêu: sửa gì, vì sao, và người đi
 
 ---
 
+## 0.11.0 — 2026-09-22
+
+**Chặn đĩa đầy im lặng (disk guard) + phát log dọn dẹp lên cloud.**
+
+Trước bản này, ổ máy kho đầy là ghi hình dừng mà không ai biết cho tới lúc
+có người đi tìm video không thấy.
+
+- **Disk guard**: theo dõi chỗ trống và tự xoá segment cũ nhất khi sắp hết.
+  Ngưỡng tính theo **giờ ghi còn lại**, không theo phần trăm ổ — mỗi kho ăn
+  đĩa một tốc độ khác nhau (Đại Kim ~900 MB mỗi giờ-camera, máy dev 389).
+  Tốc độ được suy từ chính segment trên ổ, không giả định.
+- **Không đụng vào**: segment còn trong hạn lưu, thư mục `_clips`, và mọi
+  thứ khi đang cắt clip dở.
+- **Chạy thử trước khi tin**: `--disk-guard-dry-run` in ra sẽ xoá gì mà
+  không xoá byte nào. **Nên chạy lệnh này ở mỗi kho mới** trước khi để nó
+  chạy thật — trả lời được "ngưỡng đặt đúng chưa" ngay ngày lắp máy.
+- **Log dọn dẹp gửi về cloud**, kèm báo động nếu script dọn im lặng quá lâu.
+- Sửa `cleanup-segments.ps1`: khuôn ngày, cache ôi, và lỗi `-WhatIf` nuốt
+  mất log (cắn thật 12/08 trên máy Đại Kim — chạy xem trước xong log vẫn
+  dừng ở lần cũ, không đối chiếu được).
+
+**Người đi cài cần biết:** bản này không đổi cách ghi hình hay cắt clip.
+Cài đè lên 0.10.1 như thường, không cần thao tác gì thêm. Sau khi cài,
+chạy một lần:
+
+```powershell
+cd "C:\Program Files\Betacom Agent"
+.\betacom-agent.exe --disk-guard-dry-run
+```
+
+Xem con số "còn X giờ-ghi" có hợp lý với kho đó không rồi hãy yên tâm.
+
+---
+
 ## 0.10.1 — 2026-09-21
 
 **Clip không còn kẹt "thất bại" khi mạng tải lên chậm.**
