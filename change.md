@@ -916,3 +916,13 @@ docs([Module]):     Cập nhật tài liệu
     - Viewer chỉ đọc được 4 trang video và danh sách nhân sự; không nhận mã QR vào ca; mọi thao tác ghi bị 403.
 - **Test:** `tests/role-permissions.test.ts` thêm chốt cho `/api/devices`; `pnpm test` 499/499.
 - **Trạng thái:** Hoàn tất.
+
+### [HOAN-CHON-BAN] - Trả lại việc chọn bàn nhận hoàn như ban đầu
+
+- **Mục tiêu:** Chủ dự án: Giám sát hoàn hàng phải cho chọn bàn như lúc trước (1 bàn, vài bàn hoặc toàn bộ). Bản tự bật mọi bàn khi vào phân hệ ([HOAN-TU-BAT]) làm tất cả các bàn đổi sang hoàn hàng. Đó là do hiểu sai yêu cầu.
+- **Files sửa:**
+  - `src/components/returns/ReturnCaptureProvider.tsx`: bỏ tự bật và bỏ việc nhớ bàn đã tắt. Giữ phần bỏ chữ "thẻ QR".
+  - `src/components/returns/ReturnCapturePanel.tsx`: bảng hiện cho mọi vai trò. Không có quyền `return.operate` thì nút mờ, bấm chỉ báo "Bạn không có quyền bật/tắt nhận hoàn", không gửi request.
+  - `src/lib/useGuard.ts` (mới): chặn thao tác ngay từ nút cho mọi trang.
+  - `tests/role-permissions.test.ts`: chốt "vào phân hệ không tự bật bàn nào".
+- **Trạng thái:** Hoàn tất.

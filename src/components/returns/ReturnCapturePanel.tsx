@@ -6,6 +6,8 @@ import {
   type StationOption,
 } from "@/components/returns/ReturnCaptureProvider";
 import { useCan } from "@/lib/usePermissions";
+import { deniedClass } from "@/lib/useGuard";
+import { useToast } from "@/components/ui/Toast";
 
 /**
  * Bật / tắt nhận hoàn cho TỪNG BÀN hoặc CẢ KHO trên trang Giám sát hoàn hàng.
@@ -43,13 +45,22 @@ function statusOf(s: StationOption): { text: string; tone: string } {
 
 export default function ReturnCapturePanel() {
   const { stations, heldIds, busyIds, start, stop } = useReturnCapture();
-  // Mở phiên nhận hoàn là thao tác kho — Viewer chỉ xem nên không thấy bảng.
+  // Mở phiên nhận hoàn là thao tác kho. Không có quyền (Viewer) thì vẫn thấy
+  // trạng thái các bàn, bấm nút chỉ nhận thông báo — không gửi gì lên server.
   const can = useCan();
+  const toast = useToast();
+  const allowed = can("return.operate");
+  const denied = deniedClass(allowed);
+  const g = (fn: () => void) => () => {
+    if (!allowed) {
+      toast.error("Bạn không có quyền bật/tắt nhận hoàn.");
+      return;
+    }
+    fn();
+  };
 
   const notHeld = stations.filter((s) => !s.capture.heldByMe).map((s) => s.id);
   const anyBusy = busyIds.size > 0;
-
-  if (!can("return.operate")) return null;
 
   return (
     <div className="bg-white rounded-2xl border border-slate-100 p-4 lg:p-5 shadow-sm">
@@ -63,18 +74,18 @@ export default function ReturnCapturePanel() {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => void start(notHeld)}
+            onClick={g(() => void start(notHeld))}
             disabled={anyBusy || notHeld.length === 0}
-            className="h-8 px-3 rounded-xl text-xs font-semibold text-white bg-emerald-500 hover:bg-emerald-600 inline-flex items-center gap-1.5 disabled:opacity-60"
+            className={`h-8 px-3 rounded-xl text-xs font-semibold text-white bg-emerald-500 hover:bg-emerald-600 inline-flex items-center gap-1.5 disabled:opacity-60${denied}`}
           >
             {anyBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Radio className="h-3.5 w-3.5" />}
             Bắt đầu tất cả bàn
           </button>
           <button
             type="button"
-            onClick={() => void stop(heldIds)}
+            onClick={g(() => void stop(heldIds))}
             disabled={anyBusy || heldIds.length === 0}
-            className="h-8 px-3 rounded-xl text-xs font-semibold text-white bg-slate-800 hover:bg-slate-900 inline-flex items-center gap-1.5 disabled:opacity-60"
+            className={`h-8 px-3 rounded-xl text-xs font-semibold text-white bg-slate-800 hover:bg-slate-900 inline-flex items-center gap-1.5 disabled:opacity-60${denied}`}
           >
             <Square className="h-3.5 w-3.5" />
             Kết thúc tất cả
@@ -114,9 +125,9 @@ export default function ReturnCapturePanel() {
                 {held ? (
                   <button
                     type="button"
-                    onClick={() => void stop([s.id])}
+                    onClick={g(() => void stop([s.id]))}
                     disabled={busy}
-                    className="h-7 px-2.5 rounded-lg text-[11px] font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 inline-flex items-center gap-1 disabled:opacity-60"
+                    className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 inline-flex items-center gap-1 disabled:opacity-60${denied}`}
                   >
                     {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3" />}
                     Kết thúc
@@ -124,9 +135,9 @@ export default function ReturnCapturePanel() {
                 ) : (
                   <button
                     type="button"
-                    onClick={() => void start([s.id])}
+                    onClick={g(() => void start([s.id]))}
                     disabled={busy}
-                    className="h-7 px-2.5 rounded-lg text-[11px] font-semibold text-white bg-emerald-500 hover:bg-emerald-600 inline-flex items-center gap-1 disabled:opacity-60"
+                    className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold text-white bg-emerald-500 hover:bg-emerald-600 inline-flex items-center gap-1 disabled:opacity-60${denied}`}
                   >
                     {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Radio className="h-3 w-3" />}
                     Bắt đầu

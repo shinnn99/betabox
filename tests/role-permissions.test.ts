@@ -223,11 +223,12 @@ test("mọi vai trò có hai trang video minh chứng (xem + tải)", () => {
   }
 });
 
-test("vào phân hệ hàng hoàn là tự chuyển nhận hoàn, trừ bàn đã chủ động tắt", () => {
+test("vào phân hệ hàng hoàn KHÔNG tự bật bàn nào — người dùng tự chọn 1, vài hoặc mọi bàn", () => {
   const src = readFileSync("src/components/returns/ReturnCaptureProvider.tsx", "utf8");
-  assert.ok(src.includes('run(ids, "open", true)'), "phải tự bật khi vào phân hệ");
-  assert.ok(src.includes("OPT_OUT_KEY"), "phải nhớ bàn người dùng đã tắt (chạy lai)");
-  assert.ok(src.includes("auto && res.status === 403"), "Viewer tự bật bị từ chối thì im lặng");
+  assert.ok(!src.includes('run(ids, "open", true)'), "không được tự bật khi vào phân hệ");
+  assert.ok(!src.includes("autoStarted"), "không được tự bật khi vào phân hệ");
+  const panel = readFileSync("src/components/returns/ReturnCapturePanel.tsx", "utf8");
+  assert.ok(panel.includes("Bắt đầu tất cả bàn"), "vẫn có nút bật mọi bàn");
 });
 
 test("thao tác hàng hoàn đòi return.operate — viewer chỉ xem", () => {
