@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import {
-  CONTROL_CARDS,
   looksLikeControlCard,
   parseControlCard,
 } from "../src/lib/station/control-cards.ts";
@@ -39,12 +39,12 @@ test("thẻ đúng tiền tố nhưng sai giá trị thì không thực hiện g
   }
 });
 
-test("danh sách thẻ để in đọc được hết và không trùng nhau", () => {
-  const seen = new Set<string>();
-  for (const card of CONTROL_CARDS) {
-    assert.ok(parseControlCard(card.code), `thẻ in không đọc được: ${card.code}`);
-    assert.ok(!seen.has(card.code), `thẻ in trùng: ${card.code}`);
-    seen.add(card.code);
+test("thẻ đã ngừng dùng: route quét nhận ra để bỏ qua, không làm theo", () => {
+  for (const f of ["src/app/api/warehouse/scans/route.ts", "src/app/api/warehouse/manual-scan/route.ts"]) {
+    const src = readFileSync(f, "utf8");
+    assert.ok(src.includes("looksLikeControlCard"), `${f}: phải nhận ra thẻ cũ để không ghi thành mã vận đơn`);
+    assert.ok(!src.includes("parseControlCard"), `${f}: không còn làm theo thẻ`);
+    assert.ok(!src.includes("openReturnCapture"), `${f}: thẻ không còn mở phiên nhận hoàn`);
   }
-  assert.equal(CONTROL_CARDS.length, 7);
+  assert.ok(!existsSync("src/app/dashboard/station-cards"), "trang in thẻ đã bỏ");
 });

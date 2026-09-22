@@ -836,3 +836,18 @@ docs([Module]):     Cập nhật tài liệu
 - **Nhật ký:** `log/` đổi tên thành `changelog/` theo chủ dự án; bản `changelog/` cũ hơn bị thay. Sửa tham chiếu còn hiệu lực trong `plans/active/HOAN-HANG-song-song-moi-ban.md`; các mục cũ trong `change.md` giữ nguyên như lịch sử.
 - **`.gitignore`:** bỏ qua `dev-server.log`, chứng chỉ MediaMTX tự sinh, file trạng thái khi chạy agent dev.
 - **Trạng thái:** Hoàn tất.
+
+### [BO-THE] - Bỏ hẳn thẻ điều khiển bàn
+
+- **Mục tiêu:** Chủ dự án yêu cầu bỏ hẳn phần thẻ điều khiển bàn ở mọi vai trò. Chuyển chế độ nhận hoàn chỉ còn trên trang Hàng hoàn; không ghi kết quả kiểm bằng thẻ nữa.
+- **Files sửa/xoá:**
+  - Xoá `src/app/dashboard/station-cards/`.
+  - `src/lib/nav.ts`, `src/lib/nav-access.ts`: bỏ mục menu.
+  - `src/lib/station/control-cards.ts`: bỏ danh sách thẻ in; chỉ còn nhận ra thẻ cũ.
+  - `src/app/api/warehouse/scans/route.ts`: thẻ cũ bị bỏ qua, không ghi thành mã vận đơn.
+  - `src/app/api/warehouse/manual-scan/route.ts`: thẻ cũ bị từ chối (410).
+  - `src/lib/station/return-scan.ts`: bỏ `closeOpenReturnWithResult`, không còn ai gọi.
+  - Test: `tests/control-cards.test.ts`, `tests/return-capture.test.ts`, `tests/return-lifecycle.test.ts`.
+- **Hệ quả đã báo chủ dự án:** kiện hoàn không còn được ghi OK/Hỏng/Thiếu/Tráo và không tự mở hồ sơ khiếu nại.
+- **Kết quả kiểm tra:** `pnpm test` 492/492, `tsc` đạt.
+- **Trạng thái:** Hoàn tất.

@@ -1,6 +1,12 @@
 /**
- * Thẻ QR điều khiển dán ở bàn.
+ * Thẻ QR điều khiển dán ở bàn — ĐÃ NGỪNG DÙNG (22/09/2026).
  *
+ * Chủ dự án bỏ hẳn thẻ: chuyển chế độ nhận hoàn chỉ còn trên trang Hàng
+ * hoàn, không ghi kết quả kiểm bằng thẻ nữa. File này chỉ còn để NHẬN RA
+ * thẻ cũ: route quét bỏ qua thẻ (không ghi nhầm thành mã vận đơn) và nhật
+ * ký hoạt động vẫn gọi đúng tên các lượt quét thẻ đã có trong lịch sử.
+ *
+ * Mô tả gốc:
  * Vì sao là thẻ QR chứ không phải nút trên màn hình: nhân viên kho đang cầm
  * súng quét hoặc đứng trước camera, tay bận hàng. Thao tác rẻ nhất với họ là
  * quét thêm một mã. Bàn quét bằng camera cũng dùng được ngay, không cần
@@ -73,22 +79,3 @@ export function parseControlCard(rawValue: string): ControlCard | null {
 export function looksLikeControlCard(rawValue: string): boolean {
   return rawValue.trim().toUpperCase().startsWith(PREFIX);
 }
-
-/** Danh sách thẻ để in. Giữ đúng thứ tự dùng ở bàn. */
-export const CONTROL_CARDS: Array<{ code: string; title: string; hint: string }> = [
-  {
-    code: "BETABOX:MODE:RETURN",
-    title: "NHẬN HOÀN",
-    hint: "Quét trước khi mở kiện hàng hoàn",
-  },
-  {
-    code: "BETABOX:MODE:OUTBOUND",
-    title: "ĐÓNG HÀNG",
-    hint: "Quét để quay lại đóng hàng gửi đi",
-  },
-  { code: "BETABOX:RESULT:OK", title: "HÀNG OK", hint: "Kiểm xong, hàng đủ và nguyên" },
-  { code: "BETABOX:RESULT:DAMAGED", title: "HỎNG", hint: "Hàng về bị hỏng" },
-  { code: "BETABOX:RESULT:MISSING", title: "THIẾU", hint: "Thiếu hàng trong kiện" },
-  { code: "BETABOX:RESULT:SWAPPED", title: "TRÁO", hint: "Hàng trong kiện bị tráo" },
-  { code: "BETABOX:END", title: "KẾT THÚC", hint: "Dừng kiện, chưa xác nhận kết quả" },
-];

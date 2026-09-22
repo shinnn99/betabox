@@ -21,7 +21,6 @@ export const NAV_ACCESS: ReadonlyArray<readonly [string, readonly string[]]> = [
   // Hai trang thuần setup: Trưởng kho không setup camera/thiết bị/máy trạm
   // nên không thấy. Trưởng ca vẫn thấy Thiết bị kho để test camera như cũ.
   ["/dashboard/devices", ["camera.create", "camera.test", "station_device.create"]],
-  ["/dashboard/station-cards", ["packing_station.view"]],
   ["/dashboard/agents", ["station_device.create"]],
   ["/dashboard/staff", ["staff.view"]],
   ["/dashboard/reports", ["report.view"]],

@@ -148,10 +148,6 @@ test("mã vận đơn đi đúng nhánh theo chế độ bàn", () => {
     const source = readFileSync(file, "utf8");
     assert.ok(source.includes("currentStationMode"), `${file} phải đọc chế độ bàn`);
     assert.ok(source.includes("processReturnScan"), `${file} phải có nhánh kiện hoàn`);
-    assert.ok(
-      source.includes("closeOpenReturnWithResult"),
-      `${file} phải xử lý thẻ kết quả`,
-    );
   }
 });
 

@@ -2,10 +2,8 @@ import { NextResponse, after } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, isError } from "@/lib/supabase/guard";
 import { normalizeWaybillCode } from "@/lib/warehouse/normalize-code";
-import { looksLikeControlCard, parseControlCard } from "@/lib/station/control-cards";
-import { openReturnCapture, releaseReturnCapture } from "@/lib/station/return-capture";
+import { looksLikeControlCard } from "@/lib/station/control-cards";
 import {
-  closeOpenReturnWithResult,
   currentStationMode,
   processReturnScan,
 } from "@/lib/station/return-scan";
@@ -131,85 +129,16 @@ export async function POST(req: Request) {
     }
   }
 
-  // Thẻ điều khiển gõ tay: dùng khi bàn chưa có súng quét, hoặc khi thử
-  // luồng mà không cần phần cứng. Đi đúng đường của thẻ quét bằng súng.
-  const controlCard = looksLikeControlCard(rawValue) ? parseControlCard(rawValue) : null;
+  // Thẻ điều khiển bàn đã ngừng dùng (22/09/2026). Nhận ra để từ chối rõ
+  // ràng, không để thẻ cũ bị ghi thành mã vận đơn.
   if (looksLikeControlCard(rawValue)) {
-    if (!resolved?.station_id) {
-      return NextResponse.json(
-        { error: "unmapped_scanner", message: "Máy quét chưa gắn vào bàn nào." },
-        { status: 409 },
-      );
-    }
-    if (!controlCard) {
-      return NextResponse.json(
-        { error: "invalid_control_card", message: "Thẻ điều khiển không đọc được." },
-        { status: 400 },
-      );
-    }
-    if (controlCard.kind !== "mode") {
-      // Thẻ kết quả / thẻ KẾT THÚC: đóng kiện hoàn đang mở của bàn.
-      const outcome = await closeOpenReturnWithResult({
-        admin,
-        organizationId: ctx.organizationId,
-        stationId: resolved.station_id,
-        result: controlCard.kind === "result" ? controlCard.result : "unchecked",
-        closeReason: controlCard.kind === "result" ? "result_card" : "end_card",
-        at: scannedAt,
-      });
-      if (!outcome.closed) {
-        return NextResponse.json(
-          { error: "no_open_return", message: "Chưa có kiện hoàn nào đang mở." },
-          { status: 409 },
-        );
-      }
-      return NextResponse.json({
-        ok: true,
-        control_action: {
-          action: "return_closed",
-          waybill_code: outcome.waybill_code,
-          result: outcome.result,
-        },
-      });
-    }
-    // Cùng đường với route quét của agent: thẻ là một nguồn giữ phiên ghi
-    // hoàn, không phải công tắc duy nhất. Xem return-capture.ts.
-    try {
-      if (controlCard.mode === "return") {
-        await openReturnCapture({
-          admin,
-          organizationId: ctx.organizationId,
-          stationId: resolved.station_id,
-          holder: "card",
-          at: scannedAt,
-        });
-      } else {
-        await releaseReturnCapture({
-          admin,
-          organizationId: ctx.organizationId,
-          stationId: resolved.station_id,
-          holder: "card",
-          reason: "card_outbound",
-          at: scannedAt,
-        });
-      }
-    } catch (err) {
-      return NextResponse.json(
-        { error: "set_mode_failed", message: err instanceof Error ? err.message : String(err) },
-        { status: 500 },
-      );
-    }
-    return NextResponse.json({
-      ok: true,
-      control_action: {
-        action: "mode_changed",
-        mode: controlCard.mode,
-        message:
-          controlCard.mode === "return"
-            ? "Bàn chuyển sang chế độ nhận hàng hoàn."
-            : "Bàn quay lại chế độ đóng hàng.",
+    return NextResponse.json(
+      {
+        error: "control_card_retired",
+        message: "Thẻ điều khiển bàn đã ngừng dùng — đổi chế độ trên trang Hàng hoàn.",
       },
-    });
+      { status: 410 },
+    );
   }
 
   let eventId: string;

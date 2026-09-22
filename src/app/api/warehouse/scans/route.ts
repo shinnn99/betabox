@@ -12,10 +12,8 @@ import {
   type RecognizedStaff,
 } from "@/lib/warehouse/staff-qr";
 import { normalizeWaybillCode } from "@/lib/warehouse/normalize-code";
-import { looksLikeControlCard, parseControlCard } from "@/lib/station/control-cards";
-import { openReturnCapture, releaseReturnCapture } from "@/lib/station/return-capture";
+import { looksLikeControlCard } from "@/lib/station/control-cards";
 import {
-  closeOpenReturnWithResult,
   currentStationMode,
   processReturnScan,
   type ReturnScanResult,
@@ -431,88 +429,16 @@ export async function POST(req: Request) {
       ? await currentStationMode(admin, resolved.station_id)
       : "outbound";
 
-  // Phase 4b: thẻ điều khiển. Chỉ có tác dụng khi máy quét đã gắn bàn và
-  // đúng nguồn quét của bàn — cùng điều kiện với mọi lượt quét khác.
+  // Thẻ điều khiển bàn đã ngừng dùng (chủ dự án bỏ ngày 22/09/2026): chuyển
+  // chế độ nhận hoàn chỉ còn trên trang Hàng hoàn. Vẫn NHẬN RA thẻ cũ để bỏ
+  // qua — không để một thẻ còn dán ở bàn bị ghi thành mã vận đơn.
   let controlAction: ControlAction | null = null;
   if (scanType === "control") {
-    const card = parseControlCard(parsed.raw_value);
-    if (!resolved?.station_id || scanSourceDisabled) {
-      controlAction = {
-        action: "ignored",
-        mode: null,
-        message: "Thẻ điều khiển bị bỏ qua vì máy quét chưa gắn bàn hoặc sai nguồn quét.",
-      };
-    } else if (!card) {
-      controlAction = {
-        action: "invalid",
-        mode: null,
-        message: "Thẻ điều khiển không đọc được.",
-      };
-    } else if (card.kind === "mode") {
-      // Thẻ là MỘT NGUỒN giữ phiên ghi hoàn, ngang hàng với người mở trang
-      // Hàng hoàn. Quét thẻ ĐÓNG HÀNG chỉ nhả nguồn 'card'; nếu còn người
-      // đang mở giao diện thì bàn vẫn ở chế độ nhận hoàn.
-      const stationId = resolved.station_id;
-      const modeErr = await (async () => {
-        try {
-          if (card.mode === "return") {
-            await openReturnCapture({
-              admin,
-              organizationId: agent.organization_id,
-              stationId,
-              holder: "card",
-              at: parsed.scanned_at,
-            });
-          } else {
-            await releaseReturnCapture({
-              admin,
-              organizationId: agent.organization_id,
-              stationId,
-              holder: "card",
-              reason: "card_outbound",
-              at: parsed.scanned_at,
-            });
-          }
-          return null;
-        } catch (err) {
-          return { message: err instanceof Error ? err.message : String(err) };
-        }
-      })();
-      controlAction = modeErr
-        ? { action: "invalid", mode: null, message: `Không đổi được chế độ bàn: ${modeErr.message}` }
-        : {
-            action: "mode_changed",
-            mode: card.mode,
-            message:
-              card.mode === "return"
-                ? "Bàn chuyển sang chế độ nhận hàng hoàn."
-                : "Bàn quay lại chế độ đóng hàng.",
-          };
-    } else {
-      // Thẻ kết quả / thẻ KẾT THÚC: đóng kiện hoàn đang mở của bàn.
-      const outcome = await closeOpenReturnWithResult({
-        admin,
-        organizationId: agent.organization_id,
-        stationId: resolved.station_id,
-        result: card.kind === "result" ? card.result : "unchecked",
-        closeReason: card.kind === "result" ? "result_card" : "end_card",
-        at: parsed.scanned_at,
-      });
-      controlAction = outcome.closed
-        ? {
-            action: "return_closed",
-            mode: null,
-            message:
-              card.kind === "result" && card.result === "ok"
-                ? `Kiện hoàn ${outcome.waybill_code ?? ""} đã kiểm xong, hàng ổn.`.trim()
-                : `Kiện hoàn ${outcome.waybill_code ?? ""} đã ghi nhận, sẽ có hồ sơ theo dõi.`.trim(),
-          }
-        : {
-            action: "ignored",
-            mode: null,
-            message: "Chưa có kiện hoàn nào đang mở.",
-          };
-    }
+    controlAction = {
+      action: "ignored",
+      mode: null,
+      message: "Thẻ điều khiển bàn đã ngừng dùng — đổi chế độ trên trang Hàng hoàn.",
+    };
   }
 
   // Mọi lượt quét ở bàn đều tính là "còn đang làm việc", nên gia hạn mốc tự

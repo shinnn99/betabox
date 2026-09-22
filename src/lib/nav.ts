@@ -9,7 +9,6 @@ import {
   Activity,
   PackageOpen,
   FileVideo,
-  QrCode,
   ShieldCheck,
   Wrench,
   Server,
@@ -94,12 +93,6 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Thiết bị kho",
         href: "/dashboard/devices",
         icon: Cpu,
-      },
-      {
-        id: "station-cards",
-        label: "Thẻ điều khiển bàn",
-        href: "/dashboard/station-cards",
-        icon: QrCode,
       },
       {
         id: "agents",

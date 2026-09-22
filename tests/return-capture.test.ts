@@ -125,18 +125,14 @@ test("phiên có lối ra tự động khi trình duyệt sập và khi agent im
   );
 });
 
-test("thẻ QR và giao diện là hai nguồn giữ cùng một phiên", () => {
+test("phiên nhận hoàn chỉ mở từ giao diện — thẻ QR đã ngừng dùng", () => {
   for (const f of [
     "src/app/api/warehouse/scans/route.ts",
     "src/app/api/warehouse/manual-scan/route.ts",
   ]) {
     const source = readFileSync(f, "utf8");
-    assert.ok(source.includes("openReturnCapture"), `${f} phải mở phiên qua lớp chung`);
-    assert.ok(source.includes('holder: "card"'), `${f} phải nhả đúng nguồn 'card'`);
-    assert.ok(
-      !source.includes('p_started_by: "card"'),
-      `${f} không được gọi thẳng set_station_mode nữa — nó bỏ qua holder`,
-    );
+    assert.ok(!source.includes('holder: "card"'), `${f} không còn giữ phiên bằng thẻ`);
+    assert.ok(!source.includes('p_started_by: "card"'), `${f} không gọi thẳng set_station_mode`);
   }
 });
 
