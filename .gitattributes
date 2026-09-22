@@ -14,3 +14,8 @@
 # Git chỉ giữ con trỏ; file thật nằm ở kho LFS. Build bằng
 # warehouse-agent/scripts/build-installer.ps1 rồi chép vào đây.
 warehouse-agent/releases/*.exe filter=lfs diff=lfs merge=lfs -text
+
+# Binary vendor (mediamtx...) cũng đi qua LFS. Bản mediamtx.exe 0.x hiện tại đã
+# nằm thẳng trong history từ trước quy tắc này — để nguyên, gỡ phải rewrite
+# history. Quy tắc áp cho các bản vendor thêm/nâng từ đây về sau.
+warehouse-agent/vendor/**/*.exe filter=lfs diff=lfs merge=lfs -text

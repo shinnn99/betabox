@@ -12,9 +12,14 @@ import { resolveStationLiveScope } from "../src/lib/live/station-streams.ts";
  * migration để kiểm giao diện và API theo cùng một nguồn.
  */
 
-const MIGRATION = readFileSync(
+// Đọc migration với line ending đã chuẩn hoá về LF: Windows (core.autocrlf)
+// checkout file ra CRLF, làm mọi so khớp chuỗi nhiều dòng dưới đây trượt.
+function readSql(p: string): string {
+  return readFileSync(p, "utf8").replace(/\r\n/g, "\n");
+}
+
+const MIGRATION = readSql(
   "supabase/migrations/20260921160000_role_permission_redesign.sql",
-  "utf8",
 );
 
 function sqlArray(name: string): string[] {
@@ -25,9 +30,8 @@ function sqlArray(name: string): string[] {
 
 const SETUP = sqlArray("v_setup");
 // Viewer = tập gốc của migration phân quyền + phần thêm sau (Báo cáo, Thiết bị kho).
-const VIEWER_EXTRA_SQL = readFileSync(
+const VIEWER_EXTRA_SQL = readSql(
   "supabase/migrations/20260922100000_viewer_reports_devices.sql",
-  "utf8",
 );
 const VIEWER = [
   ...sqlArray("v_viewer"),
