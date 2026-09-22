@@ -89,11 +89,32 @@ test("viewer vào trang chủ được đưa tới trang video đầu tiên", ()
   assert.equal(canSeeHref(navHrefForPath("/dashboard/users")!, can), false);
 });
 
-test("trưởng kho: mọi trang trừ Thiết bị kho và Máy trạm kho", () => {
+test("trưởng kho: mọi trang trừ Máy trạm kho; Thiết bị kho chỉ xem", () => {
   assert.deepEqual(
     MENU_HREFS.filter((h) => !visible(MANAGER).includes(h)).sort(),
-    ["/dashboard/agents", "/dashboard/devices"],
+    ["/dashboard/agents"],
   );
+  assert.ok(!visible(VIEWER_SET).includes("/dashboard/devices"), "viewer không thấy Thiết bị kho");
+});
+
+test("Thiết bị kho: mỗi thao tác chỉ hiện khi có đúng quyền (trưởng kho chỉ xem)", () => {
+  const src = readFileSync("src/app/dashboard/devices/page.tsx", "utf8");
+  for (const needle of [
+    "{allow.add && (",          // Thêm thiết bị
+    "readOnly={!allow.assign}", // đổi bàn ngay trong bảng
+    "{allow.edit && (",         // Chỉnh sửa
+    "{allow.assign && (",       // Gán / Đổi bàn trong menu
+    "{showDelete && onDelete && (",
+  ]) {
+    assert.ok(src.includes(needle), `thiếu chốt ẩn: ${needle}`);
+  }
+  const can = (p: string) => MANAGER.has(p);
+  // Trưởng kho: không có quyền nào trong các nhóm thao tác của trang.
+  for (const p of ["camera.create", "station_device.create", "station_device_assignment.manage",
+    "station_device.update", "camera.update", "camera.archive", "station_device.archive", "camera.test"]) {
+    assert.equal(can(p), false, `trưởng kho không được có ${p}`);
+  }
+  assert.ok(MANAGER.has("station_device.view"), "trưởng kho vẫn xem được thiết bị");
 });
 
 test("admin thấy mọi trang", () => {

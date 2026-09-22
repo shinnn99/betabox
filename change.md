@@ -864,3 +864,15 @@ docs([Module]):     Cập nhật tài liệu
 - **Nguyên nhân Viewer không thấy 2 trang video:** migration phân quyền chưa áp lên production, Viewer vẫn theo ma trận cũ (không có `order_proof.view`).
 - **Kết quả kiểm tra:** dry-run migration trên database cục bộ: cả 6 vai trò có đủ quyền xem và tải video minh chứng. `pnpm test` đạt.
 - **Trạng thái:** Chờ chủ dự án áp migration `20260921160000`.
+
+### [TK-THIET-BI-CHI-XEM] - Trưởng kho chỉ xem trang Thiết bị kho
+
+- **Mục tiêu:** Chủ dự án yêu cầu Trưởng kho chỉ xem được thiết bị nào cắm vào bàn nào, thiết bị nào chưa kết nối; không thêm, sửa, xoá hay đổi bàn.
+- **Files sửa:**
+  - `src/lib/nav-access.ts`: Thiết bị kho hiện cho ai có `station_device.view`; Viewer vẫn không thấy. Máy trạm kho vẫn chỉ cho người có quyền setup.
+  - `src/app/dashboard/devices/page.tsx`: mỗi thao tác chỉ hiện khi có đúng quyền. Không còn thao tác nào thì bỏ luôn nút ⋮. Các thao tác gồm: Thêm thiết bị, Chỉnh sửa, Gán/Đổi bàn, Xoá, Test kết nối, Bật/tắt ghi.
+  - `src/components/devices/StationAssignCell.tsx`: chế độ chỉ xem, hiện bàn và vai trò camera thay vì ô chọn.
+  - `tests/role-permissions.test.ts`.
+- **Chặn phía API:** đã có sẵn từ migration phân quyền — Trưởng kho không có 9 quyền setup.
+- **Kết quả kiểm tra:** `pnpm test` 495/495, `tsc` đạt.
+- **Trạng thái:** Hiệu lực đầy đủ sau khi áp migration `20260921160000`. Trước đó Trưởng kho vẫn còn quyền setup trên database nên vẫn thấy nút.

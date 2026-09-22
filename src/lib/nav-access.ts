@@ -18,9 +18,10 @@ export const NAV_ACCESS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["/dashboard/return-videos", ["order_proof.view"]],
   ["/dashboard/warehouses", ["packing_station.view"]],
   ["/dashboard/packing-stations", ["packing_station.view"]],
-  // Hai trang thuần setup: Trưởng kho không setup camera/thiết bị/máy trạm
-  // nên không thấy. Trưởng ca vẫn thấy Thiết bị kho để test camera như cũ.
-  ["/dashboard/devices", ["camera.create", "camera.test", "station_device.create"]],
+  // Thiết bị kho: ai xem được thiết bị đều vào được (Trưởng kho chỉ xem —
+  // trang tự ẩn nút thêm/sửa/xoá/đổi bàn theo quyền). Viewer không thấy.
+  ["/dashboard/devices", ["station_device.view"]],
+  // Máy trạm kho là trang thuần setup (tạo agent, reset secret).
   ["/dashboard/agents", ["station_device.create"]],
   ["/dashboard/staff", ["staff.view"]],
   ["/dashboard/reports", ["report.view"]],

@@ -51,6 +51,8 @@ import {
   type DeviceIdentity,
 } from "@/components/warehouse-config/DevicesTab";
 import StationAssignCell from "@/components/devices/StationAssignCell";
+import { useSession } from "@/lib/useSession";
+import { usePermissions } from "@/lib/usePermissions";
 
 interface DeviceStation {
   station_id: string;
@@ -249,6 +251,20 @@ export default function DevicesPageWrapper() {
 
 function DevicesPage() {
   const search = useSearchParams();
+  // Mỗi thao tác chỉ hiện khi có đúng quyền của nó. Trưởng kho không setup
+  // camera/thiết bị nên trang này chỉ còn để xem: thiết bị nào ở bàn nào,
+  // thiết bị nào mất kết nối. API vẫn tự chặn — ẩn ở đây cho khỏi bấm nhầm.
+  const { session } = useSession();
+  const { can } = usePermissions(session?.userId);
+  const allow = {
+    add: can(["camera.create", "station_device.create"]),
+    assign: can(["station_device_assignment.manage", "station_device.update"]),
+    edit: can(["camera.update", "station_device.update"]),
+    remove: can(["camera.archive", "station_device.archive"]),
+    test: can("camera.test"),
+    // Bật/tắt ghi trên trang setup đi theo quyền setup: người chỉ xem thì không.
+    record: can("camera.recording.control") && can(["camera.update", "station_device.update"]),
+  };
   const toast = useToast();
   const confirm = useConfirm();
   const initialTab = (search.get("type") === "scanner"
@@ -541,12 +557,14 @@ function DevicesPage() {
                 className="h-9 pl-9 pr-3 rounded-xl border border-slate-200 text-sm w-64 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
               />
             </div>
-            <button
-              onClick={() => setShowPicker(true)}
-              className="h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2"
-            >
-              <Plus className="h-4 w-4" /> Thêm thiết bị
-            </button>
+            {allow.add && (
+              <button
+                onClick={() => setShowPicker(true)}
+                className="h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2"
+              >
+                <Plus className="h-4 w-4" /> Thêm thiết bị
+              </button>
+            )}
           </div>
         </div>
 
@@ -579,7 +597,9 @@ function DevicesPage() {
                   <tr>
                     <td colSpan={7} className="px-4 py-10 text-center text-slate-400 text-sm">
                       {devices.length === 0
-                        ? 'Chưa có thiết bị nào. Nhấn "Thêm thiết bị" để bắt đầu.'
+                        ? allow.add
+                          ? 'Chưa có thiết bị nào. Nhấn "Thêm thiết bị" để bắt đầu.'
+                          : "Chưa có thiết bị nào."
                         : "Không có thiết bị khớp với bộ lọc."}
                     </td>
                   </tr>
@@ -627,6 +647,7 @@ function DevicesPage() {
                           stations={stations}
                           occupants={cameraOccupants}
                           onSaved={load}
+                          readOnly={!allow.assign}
                         />
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
@@ -653,6 +674,7 @@ function DevicesPage() {
                       <td className="px-2 py-3 text-center whitespace-nowrap">
                         <DeviceActionMenu
                           device={d}
+                          allow={allow}
                           isOpen={menuOpenId === d.id}
                           onToggle={() =>
                             setMenuOpenId((prev) => (prev === d.id ? null : d.id))
@@ -1627,6 +1649,7 @@ function ScannerDetailDialog({
 
 function DeviceActionMenu({
   device,
+  allow,
   isOpen,
   onToggle,
   onClose,
@@ -1638,6 +1661,7 @@ function DeviceActionMenu({
   onDelete,
 }: {
   device: Device;
+  allow: { assign: boolean; edit: boolean; remove: boolean; test: boolean; record: boolean };
   isOpen: boolean;
   onToggle: () => void;
   onClose: () => void;
@@ -1709,6 +1733,14 @@ function DeviceActionMenu({
     fn();
   };
 
+  const showRecord = isCamera && allow.record;
+  const showTest = isCamera && allow.test;
+  const showDelete = allow.remove && !!onDelete;
+  // Không còn thao tác nào được phép (người chỉ xem): bỏ luôn nút ⋮.
+  if (!showRecord && !showTest && !allow.edit && !allow.assign && !showDelete) {
+    return <span className="text-slate-300">—</span>;
+  }
+
   return (
     <>
       <button
@@ -1726,8 +1758,9 @@ function DeviceActionMenu({
             style={{ position: "fixed", top: pos.top, left: pos.left }}
             className="z-50 w-52 rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left text-sm"
           >
-          {isCamera && (
+          {(showRecord || showTest) && (
             <>
+              {showRecord && (
               <button
                 onClick={() => run(onToggleRecording)}
                 disabled={recBusy || !canRecord}
@@ -1755,6 +1788,8 @@ function DeviceActionMenu({
                   {canStop ? "Dừng ghi" : "Bắt đầu ghi"}
                 </span>
               </button>
+              )}
+              {showTest && (
               <button
                 onClick={() => run(onTestConnection)}
                 className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 text-slate-700"
@@ -1762,8 +1797,10 @@ function DeviceActionMenu({
                 <PlugZap className="h-3.5 w-3.5" />
                 Test kết nối
               </button>
+              )}
             </>
           )}
+          {allow.edit && (
           <button
             onClick={() => run(onEdit)}
             className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 text-slate-700"
@@ -1771,15 +1808,20 @@ function DeviceActionMenu({
             <Pencil className="h-3.5 w-3.5" />
             Chỉnh sửa
           </button>
-          <div className="my-1 border-t border-slate-100" />
-          <button
-            onClick={() => run(onAssignStation)}
-            className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 text-slate-700"
-          >
-            <Link2 className="h-3.5 w-3.5" />
-            {device.current_station ? "Đổi bàn" : "Gán bàn"}
-          </button>
-          {onDelete && (
+          )}
+          {allow.assign && (
+            <>
+              <div className="my-1 border-t border-slate-100" />
+              <button
+                onClick={() => run(onAssignStation)}
+                className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 text-slate-700"
+              >
+                <Link2 className="h-3.5 w-3.5" />
+                {device.current_station ? "Đổi bàn" : "Gán bàn"}
+              </button>
+            </>
+          )}
+          {showDelete && onDelete && (
             <button
               onClick={() => run(onDelete)}
               className="w-full flex items-center gap-2 px-3 py-2 hover:bg-rose-50 text-rose-600"

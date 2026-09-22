@@ -62,6 +62,7 @@ export default function StationAssignCell({
   stations,
   occupants,
   onSaved,
+  readOnly = false,
 }: {
   /** `station_devices.id` — với camera là soft-link, không phải camera id. */
   deviceId: string | null;
@@ -73,6 +74,8 @@ export default function StationAssignCell({
   /** Mọi camera đang gắn bàn, để biết chỗ nào đã có người. */
   occupants: StationOccupant[];
   onSaved: () => void;
+  /** Không có quyền gán bàn (VD Trưởng kho): chỉ hiện bàn đang gắn. */
+  readOnly?: boolean;
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -218,6 +221,19 @@ export default function StationAssignCell({
       setBusy(false);
     }
   };
+
+  if (readOnly) {
+    return currentStation ? (
+      <span className="text-xs font-medium text-slate-700">
+        {currentStation.station_code} · {currentStation.station_name}
+        {isCamera && currentRole && (
+          <span className="text-slate-500"> — {ROLE_LABEL[currentRole]}</span>
+        )}
+      </span>
+    ) : (
+      <span className="text-xs text-slate-400">Chưa gắn</span>
+    );
+  }
 
   return (
     <div className="space-y-1">
