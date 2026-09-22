@@ -36,6 +36,8 @@ export interface AlertedEntry {
 
 interface SystemCheckJobDetail {
   alerted?: AlertedEntry[];
+  /** Khoá đã gửi tin hồi phục ở lần chạy đó. Xem readRecentAlerts. */
+  recovered?: string[];
 }
 
 type Admin = ReturnType<typeof createAdminClient>;
@@ -65,10 +67,25 @@ export async function readRecentAlerts(
   if (error) throw new Error(error.message);
 
   // key → status đã gửi gần nhất trong cửa sổ.
+  //
+  // Duyệt từ MỚI đến CŨ (order ran_at desc ở trên), và khoá nào đã chốt thì
+  // không ghi đè — nên bản ghi mới nhất của mỗi khoá thắng.
+  //
+  // `recovered` chốt khoá bằng một giá trị KHÔNG phải status thật: sau khi
+  // đã báo hồi phục, mọi tin xấu cũ hơn của cùng khoá không còn hiệu lực
+  // nén nữa. Nếu bỏ bước này thì kịch bản crit → ok → crit sẽ im ở lần crit
+  // thứ hai, vì bản ghi crit cũ vẫn nằm trong cửa sổ 6 giờ — đúng loại lỗi
+  // "tưởng có cảnh báo mà không có" mà cả module này sinh ra để chống.
   const lastAlerted = new Map<string, string>();
+  const settled = new Set<string>();
   for (const row of (data ?? []) as Array<{ detail: SystemCheckJobDetail | null }>) {
+    for (const key of row.detail?.recovered ?? []) {
+      if (!settled.has(key)) settled.add(key);
+    }
     for (const entry of row.detail?.alerted ?? []) {
-      if (!lastAlerted.has(entry.key)) lastAlerted.set(entry.key, entry.status);
+      if (!settled.has(entry.key) && !lastAlerted.has(entry.key)) {
+        lastAlerted.set(entry.key, entry.status);
+      }
     }
   }
   return lastAlerted;
@@ -111,6 +128,37 @@ export function selectAlertsToSend(
   return candidates.filter((c) => lastAlerted.get(c.key) !== c.status);
 }
 
+/** Trạng thái được coi là "đang có sự cố" khi xét hồi phục. */
+const BAD_STATUSES = new Set(["crit", "warn", "unknown"]);
+
+/**
+ * Mục vừa TRỞ LẠI BÌNH THƯỜNG: lần gửi gần nhất là trạng thái xấu, lần
+ * chạy này đã ok/skipped.
+ *
+ * VÌ SAO CẦN, dù nguyên tắc là "im lặng là bình thường": im lặng nói được
+ * "không có gì mới", nhưng KHÔNG nói được "cái hỏng lúc nãy đã hết". Người
+ * trực nhận tin crit lúc 9h mà tới 11h vẫn im thì không phân biệt được
+ * "đã tự khỏi" với "vẫn hỏng, chỉ bị bộ chống-spam nén". Đó đúng là ca
+ * 27/08: sự cố kéo 8 ngày, mọi lần chạy sau lần đầu đều bị nén.
+ *
+ * Đây là NGOẠI LỆ DUY NHẤT của luật im lặng, và nó hẹp có chủ đích: chỉ
+ * gửi khi trước đó ĐÃ gửi tin xấu cho đúng khoá đó. Không có tin "mọi thứ
+ * vẫn ổn" định kỳ.
+ *
+ * `skipped` cũng tính là hồi phục (kho vào ca nghỉ) — không còn mất bằng
+ * chứng nữa, và giữ khoá ở trạng thái xấu sẽ chặn tin hồi phục thật sau đó.
+ */
+export function selectRecoveries(
+  checks: SystemCheck[],
+  lastAlerted: Map<string, string>,
+): SystemCheck[] {
+  return checks.filter((c) => {
+    const prev = lastAlerted.get(c.key);
+    if (prev === undefined || !BAD_STATUSES.has(prev)) return false;
+    return c.status === "ok" || c.status === "skipped";
+  });
+}
+
 const STATUS_LABEL: Record<string, string> = {
   crit: "🔴 NGHIÊM TRỌNG",
   warn: "🟡 Cảnh báo",
@@ -120,6 +168,29 @@ const STATUS_LABEL: Record<string, string> = {
   // crit/warn) — có mặt ở đây để dòng tổng kết cuối tin đọc được.
   skipped: "🌙 Ngoài giờ",
 };
+
+/**
+ * Tin hồi phục. Tách khỏi buildAlertPayload có chủ đích: tin xấu và tin
+ * lành không được trộn vào một thẻ — người đọc lướt tiêu đề để quyết có
+ * mở hay không, và một thẻ vừa báo hỏng vừa báo khỏi thì tiêu đề nào cũng sai.
+ */
+export function buildRecoveryPayload(
+  recovered: SystemCheck[],
+  dashboardUrl: string | null,
+): object {
+  const lines: string[] = [];
+  for (const c of recovered) {
+    lines.push(`**✅ Đã bình thường trở lại — ${c.key}**`);
+    lines.push(`${c.value} · ${c.message}`);
+    lines.push("");
+  }
+  return buildLarkCardPayload({
+    title: "[Betabox] Hạ tầng đã hồi phục",
+    bodyLines: lines,
+    actionUrl: dashboardUrl,
+    actionLabel: "Mở trang hệ thống",
+  });
+}
 
 export function buildAlertPayload(
   toSend: SystemCheck[],
@@ -153,6 +224,8 @@ export function buildAlertPayload(
 export interface AlertOutcome {
   /** Mục đã gửi lần này (rỗng = không gửi gì). */
   alerted: AlertedEntry[];
+  /** Khoá đã gửi tin "đã bình thường trở lại" lần này. */
+  recovered: string[];
   /** null = không cần gửi; true/false = kết quả gọi Lark. */
   sent: boolean | null;
   error: string | null;
@@ -183,25 +256,64 @@ export async function sendSystemAlert(params: {
   }
 
   const toSend = selectAlertsToSend(collectAlertCandidates(checks), lastAlerted);
-  if (toSend.length === 0) return { alerted: [], sent: null, error: null };
+  const recovered = selectRecoveries(checks, lastAlerted);
+  if (toSend.length === 0 && recovered.length === 0) {
+    return { alerted: [], recovered: [], sent: null, error: null };
+  }
 
   const webhookUrl = params.webhookUrl ?? process.env.LARK_INFRA_WEBHOOK_URL ?? null;
   const alerted = toSend.map((c) => ({ key: c.key, status: c.status }));
+  const recoveredKeys = recovered.map((c) => c.key);
   if (!webhookUrl) {
     return {
       alerted: [],
+      recovered: [],
       sent: false,
       error: "LARK_INFRA_WEBHOOK_URL chưa cấu hình",
     };
   }
 
-  const payload = buildAlertPayload(toSend, checks, params.dashboardUrl ?? null);
-  const res = await sendLarkWebhook(webhookUrl, payload);
+  const dashboardUrl = params.dashboardUrl ?? null;
+
+  // Tin xấu TRƯỚC tin lành: nếu lượt này vừa có mục hỏng vừa có mục khỏi,
+  // thứ cần đọc ngay là mục hỏng. Hai lần gọi webhook riêng, không gộp thẻ.
+  let sent: boolean | null = null;
+  let error: string | null = null;
+  let alertOk = false;
+  if (toSend.length > 0) {
+    const res = await sendLarkWebhook(
+      webhookUrl,
+      buildAlertPayload(toSend, checks, dashboardUrl),
+    );
+    alertOk = res.ok;
+    sent = res.ok;
+    error = res.error;
+  }
+
+  // Tin hồi phục gửi kể cả khi tin xấu vừa hỏng: hai tin độc lập, nuốt tin
+  // này vì tin kia lỗi là mất thông tin không lấy lại được.
+  let recoveryOk = false;
+  if (recovered.length > 0) {
+    const res = await sendLarkWebhook(
+      webhookUrl,
+      buildRecoveryPayload(recovered, dashboardUrl),
+    );
+    recoveryOk = res.ok;
+    if (sent === null) sent = res.ok;
+    else sent = sent && res.ok;
+    if (!res.ok && !error) error = res.error;
+  }
+
   return {
     // Gửi hụt thì KHÔNG ghi là đã gửi — để lần chạy sau thử lại thay vì
     // bị chính bộ chống-spam nuốt mất.
-    alerted: res.ok ? alerted : [],
-    sent: res.ok,
-    error: res.error,
+    alerted: alertOk ? alerted : [],
+    // Khoá đã báo hồi phục phải RỜI khỏi trí nhớ chống-spam, nếu không lần
+    // hỏng sau (cùng key, cùng status cũ) sẽ bị nén và không ai được báo.
+    // readRecentAlerts đọc ngược thời gian và lấy bản ghi mới nhất cho mỗi
+    // key, nên một dòng `recovered` mới hơn là đủ để vô hiệu dòng cũ.
+    recovered: recoveryOk ? recoveredKeys : [],
+    sent,
+    error,
   };
 }

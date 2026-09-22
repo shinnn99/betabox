@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   ALERT_DEDUPE_HOURS,
   buildAlertPayload,
+  buildRecoveryPayload,
   collectAlertCandidates,
   selectAlertsToSend,
+  selectRecoveries,
   sendSystemAlert,
 } from "../src/lib/system/alert.ts";
 import { CHECK_KEYS, type SystemCheck, type UnknownKind } from "../src/lib/system/checks.ts";
@@ -377,4 +379,116 @@ test("card Lark: chỉ có warn thì tiêu đề KHÔNG nói nghiêm trọng", (
     card: { header: { title: { content: string } } };
   };
   assert.doesNotMatch(payload.card.header.title.content, /NGHIÊM TRỌNG/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Tin hồi phục — ngoại lệ duy nhất của luật "im lặng là bình thường"
+// ═══════════════════════════════════════════════════════════════════════
+
+test("chưa từng báo xấu thì ok KHÔNG sinh tin hồi phục", () => {
+  // Nếu không có luật này, mỗi lần chạy sẽ bắn 9 tin "vẫn ổn" — đúng thứ
+  // nguyên tắc im-lặng-là-bình-thường sinh ra để chặn.
+  const out = selectRecoveries([mk("a", "ok"), mk("b", "ok")], new Map());
+  assert.deepEqual(out, []);
+});
+
+test("đã báo crit, nay ok → sinh tin hồi phục", () => {
+  const out = selectRecoveries([mk("recording_freshness", "ok")], new Map([["recording_freshness", "crit"]]));
+  assert.deepEqual(out.map((c) => c.key), ["recording_freshness"]);
+});
+
+test("đã báo crit, VẪN crit → không phải hồi phục", () => {
+  const out = selectRecoveries([mk("k", "crit")], new Map([["k", "crit"]]));
+  assert.deepEqual(out, []);
+});
+
+test("kho vào ca nghỉ (skipped) cũng tính là hồi phục", () => {
+  // Giữ khoá ở trạng thái xấu qua đêm sẽ chặn tin hồi phục thật sáng hôm sau.
+  const out = selectRecoveries([mk("camera_probe", "skipped")], new Map([["camera_probe", "warn"]]));
+  assert.deepEqual(out.map((c) => c.key), ["camera_probe"]);
+});
+
+test("crit → ok → crit: lần crit THỨ HAI vẫn phải gửi, không bị bản ghi cũ nén", async () => {
+  // Đây là ca chết người nhất của recovery event. readRecentAlerts đọc mới
+  // → cũ; dòng 'recovered' phải vô hiệu dòng 'crit' CŨ HƠN nó, nếu không
+  // sự cố lần hai sẽ im lặng.
+  const f = stubFetch("ok");
+  try {
+    const admin = fakeAdmin([
+      // mới nhất: đã báo hồi phục
+      { detail: { recovered: ["recording_freshness"] }, ran_at: NOW.toISOString() },
+      // cũ hơn: lần crit đầu
+      {
+        detail: { alerted: [{ key: "recording_freshness", status: "crit" }] },
+        ran_at: new Date(NOW.getTime() - 3_600_000).toISOString(),
+      },
+    ]);
+    const res = await sendSystemAlert({
+      admin: admin.client as never,
+      checks: [mk("recording_freshness", "crit")],
+      now: NOW,
+      webhookUrl: WEBHOOK,
+    });
+    assert.equal(res.sent, true, "sự cố lặp lại sau khi đã hồi phục PHẢI được báo");
+    assert.deepEqual(res.alerted, [{ key: "recording_freshness", status: "crit" }]);
+    assert.equal(f.calls.length, 1);
+  } finally {
+    f.restore();
+  }
+});
+
+test("hồi phục gửi thẻ RIÊNG, không trộn với tin xấu", async () => {
+  const f = stubFetch("ok");
+  try {
+    const admin = fakeAdmin([
+      { detail: { alerted: [{ key: "cron_cleanup", status: "crit" }] }, ran_at: NOW.toISOString() },
+    ]);
+    const res = await sendSystemAlert({
+      admin: admin.client as never,
+      checks: [mk("cron_cleanup", "ok"), mk("vps_resources", "warn")],
+      now: NOW,
+      webhookUrl: WEBHOOK,
+    });
+    assert.equal(f.calls.length, 2, "một thẻ tin xấu + một thẻ hồi phục, không gộp");
+    assert.deepEqual(res.recovered, ["cron_cleanup"]);
+    assert.deepEqual(res.alerted, [{ key: "vps_resources", status: "warn" }]);
+    const titles = f.calls.map(
+      (c) => (c.body as { card: { header: { title: { content: string } } } }).card.header.title.content,
+    );
+    assert.match(titles[0], /Cảnh báo hạ tầng/, "tin xấu phải gửi TRƯỚC");
+    assert.match(titles[1], /hồi phục/);
+  } finally {
+    f.restore();
+  }
+});
+
+test("gửi hồi phục hụt → KHÔNG ghi là đã gửi, lần sau thử lại", async () => {
+  const f = stubFetch("lark_error");
+  try {
+    const admin = fakeAdmin([
+      { detail: { alerted: [{ key: "k", status: "crit" }] }, ran_at: NOW.toISOString() },
+    ]);
+    const res = await sendSystemAlert({
+      admin: admin.client as never,
+      checks: [mk("k", "ok")],
+      now: NOW,
+      webhookUrl: WEBHOOK,
+    });
+    assert.deepEqual(res.recovered, [], "gửi hụt mà ghi là đã gửi thì tin hồi phục biến mất vĩnh viễn");
+    assert.equal(res.sent, false);
+  } finally {
+    f.restore();
+  }
+});
+
+test("card hồi phục: tiêu đề nói hồi phục, thân nêu đúng mục", () => {
+  const payload = buildRecoveryPayload(
+    [{ key: "recording_freshness", status: "ok", value: "1/1 kho bám hoạt động", message: "Đã ghi lại bình thường." }],
+    null,
+  ) as { card: { header: { title: { content: string } }; elements: Array<{ text?: { content: string } }> } };
+  assert.match(payload.card.header.title.content, /hồi phục/);
+  const body = payload.card.elements[0].text?.content ?? "";
+  assert.match(body, /recording_freshness/);
+  assert.match(body, /Đã ghi lại bình thường/);
+  assert.doesNotMatch(body, /NGHIÊM TRỌNG/);
 });

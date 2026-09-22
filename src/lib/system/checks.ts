@@ -223,7 +223,17 @@ export const CHECK_CONFIG = {
      */
     segmentSeconds: 60,
     warnMinutes: 10,
-    critMinutes: 30,
+    /**
+     * Hạ 30 → 20 (09/09/2026) sau sự cố 27/08–04/09: ghi hình chết 8 ngày,
+     * riêng 28/08 kho đóng 79 đơn mất sạch bằng chứng. Ngưỡng cũ vẫn bắt
+     * được ca đó, nhưng 20 phút là mốc đã chốt cho việc giao khách — mất
+     * 20 phút đóng gói là mất khoảng 30 đơn ở nhịp Đại Kim.
+     *
+     * Nhớ: đơn vị là phút ĐÓNG GÓI trôi qua sau segment cuối, không phải
+     * phút đồng hồ. Kho nghỉ thì con số này đứng yên, nên hạ ngưỡng KHÔNG
+     * làm tăng báo động giả ban đêm.
+     */
+    critMinutes: 20,
     /**
      * Hẹp hơn grace của heartbeat (15 phút) có chủ đích: segment rơi mỗi
      * 60 giây nên độ trễ tự nhiên giữa "quét đơn" và "file xuống đĩa" chỉ
