@@ -16,6 +16,82 @@ là dòng mới trong bảng `system_jobs`. Mọi bước dưới đây verify b
 
 ---
 
+## Truy cập VPS và deploy (đọc trước mọi thứ khác)
+
+Ghi 22/09/2026 sau một buổi mất cả tiếng vì tài liệu thiếu mấy dòng này.
+
+| Mục | Giá trị |
+|---|---|
+| SSH | `ssh root@84.247.148.243` — cổng **22** mặc định |
+| Thư mục app | **`/home/betacom/app`** |
+| User sở hữu repo | **`betacom`** (KHÔNG phải root) |
+| Nhánh deploy | **`main`** |
+| Service | `betabox` → chạy `.next/standalone/server.js` |
+
+Con số cạnh IP trong bảng điều khiển Contabo (`22290`) **không phải cổng SSH** —
+đừng dùng nó để ssh.
+
+**Chạy git/pnpm bằng user `betacom`, không bằng root.** Root thao tác vào repo
+sẽ bị git chặn (`dubious ownership`); nếu bỏ qua cảnh báo đó bằng
+`safe.directory` thì file build sinh ra thuộc root, service chạy dưới
+`betacom` không đọc được và web gãy theo kiểu rất khó truy.
+
+### Quy trình deploy
+
+```bash
+ssh root@84.247.148.243
+su - betacom
+cd /home/betacom/app
+
+git status --short          # PHẢI trống. Có file lạ thì DỪNG, đừng pull đè.
+git pull origin main
+git log --oneline -1        # đối chiếu với commit mới nhất trên GitHub
+
+pnpm install --frozen-lockfile
+pnpm build
+
+# HAI DÒNG NÀY BẮT BUỘC — xem giải thích bên dưới
+cp -r .next/static .next/standalone/.next/
+cp -r public .next/standalone/
+
+exit                        # về root để restart service
+systemctl restart betabox
+systemctl status betabox --no-pager | head -15
+curl -sS -o /dev/null -w "%{http_code}\n" https://betabox.betacom.agency/login
+```
+
+PASS khi `active (running)` và curl trả `200`.
+
+**Dùng `pnpm`, KHÔNG dùng `npm`.** Repo có cả `package-lock.json` lẫn
+`pnpm-lock.yaml`, nhưng `package-lock.json` chết từ 02/07/2026 — chỉ
+`pnpm-lock.yaml` là thật.
+
+**Vì sao hai dòng `cp`:** `next.config.ts` đặt `output: "standalone"`, và Next
+KHÔNG tự chép `.next/static` với `public/` vào thư mục standalone. Thiếu thì
+service vẫn lên `active (running)`, trang vẫn trả 200, nhưng mất sạch CSS/JS —
+giao diện vỡ trắng, nhìn hệt lỗi code.
+
+### Bẫy đã cắn thật: VPS theo nhầm nhánh
+
+22/09/2026: merge vào `main` xong mà web không đổi. Nguyên nhân không phải quên
+`git pull` — VPS đang ở nhánh **`feat/deploy-vps`**, nên tụt sau `main` **65
+commit trong 40 ngày** (13/08 → 22/09) mà không ai biết.
+
+Kiểm bằng `git log --oneline -1`: dòng đó phải ghi `HEAD -> main`. Nếu ra nhánh
+khác:
+
+```bash
+git fetch origin
+git checkout main || git checkout -b main origin/main
+git pull origin main
+```
+
+**Merge vào `main` KHÔNG tự deploy.** Không có CI/CD; VPS chỉ đổi khi có người
+chạy đúng quy trình trên. Nếu đã cài workflow `.github/workflows/deploy.yml`
+thì push lên `main` sẽ tự chạy — kiểm ở tab Actions của GitHub.
+
+---
+
 ## Bước 0 — Chuẩn bị (làm trên máy bàn, ~10 phút)
 
 ### 0.1 Lark webhook cho nhóm IT
@@ -93,8 +169,8 @@ PASS khi in ra đúng URL. Không in gì = app chưa thấy biến, dừng lại
 Chép 4 file từ repo lên `/etc/systemd/system/`. Trước khi chép, **thay UUID**:
 
 ```bash
-cd /root/beta_cam        # hoặc đường dẫn repo trên VPS
-git pull
+cd /home/betacom/app     # repo nằm ở đây, KHÔNG phải /root/beta_cam
+git pull origin main
 
 sed -i 's|THAY-BANG-UUID-SYSCHECK-MOI|<UUID-syscheck>|' \
   docs/vps/betabox-syscheck.service
