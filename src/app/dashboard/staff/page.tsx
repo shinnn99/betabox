@@ -20,7 +20,7 @@ import {
   Unlink,
   Mail,
 } from "lucide-react";
-import { ROLE_OPTIONS, ROLE_LABEL, type Role } from "@/lib/auth";
+import { ROLE_OPTIONS, ROLE_LABEL, canAssignRole, type Role } from "@/lib/auth";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import Select from "@/components/ui/Select";
@@ -367,6 +367,11 @@ export default function StaffPage() {
       {linkFor && (
         <LinkUserDialog
           staff={linkFor}
+          roleOptions={
+            session?.role
+              ? ROLE_OPTIONS.filter((r) => canAssignRole(session.role, r.value))
+              : []
+          }
           onClose={() => {
             setLinkFor(null);
             load();
@@ -569,9 +574,12 @@ function StaffDialog({
 
 function LinkUserDialog({
   staff,
+  roleOptions,
   onClose,
 }: {
   staff: StaffRow;
+  /** Vai trò được cấp khi mời tạo tài khoản — chỉ thấp hơn người thao tác. */
+  roleOptions: { value: Role; label: string }[];
   onClose: () => void;
 }) {
   const confirm = useConfirm();
@@ -845,7 +853,7 @@ function LinkUserDialog({
           <Select
             value={inviteForm.role}
             onChange={(v) => setInviteForm({ ...inviteForm, role: v as Role })}
-            options={ROLE_OPTIONS.map((r) => ({ value: r.value, label: r.label }))}
+            options={roleOptions}
           />
         </div>
         {err && <p className="text-sm text-red-600">{err}</p>}

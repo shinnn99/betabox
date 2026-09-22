@@ -235,3 +235,24 @@ test("thao tác hàng hoàn đòi return.operate — viewer chỉ xem", () => {
   assert.deepEqual(writeGuards("src/app/api/returns/claims/bulk/route.ts"), ["POST return.operate"]);
   assert.ok(!VIEWER.includes("return.operate"));
 });
+
+test("trưởng kho quản lý người dùng vai trò THẤP HƠN, không đụng admin/owner", async () => {
+  const { canAssignRole } = await import("../src/lib/auth.ts");
+  for (const r of ["shift_leader", "packer", "viewer"] as const) {
+    assert.equal(canAssignRole("warehouse_manager", r), true, `trưởng kho phải quản lý được ${r}`);
+  }
+  for (const r of ["warehouse_manager", "admin", "owner"] as const) {
+    assert.equal(canAssignRole("warehouse_manager", r), false, `trưởng kho không được đụng ${r}`);
+  }
+  for (const p of ["user.view", "user.create", "user.update", "user.delete"]) {
+    assert.ok(MANAGER.has(p), `trưởng kho phải có ${p}`);
+  }
+  // API sửa/xoá chặn theo cấp bậc của tài khoản ĐÍCH, không chỉ vai trò mới.
+  const api = readFileSync("src/app/api/users/[id]/route.ts", "utf8");
+  assert.equal((api.match(/canAssignRole\(ctx\.role, target\.role as Role\)/g) ?? []).length, 2);
+  // Giao diện dùng đúng luật đó: nút + danh sách vai trò lọc theo cấp bậc.
+  const page = readFileSync("src/app/dashboard/users/page.tsx", "utf8");
+  assert.ok(page.includes("canAssignRole(actorRole, u.role)"));
+  assert.ok(page.includes("ROLE_OPTIONS.filter((r) => canAssignRole(actorRole, r.value))"));
+  assert.ok(!page.includes("options={ROLE_OPTIONS.map"), "không được liệt kê vai trò cao hơn mình");
+});

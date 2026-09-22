@@ -889,3 +889,14 @@ docs([Module]):     Cập nhật tài liệu
   - `tests/role-permissions.test.ts`.
 - **Kết quả kiểm tra:** dry-run migration trên database cục bộ đúng như chốt: owner/admin/trưởng kho đủ `staff.*` + `user.*`; trưởng ca, nhân viên đóng gói, viewer chỉ có `staff.view`. `pnpm test` 497/497, `tsc` đạt.
 - **Trạng thái:** Chờ áp migration.
+
+### [TK-NGUOI-DUNG] - Trưởng kho quản lý người dùng vai trò thấp hơn
+
+- **Mục tiêu:** Chủ dự án: Trưởng kho vẫn được thêm, sửa, xoá người dùng hệ thống có vai trò thấp hơn. Vai trò cao hơn gồm Admin và Chủ sở hữu.
+- **Hiện trạng:** migration phân quyền đã cấp đủ `user.*` cho trưởng kho. API tạo/sửa/xoá đã chặn theo cấp bậc (`canAssignRole`): chỉ thao tác được tài khoản và cấp được vai trò thấp hơn mình.
+- **Files sửa:**
+  - `src/app/dashboard/users/page.tsx`: nút Sửa/Xoá chỉ hiện ở tài khoản thấp hơn người thao tác (dòng Admin/Chủ sở hữu/ngang cấp/chính mình hiện "—"). Ô chọn vai trò khi thêm/sửa chỉ liệt kê vai trò thấp hơn; vai trò mặc định khi thêm là vai trò cao nhất được phép.
+  - `src/app/dashboard/staff/page.tsx`: mời tạo tài khoản từ Nhân sự kho cũng chỉ liệt kê vai trò thấp hơn.
+  - `tests/role-permissions.test.ts`.
+- **Kết quả kiểm tra:** `pnpm test` 498/498, `tsc` đạt.
+- **Trạng thái:** Hoàn tất (hiệu lực đầy đủ sau khi áp migration `20260921160000`).

@@ -14,7 +14,8 @@ import {
 } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { useSession } from "@/lib/useSession";
-import { ROLE_OPTIONS, ROLE_LABEL, type Role } from "@/lib/auth";
+import { ROLE_OPTIONS, ROLE_LABEL, canAssignRole, type Role } from "@/lib/auth";
+import { usePermissions } from "@/lib/usePermissions";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
 import Select from "@/components/ui/Select";
@@ -33,6 +34,16 @@ interface UserRow {
 
 export default function UsersPage() {
   const { session } = useSession();
+  const { can } = usePermissions(session?.userId);
+  // Cùng luật cấp bậc với API (canAssignRole): chỉ thao tác được tài khoản
+  // vai trò THẤP HƠN mình, chỉ cấp được vai trò thấp hơn mình. Trưởng kho
+  // quản lý trưởng ca / nhân viên đóng gói / viewer; không đụng admin, owner.
+  const actorRole = session?.role;
+  const canManage = (u: UserRow) =>
+    !!actorRole && u.id !== session?.userId && canAssignRole(actorRole, u.role);
+  const roleOptions = actorRole
+    ? ROLE_OPTIONS.filter((r) => canAssignRole(actorRole, r.value))
+    : [];
   const impersonatingOrgId = useImpersonatingOrgId();
   const confirm = useConfirm();
   const toast = useToast();
@@ -110,12 +121,14 @@ export default function UsersPage() {
             <div className="text-xs text-slate-500">
               Tổ chức: <b>{session?.organizationName ?? "..."}</b>
             </div>
-            <button
-              onClick={() => setShowCreate(true)}
-              className="ml-auto h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2"
-            >
-              <UserPlus className="h-4 w-4" /> Thêm người dùng
-            </button>
+            {can("user.create") && roleOptions.length > 0 && (
+              <button
+                onClick={() => setShowCreate(true)}
+                className="ml-auto h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2"
+              >
+                <UserPlus className="h-4 w-4" /> Thêm người dùng
+              </button>
+            )}
           </div>
 
           {error && (
@@ -189,6 +202,16 @@ export default function UsersPage() {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="inline-flex items-center justify-center gap-1 w-20">
+                          {!(can("user.update") || can("user.delete")) || !canManage(u) ? (
+                            <span
+                              className="text-slate-300"
+                              title={u.id === session?.userId ? "Tài khoản của bạn" : "Vai trò ngang hoặc cao hơn bạn"}
+                            >
+                              —
+                            </span>
+                          ) : (
+                          <>
+                          {can("user.update") && (
                           <button
                             onClick={() => setEditing(u)}
                             className="h-8 w-8 rounded-lg hover:bg-slate-100 inline-flex items-center justify-center text-slate-600"
@@ -196,6 +219,8 @@ export default function UsersPage() {
                           >
                             <Pencil className="h-4 w-4" />
                           </button>
+                          )}
+                          {can("user.delete") && (
                           <button
                             onClick={() => onDelete(u)}
                             disabled={u.id === session?.userId}
@@ -204,6 +229,9 @@ export default function UsersPage() {
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
+                          )}
+                          </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -217,6 +245,7 @@ export default function UsersPage() {
 
       {showCreate && (
         <CreateUserDialog
+          roleOptions={roleOptions}
           onClose={() => setShowCreate(false)}
           onCreated={() => {
             setShowCreate(false);
@@ -228,6 +257,7 @@ export default function UsersPage() {
       {editing && (
         <EditUserDialog
           user={editing}
+          roleOptions={roleOptions}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -240,9 +270,12 @@ export default function UsersPage() {
 }
 
 function CreateUserDialog({
+  roleOptions,
   onClose,
   onCreated,
 }: {
+  /** Chỉ các vai trò người đang thao tác được cấp (thấp hơn mình). */
+  roleOptions: { value: Role; label: string }[];
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -252,7 +285,7 @@ function CreateUserDialog({
     password: "",
     full_name: "",
     phone: "",
-    role: "warehouse_manager" as Role,
+    role: (roleOptions[0]?.value ?? "viewer") as Role,
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -320,7 +353,7 @@ function CreateUserDialog({
           <Select
             value={form.role}
             onChange={(v) => setForm({ ...form, role: v as Role })}
-            options={ROLE_OPTIONS.map((r) => ({ value: r.value, label: r.label }))}
+            options={roleOptions}
           />
         </Field>
         {err && <p className="text-sm text-red-600">{err}</p>}
@@ -354,10 +387,13 @@ function CreateUserDialog({
 
 function EditUserDialog({
   user,
+  roleOptions,
   onClose,
   onSaved,
 }: {
   user: UserRow;
+  /** Chỉ các vai trò người đang thao tác được cấp (thấp hơn mình). */
+  roleOptions: { value: Role; label: string }[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -438,7 +474,7 @@ function EditUserDialog({
           <Select
             value={form.role}
             onChange={(v) => setForm({ ...form, role: v as Role })}
-            options={ROLE_OPTIONS.map((r) => ({ value: r.value, label: r.label }))}
+            options={roleOptions}
           />
         </Field>
         <Field label="Trạng thái">
