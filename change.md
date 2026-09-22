@@ -978,3 +978,12 @@ docs([Module]):     Cập nhật tài liệu
   - `tests/role-permissions.test.ts`.
 - **Kết quả kiểm tra:** dry-run hai migration trên database cục bộ: viewer 13 quyền, toàn quyền xem; `sensitive.view` đủ 5 vai trò còn lại. `pnpm test` 503/503, `tsc` đạt.
 - **Trạng thái:** Chờ chủ dự án áp migration `20260922100000`.
+
+### [DEV-LAN-ORIGIN] - Mở web dev qua IP mạng LAN không đăng nhập được
+
+- **Mục tiêu:** Chủ dự án không đăng nhập được khi mở web qua `https://192.168.1.42:3000`.
+- **Nguyên nhân:** Next 16 chặn tài nguyên dev (HMR, script) với địa chỉ ngoài danh sách `allowedDevOrigins`, mà danh sách chỉ có `192.168.66.160` (IP cũ). Trình duyệt không chạy được JS nên form đăng nhập gửi thẳng `GET /login?`. IP máy dev đổi theo mạng (192.168.1.x, 192.168.31.x, …).
+- **Files sửa:** `next.config.ts` — `allowedDevOrigins: ["192.168.*.*", "127.0.0.1"]`. Next so khớp từng đoạn nên mẫu này phủ mọi IP LAN 192.168.x.y. Chỉ ảnh hưởng `next dev`.
+- **Kết quả kiểm tra:** request từ 192.168.1.42 tải được script (200), HMR không bị chặn; request từ origin lạ vẫn bị chặn (403).
+- **Còn lưu ý:** chứng chỉ `certs/localhost.pem` chỉ cấp cho `localhost`, nên mở qua IP thì trình duyệt cảnh báo chứng chỉ; bấm tiếp tục là vào được.
+- **Trạng thái:** Hoàn tất.
