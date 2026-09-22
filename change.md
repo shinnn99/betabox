@@ -876,3 +876,16 @@ docs([Module]):     Cập nhật tài liệu
 - **Chặn phía API:** đã có sẵn từ migration phân quyền — Trưởng kho không có 9 quyền setup.
 - **Kết quả kiểm tra:** `pnpm test` 495/495, `tsc` đạt.
 - **Trạng thái:** Hiệu lực đầy đủ sau khi áp migration `20260921160000`. Trước đó Trưởng kho vẫn còn quyền setup trên database nên vẫn thấy nút.
+
+### [QUYEN-NGUOI-DUNG-NHAN-SU] - Người dùng hệ thống và Nhân sự kho theo vai trò
+
+- **Mục tiêu:** Chủ dự án ngày 22/09/2026:
+  - Người dùng hệ thống: chỉ Chủ sở hữu, Admin, Trưởng kho được xem. Trưởng ca, Nhân viên đóng gói, Viewer không thấy.
+  - Nhân sự kho: chỉ Chủ sở hữu, Admin, Trưởng kho được thêm, sửa, xoá; các vai trò còn lại chỉ xem.
+- **Files sửa:**
+  - `supabase/migrations/20260921160000_role_permission_redesign.sql` (chưa áp): rút mọi `user.*` và mọi `staff.*` trừ `staff.view` khỏi trưởng ca / nhân viên đóng gói; cấp `staff.view` cho 3 vai trò này (viewer thêm vào tập của mình).
+  - `src/app/dashboard/staff/page.tsx`: ẩn Thêm nhân viên, Liên kết tài khoản, Sửa, Xoá, Cấp/Cấp lại QR theo quyền.
+  - `src/app/api/staff/route.ts`: chỉ trả mã QR vào ca (`qr_payload`) cho người có `staff.qr.regenerate`. Trước đây ai có `staff.view` cũng lấy được mã và quét vào ca thay nhân viên khác.
+  - `tests/role-permissions.test.ts`.
+- **Kết quả kiểm tra:** dry-run migration trên database cục bộ đúng như chốt: owner/admin/trưởng kho đủ `staff.*` + `user.*`; trưởng ca, nhân viên đóng gói, viewer chỉ có `staff.view`. `pnpm test` 497/497, `tsc` đạt.
+- **Trạng thái:** Chờ áp migration.

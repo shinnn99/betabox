@@ -68,11 +68,12 @@ test("nhóm setup đúng phạm vi đã chốt: camera, gán vào bàn, thiết 
   }
 });
 
-test("viewer: chỉ thấy 4 trang video, có quyền tải, không có quyền ghi nào", () => {
+test("viewer: 4 trang video + xem Nhân sự kho, có quyền tải, không có quyền ghi nào", () => {
   assert.deepEqual(visible(VIEWER_SET).sort(), [
     "/dashboard/operations",
     "/dashboard/return-videos",
     "/dashboard/returns",
+    "/dashboard/staff",
     "/dashboard/videos",
   ]);
   assert.ok(VIEWER_SET.has("video.download"));
@@ -174,6 +175,40 @@ test("API setup camera / thiết bị / máy trạm đều đòi quyền nhóm s
       assert.ok(SETUP.includes(perm), `${f} ${g}: phải đòi quyền nhóm setup`);
     }
   }
+});
+
+test("nhân sự kho: chỉ owner/admin/trưởng kho được ghi, vai trò khác chỉ xem", () => {
+  assert.ok(VIEWER.includes("staff.view"));
+  assert.deepEqual(VIEWER.filter((p) => p.startsWith("staff.") && p !== "staff.view"), []);
+  for (const p of ["staff.create", "staff.update", "staff.delete", "staff.invite", "staff.qr.regenerate"]) {
+    assert.ok(MANAGER.has(p), `trưởng kho phải có ${p}`);
+  }
+  assert.ok(
+    MIGRATION.includes("AND permission_code LIKE 'staff.%'\n    AND permission_code <> 'staff.view';"),
+    "trưởng ca / nhân viên đóng gói phải bị rút mọi quyền ghi nhân sự",
+  );
+  const page = readFileSync("src/app/dashboard/staff/page.tsx", "utf8");
+  for (const needle of ["{allow.create && (", "{allow.update && (", "{allow.remove && (", "{allow.link && (", "canRegenerate={allow.qr}"]) {
+    assert.ok(page.includes(needle), `trang Nhân sự thiếu chốt ẩn: ${needle}`);
+  }
+  // Mã QR vào ca chỉ trả cho người được cấp QR — người chỉ xem không lấy được.
+  const api = readFileSync("src/app/api/staff/route.ts", "utf8");
+  assert.ok(api.includes('roleHasPermission(ctx.role, "staff.qr.regenerate")'));
+  assert.ok(api.includes("qr_payload: canSeeQr ?"));
+});
+
+test("người dùng hệ thống: chỉ owner/admin/trưởng kho", () => {
+  assert.equal(canSeeHref("/dashboard/users", canFor(MANAGER)), true);
+  assert.equal(canSeeHref("/dashboard/users", canFor(ADMIN)), true);
+  assert.equal(canSeeHref("/dashboard/users", canFor(VIEWER_SET)), false);
+  assert.deepEqual(VIEWER.filter((p) => p.startsWith("user.")), []);
+  assert.match(
+    MIGRATION,
+    /DELETE FROM public\.role_permission_matrix\s+WHERE role::text IN \('shift_leader', 'packer'\)\s+AND permission_code LIKE 'user\.%';/,
+    "trưởng ca / nhân viên đóng gói phải bị rút mọi quyền user.*",
+  );
+  // Menu và API cùng một mã: trang và API danh sách đều đòi user.view.
+  assert.ok(readFileSync("src/app/api/users/route.ts", "utf8").includes('requirePermission("user.view")'));
 });
 
 test("mọi vai trò có hai trang video minh chứng (xem + tải)", () => {

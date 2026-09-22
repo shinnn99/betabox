@@ -7,9 +7,17 @@
 --                                   khác và máy trạm (agent, reset secret).
 --   Quan sát viên (viewer)        : chỉ xem và tải video — trang Giám sát
 --                                   đóng/hoàn hàng và Bằng chứng giao/hoàn
---                                   hàng; không sửa gì.
+--                                   hàng — và xem Nhân sự kho; không sửa gì.
 --   Trưởng ca, Nhân viên đóng gói : giữ nguyên, thêm `return.operate` và
 --                                   quyền xem + tải video minh chứng.
+--
+-- Người dùng hệ thống: CHỈ chủ sở hữu, admin, trưởng kho được xem/quản lý.
+-- Trưởng ca, nhân viên đóng gói, viewer không có mã `user.*` nào
+-- (chủ dự án 22/09/2026).
+--
+-- Nhân sự kho: chỉ chủ sở hữu, admin, trưởng kho được thêm/sửa/xoá (cả liên
+-- kết tài khoản, cấp lại QR). Trưởng ca, nhân viên đóng gói, viewer chỉ xem
+-- (`staff.view`) — chủ dự án 22/09/2026.
 --
 -- MỌI vai trò đều có hai trang video minh chứng (đóng hàng, hoàn hàng):
 -- `order_proof.view`, `video.view`, `video.download` (chủ dự án 22/09/2026).
@@ -40,7 +48,8 @@ DECLARE
   v_viewer text[] := ARRAY[
     'warehouse.view', 'organization.view',
     'order_proof.view', 'video.view', 'video.download',
-    'camera.view', 'camera.recording.view', 'live.view_remote'
+    'camera.view', 'camera.recording.view', 'live.view_remote',
+    'staff.view'
   ];
   v_all text[];
   v_role text;
@@ -83,10 +92,21 @@ BEGIN
     );
   END LOOP;
 
+  -- Trưởng ca, nhân viên đóng gói: không xem / quản lý người dùng hệ thống.
+  DELETE FROM public.role_permission_matrix
+  WHERE role::text IN ('shift_leader', 'packer')
+    AND permission_code LIKE 'user.%';
+
+  -- Trưởng ca, nhân viên đóng gói: nhân sự kho chỉ xem.
+  DELETE FROM public.role_permission_matrix
+  WHERE role::text IN ('shift_leader', 'packer')
+    AND permission_code LIKE 'staff.%'
+    AND permission_code <> 'staff.view';
+
   -- Trưởng ca, nhân viên đóng gói: thêm quyền thao tác hàng hoàn và quyền
   -- xem + tải video minh chứng (mọi vai trò đều có hai trang video).
   FOREACH v_role IN ARRAY ARRAY['shift_leader', 'packer'] LOOP
-    FOREACH v_code IN ARRAY ARRAY['return.operate', 'order_proof.view', 'video.view', 'video.download'] LOOP
+    FOREACH v_code IN ARRAY ARRAY['return.operate', 'order_proof.view', 'video.view', 'video.download', 'staff.view'] LOOP
       EXECUTE format(
         'INSERT INTO public.role_permission_matrix (role, permission_code) VALUES (%L, %L) ON CONFLICT DO NOTHING',
         v_role, v_code

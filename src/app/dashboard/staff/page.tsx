@@ -25,6 +25,8 @@ import DashboardLayout from "@/components/layout/DashboardLayout";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import Select from "@/components/ui/Select";
 import { useToast } from "@/components/ui/Toast";
+import { useSession } from "@/lib/useSession";
+import { usePermissions } from "@/lib/usePermissions";
 
 function useQrDataUrl(payload: string | null, size: number) {
   const [url, setUrl] = useState<string | null>(null);
@@ -100,6 +102,18 @@ const STATUS_COLOR: Record<StaffStatus, string> = {
 
 export default function StaffPage() {
   const confirm = useConfirm();
+  // Chỉ chủ sở hữu, admin, trưởng kho được thêm/sửa/xoá nhân sự; vai trò
+  // khác chỉ xem. API tự chặn theo quyền — ẩn nút cho khỏi bấm nhầm.
+  const { session } = useSession();
+  const { can } = usePermissions(session?.userId);
+  const allow = {
+    create: can("staff.create"),
+    update: can("staff.update"),
+    remove: can("staff.delete"),
+    link: can("staff.invite"),
+    qr: can("staff.qr.regenerate"),
+  };
+  const anyRowAction = allow.link || allow.update || allow.remove;
   const toast = useToast();
   const [staff, setStaff] = useState<StaffRow[]>([]);
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
@@ -180,12 +194,14 @@ export default function StaffPage() {
               className="bg-transparent text-sm outline-none flex-1 placeholder:text-slate-400"
             />
           </div>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="ml-auto h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2"
-          >
-            <UserPlus className="h-4 w-4" /> Thêm nhân viên
-          </button>
+          {allow.create && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="ml-auto h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2"
+            >
+              <UserPlus className="h-4 w-4" /> Thêm nhân viên
+            </button>
+          )}
         </div>
 
         {error && (
@@ -277,6 +293,8 @@ export default function StaffPage() {
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex items-center justify-center gap-1 w-28">
+                        {!anyRowAction && <span className="text-slate-300">—</span>}
+                        {allow.link && (
                         <button
                           onClick={() => setLinkFor(s)}
                           className="h-8 w-8 rounded-lg hover:bg-blue-50 inline-flex items-center justify-center text-blue-600"
@@ -284,6 +302,8 @@ export default function StaffPage() {
                         >
                           <Link2 className="h-4 w-4" />
                         </button>
+                        )}
+                        {allow.update && (
                         <button
                           onClick={() => setEditing(s)}
                           className="h-8 w-8 rounded-lg hover:bg-slate-100 inline-flex items-center justify-center text-slate-600"
@@ -291,6 +311,8 @@ export default function StaffPage() {
                         >
                           <Pencil className="h-4 w-4" />
                         </button>
+                        )}
+                        {allow.remove && (
                         <button
                           onClick={() => onDelete(s)}
                           className="h-8 w-8 rounded-lg hover:bg-red-50 inline-flex items-center justify-center text-red-600"
@@ -298,6 +320,7 @@ export default function StaffPage() {
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -334,6 +357,7 @@ export default function StaffPage() {
       {qrFor && (
         <QrDialog
           staff={qrFor}
+          canRegenerate={allow.qr}
           onClose={() => {
             setQrFor(null);
             load();
@@ -877,7 +901,16 @@ function QrThumb({ staff, onClick }: { staff: StaffRow; onClick: () => void }) {
   );
 }
 
-function QrDialog({ staff, onClose }: { staff: StaffRow; onClose: () => void }) {
+function QrDialog({
+  staff,
+  onClose,
+  canRegenerate,
+}: {
+  staff: StaffRow;
+  onClose: () => void;
+  /** Cấp / cấp lại QR là thao tác ghi — người chỉ xem không thấy nút. */
+  canRegenerate: boolean;
+}) {
   const confirm = useConfirm();
   const toast = useToast();
   const [payload, setPayload] = useState<string | null>(staff.qr_payload);
@@ -1004,6 +1037,11 @@ function QrDialog({ staff, onClose }: { staff: StaffRow; onClose: () => void }) 
         </div>
         <div className="flex gap-2">
           {payload === null ? (
+            !canRegenerate ? (
+              <p className="flex-1 text-center text-xs text-slate-500">
+                Bạn chỉ có quyền xem. Liên hệ trưởng kho để cấp QR.
+              </p>
+            ) : (
             <button
               onClick={regenerate}
               disabled={regenerating}
@@ -1016,6 +1054,7 @@ function QrDialog({ staff, onClose }: { staff: StaffRow; onClose: () => void }) 
               )}
               {prefix ? "Cấp lại QR" : "Cấp QR"}
             </button>
+            )
           ) : (
             <>
               <button
@@ -1032,6 +1071,7 @@ function QrDialog({ staff, onClose }: { staff: StaffRow; onClose: () => void }) 
               >
                 <Printer className="h-4 w-4" /> In
               </button>
+              {canRegenerate && (
               <button
                 onClick={regenerate}
                 disabled={regenerating}
@@ -1044,6 +1084,7 @@ function QrDialog({ staff, onClose }: { staff: StaffRow; onClose: () => void }) 
                   <RefreshCcw className="h-4 w-4" />
                 )}
               </button>
+              )}
             </>
           )}
         </div>

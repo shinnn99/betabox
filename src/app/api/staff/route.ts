@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requirePermission, requirePermissionStrict, isError } from "@/lib/supabase/guard";
+import { requirePermission, requirePermissionStrict, isError, roleHasPermission } from "@/lib/supabase/guard";
 import { getScopedClient } from "@/lib/supabase/scoped-client";
 import { audit } from "@/lib/audit";
 import { issueAndStoreStaffQr } from "@/lib/qr";
@@ -75,6 +75,12 @@ export async function GET() {
     );
   }
 
+  // Mã QR là thẻ vào ca của nhân viên — ai có nó là quét vào ca thay được.
+  // Chỉ người được cấp QR (chủ sở hữu, admin, trưởng kho) mới nhận; người
+  // chỉ xem nhân sự thấy tiền tố để biết đã có QR, không thấy mã.
+  const canSeeQr =
+    ctx.isPlatform || (await roleHasPermission(ctx.role, "staff.qr.regenerate"));
+
   const result = staff.map((s) => {
     const a = assignments
       .filter((x) => x.staff_id === s.id)
@@ -91,7 +97,7 @@ export async function GET() {
       ...s,
       warehouses: a,
       qr_active_prefix: qrPrefix.get(s.id) ?? null,
-      qr_payload: qrPayload.get(s.id) ?? null,
+      qr_payload: canSeeQr ? qrPayload.get(s.id) ?? null : null,
     };
   });
 
