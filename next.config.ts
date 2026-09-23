@@ -21,12 +21,14 @@ const nextConfig: NextConfig = {
   outputFileTracingExcludes: {
     "*": ["warehouse-agent/**"],
   },
-  // Cho phép mobile trong LAN test qua IP máy dev. Next 16 mặc định
-  // block cross-origin dev resource (HMR/webpack) ngoài localhost →
-  // mobile không hydrate client JS → form "đứng yên" không submit.
-  // IP này khớp cert mkcert (xem certs/localhost.pem SANs) — nếu đổi
-  // IP LAN (Wi-Fi DHCP cấp lại) phải sinh cert mới + sửa đây.
-  allowedDevOrigins: ["192.168.66.160", "127.0.0.1"],
+  // Cho phép máy khác trong LAN mở web dev qua IP máy dev. Next 16 mặc
+  // định block cross-origin dev resource (HMR/webpack) ngoài localhost →
+  // trình duyệt không hydrate client JS → form "đứng yên", đăng nhập không
+  // được (gặp lại 22/09/2026 với 192.168.1.42).
+  // IP máy dev đổi theo mạng (DHCP): 192.168.1.x, 192.168.31.x, … — Next so
+  // khớp từng đoạn nên "192.168.*.*" phủ mọi IP LAN, khỏi sửa mỗi lần đổi.
+  // Chỉ áp cho `next dev`; production không dùng tuỳ chọn này.
+  allowedDevOrigins: ["192.168.*.*", "127.0.0.1"],
 };
 
 export default nextConfig;

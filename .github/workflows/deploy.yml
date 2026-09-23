@@ -1,0 +1,139 @@
+# Deploy tự động: push lên `main` → VPS kéo code, build, restart service.
+#
+# VÌ SAO CÓ FILE NÀY (22/09/2026):
+# Deploy trước đây làm tay và không ai ghi lại quy trình đầy đủ. Hệ quả: VPS
+# kẹt ở nhánh `feat/deploy-vps` suốt 40 ngày, tụt sau `main` 65 commit mà
+# không ai biết — merge vào main xong web vẫn y như cũ, không có tín hiệu nào
+# báo thiếu bước. Cùng hình dạng với việc syscheck chết 27 ngày: bước chỉ chạy
+# khi có người nhớ.
+#
+# CHẠY GÌ Ở ĐÂU: workflow chỉ SSH vào VPS rồi chạy đúng các lệnh trong
+# docs/vps/RUNBOOK-P0-GIAO-KHACH.md. Build diễn ra TRÊN VPS, không phải trên
+# runner — để môi trường build giống hệt môi trường chạy (cùng Node, cùng
+# kiến trúc). Đổi sang build-trên-runner-rồi-rsync sẽ nhanh hơn nhưng thêm
+# một lớp "khác môi trường" vào đúng chỗ đang là nguồn lỗi.
+#
+# SECRET CẦN ĐẶT (Settings → Secrets and variables → Actions):
+#   VPS_HOST  = 84.247.148.243
+#   VPS_USER  = root
+#   VPS_KEY   = nội dung file private key (toàn bộ, kể cả dòng BEGIN/END)
+#   VPS_PORT  = 22        (tuỳ chọn, bỏ trống thì dùng 22)
+#
+# Cách tạo key riêng cho deploy (làm trên máy bàn, ĐỪNG dùng lại key cá nhân):
+#   ssh-keygen -t ed25519 -f ~/.ssh/betabox_deploy -C "github-actions-deploy" -N ""
+#   ssh-copy-id -i ~/.ssh/betabox_deploy.pub root@84.247.148.243
+#   cat ~/.ssh/betabox_deploy          # dán nội dung này vào secret VPS_KEY
+
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+  # Cho phép bấm chạy tay từ tab Actions — dùng khi cần deploy lại mà không
+  # có commit mới (ví dụ sau khi sửa biến môi trường trên VPS).
+  workflow_dispatch:
+
+# Hai lần deploy chồng nhau sẽ giẫm chân ở bước build/restart. Xếp hàng thay
+# vì huỷ: deploy đang chạy dở mà bị cắt giữa `pnpm build` để lại thư mục
+# standalone không hoàn chỉnh.
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Nạp SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Ghim host key để không hỏi xác nhận, đồng thời tránh gắn mù vào
+          # bất kỳ máy nào trả lời ở IP đó.
+          ssh-keyscan -p "${{ secrets.VPS_PORT || 22 }}" -H \
+            "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Kéo code, build, restart
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER: ${{ secrets.VPS_USER }}
+          PORT: ${{ secrets.VPS_PORT || 22 }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$PORT" "$USER@$HOST" 'bash -euo pipefail -s' <<'REMOTE'
+          APP_DIR=/home/betacom/app
+          APP_USER=betacom
+
+          # Chạy git/pnpm dưới đúng user sở hữu repo. Root thao tác vào đây sẽ
+          # sinh file thuộc root, service chạy dưới betacom không đọc được.
+          run_as_app() { su -s /bin/bash -c "$1" "$APP_USER"; }
+
+          echo "::group::Kiểm tra trước khi pull"
+          # Sửa tay chưa commit trên VPS = có thứ chưa ai push. Dừng thay vì
+          # pull đè — repo từng có commit chỉ tồn tại trên VPS (8b1595a), suýt
+          # làm mất dòng output:"standalone" trong next.config.ts.
+          DIRTY=$(run_as_app "git -C $APP_DIR status --porcelain")
+          if [ -n "$DIRTY" ]; then
+            echo "DỪNG: VPS có thay đổi chưa commit, không pull đè:"
+            echo "$DIRTY"
+            exit 1
+          fi
+          run_as_app "git -C $APP_DIR rev-parse --abbrev-ref HEAD"
+          echo "::endgroup::"
+
+          echo "::group::Kéo code"
+          run_as_app "git -C $APP_DIR fetch origin"
+          # Ép về đúng main: nếu VPS lỡ ở nhánh khác thì tự sửa, không im lặng
+          # deploy nhầm nhánh như lần kẹt ở feat/deploy-vps.
+          run_as_app "git -C $APP_DIR checkout main 2>/dev/null || git -C $APP_DIR checkout -b main origin/main"
+          run_as_app "git -C $APP_DIR pull --ff-only origin main"
+          run_as_app "git -C $APP_DIR log --oneline -1"
+          echo "::endgroup::"
+
+          echo "::group::Cài dependency + build"
+          run_as_app "cd $APP_DIR && pnpm install --frozen-lockfile"
+          run_as_app "cd $APP_DIR && pnpm build"
+          echo "::endgroup::"
+
+          echo "::group::Chép static (standalone không tự chép)"
+          # Thiếu bước này: service vẫn active, trang vẫn 200, nhưng mất sạch
+          # CSS/JS — giao diện vỡ trắng, nhìn hệt lỗi code.
+          run_as_app "cd $APP_DIR && cp -r .next/static .next/standalone/.next/"
+          run_as_app "cd $APP_DIR && cp -r public .next/standalone/"
+          test -d "$APP_DIR/.next/standalone/.next/static" || {
+            echo "DỪNG: thiếu .next/standalone/.next/static sau khi chép"
+            exit 1
+          }
+          echo "::endgroup::"
+
+          echo "::group::Restart"
+          systemctl restart betabox
+          sleep 5
+          systemctl is-active --quiet betabox || {
+            echo "Service KHÔNG chạy sau restart:"
+            journalctl -u betabox -n 40 --no-pager
+            exit 1
+          }
+          systemctl status betabox --no-pager | head -12
+          echo "::endgroup::"
+          REMOTE
+
+      - name: Kiểm web trả 200
+        run: |
+          # `systemctl active` chỉ nói tiến trình còn sống, không nói app phục
+          # vụ được. Hỏi chính trang đăng nhập mới là bằng chứng.
+          for i in 1 2 3 4 5; do
+            CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+              https://betabox.betacom.agency/login || echo "000")
+            echo "lần $i: HTTP $CODE"
+            [ "$CODE" = "200" ] && exit 0
+            sleep 5
+          done
+          echo "Web không trả 200 sau 5 lần thử"
+          exit 1
+
+      - name: Dọn key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

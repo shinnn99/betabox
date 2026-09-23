@@ -13,10 +13,9 @@ export type IssueKind =
   | "duplicated"
   | "invalid_code"
   | "qr_invalid"
-  // Luồng hoàn hàng — xem src/lib/warehouse/live/returns.ts
-  | "claim_open"
-  | "return_suspect"
-  | "duplicated_return";
+  // Chỉ có ở luồng hoàn: lưới an toàn bắt mã đã gửi đi quay lại bàn đóng
+  // hàng — xem src/lib/warehouse/live/returns.ts
+  | "return_suspect";
 
 export interface Issue {
   id: string;
@@ -45,6 +44,72 @@ function pickOne<T>(v: T | T[] | null | undefined): T | null {
 }
 
 /**
+ * Những trạng thái lượt quét được coi là "việc cần xử lý" của mỗi luồng.
+ *
+ * Hai luồng dùng CHUNG một danh sách và CHUNG một bộ chữ (chủ dự án chốt
+ * 23/09/2026: "bên kia dùng để làm gì thì bên hoàn hàng cũng dùng y như
+ * thế"). Chỉ khác đúng hai chỗ bắt buộc: tên trạng thái quét trùng của kiện
+ * hoàn là `duplicated_return`, và lưới an toàn `return_suspect` chỉ sinh ra
+ * ở luồng hoàn.
+ */
+export const ISSUE_STATUSES = {
+  outbound: ["duplicated", "no_active_session", "unmapped_scanner", "invalid_code"],
+  return: [
+    "duplicated_return",
+    "no_active_session",
+    "unmapped_scanner",
+    "invalid_code",
+    "return_suspect",
+  ],
+} as const;
+
+/**
+ * Một lượt quét hỏng đọc thành việc cần làm — nguồn duy nhất của cả hai
+ * màn hình giám sát. Đổi chữ ở đây là đổi cho cả đóng hàng lẫn hoàn hàng.
+ */
+export function describeScanIssue(row: {
+  status: string;
+  waybill_code: string | null;
+  scanner_device_code: string | null;
+  station_name: string | null;
+}): { kind: IssueKind; title: string; message: string } {
+  const where = row.station_name ?? row.scanner_device_code ?? "máy quét chưa rõ";
+  switch (row.status) {
+    case "duplicated":
+    case "duplicated_return":
+      return {
+        kind: "duplicated",
+        title: "Đơn quét trùng",
+        message: `${row.waybill_code} đã được quét trước đó`,
+      };
+    case "no_active_session":
+      return {
+        kind: "no_active_session",
+        title: "Quét khi chưa vào ca",
+        message: `${row.waybill_code} quét tại ${where} khi không có ai trực`,
+      };
+    case "unmapped_scanner":
+      return {
+        kind: "unmapped_scanner",
+        title: "Máy quét chưa gán bàn",
+        message: `${row.scanner_device_code} chưa được gán vào bàn`,
+      };
+    case "return_suspect":
+      return {
+        kind: "return_suspect",
+        title: "Hàng hoàn",
+        message: `${row.waybill_code} đã đóng gửi đi trước đó, quét lại ở ${where} — không tính đơn`,
+      };
+    default:
+      return {
+        kind: "invalid_code",
+        title: "Mã không hợp lệ",
+        message: row.waybill_code ?? "Mã rỗng",
+      };
+  }
+}
+
+/**
  * Today's actionable issues — anything a manager should look at.
  *  - packing_events with non-valid status
  *  - staff_qr_scan_results with warning_code
@@ -65,12 +130,8 @@ export async function buildLiveIssues(
          packing_stations ( code, name )`,
       )
       .eq("organization_id", orgId)
-      .in("status", [
-        "duplicated",
-        "no_active_session",
-        "unmapped_scanner",
-        "invalid_code",
-      ])
+      .eq("event_kind", "outbound")
+      .in("status", ISSUE_STATUSES.outbound)
       .gte("scanned_at", startIso)
       .lt("scanned_at", endIso)
       .order("scanned_at", { ascending: false })
@@ -95,24 +156,15 @@ export async function buildLiveIssues(
   for (const p of packingIssues.data ?? []) {
     const staff = pickOne(p.staff_profiles);
     const station = pickOne(p.packing_stations);
-    let title = "Cảnh báo đơn";
-    let message = "";
-    if (p.status === "duplicated") {
-      title = "Đơn quét trùng";
-      message = `${p.waybill_code} đã được quét trước đó`;
-    } else if (p.status === "no_active_session") {
-      title = "Quét khi chưa vào ca";
-      message = `${p.waybill_code} quét tại ${station?.name ?? p.scanner_device_code} khi không có ai trực`;
-    } else if (p.status === "unmapped_scanner") {
-      title = "Máy quét chưa gán bàn";
-      message = `${p.scanner_device_code} chưa được gán vào bàn`;
-    } else {
-      title = "Mã không hợp lệ";
-      message = p.waybill_code ?? "Mã rỗng";
-    }
+    const { kind, title, message } = describeScanIssue({
+      status: p.status,
+      waybill_code: p.waybill_code,
+      scanner_device_code: p.scanner_device_code,
+      station_name: station?.name ?? null,
+    });
     issues.push({
       id: p.id,
-      kind: p.status as IssueKind,
+      kind,
       title,
       message,
       occurred_at: p.scanned_at,

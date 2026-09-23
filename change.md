@@ -978,3 +978,51 @@ docs([Module]):     Cập nhật tài liệu
   - `tests/role-permissions.test.ts`.
 - **Kết quả kiểm tra:** dry-run hai migration trên database cục bộ: viewer 13 quyền, toàn quyền xem; `sensitive.view` đủ 5 vai trò còn lại. `pnpm test` 503/503, `tsc` đạt.
 - **Trạng thái:** Chờ chủ dự án áp migration `20260922100000`.
+
+### [DEV-LAN-ORIGIN] - Mở web dev qua IP mạng LAN không đăng nhập được
+
+- **Mục tiêu:** Chủ dự án không đăng nhập được khi mở web qua `https://192.168.1.42:3000`.
+- **Nguyên nhân:** Next 16 chặn tài nguyên dev (HMR, script) với địa chỉ ngoài danh sách `allowedDevOrigins`, mà danh sách chỉ có `192.168.66.160` (IP cũ). Trình duyệt không chạy được JS nên form đăng nhập gửi thẳng `GET /login?`. IP máy dev đổi theo mạng (192.168.1.x, 192.168.31.x, …).
+- **Files sửa:** `next.config.ts` — `allowedDevOrigins: ["192.168.*.*", "127.0.0.1"]`. Next so khớp từng đoạn nên mẫu này phủ mọi IP LAN 192.168.x.y. Chỉ ảnh hưởng `next dev`.
+- **Kết quả kiểm tra:** request từ 192.168.1.42 tải được script (200), HMR không bị chặn; request từ origin lạ vẫn bị chặn (403).
+- **Còn lưu ý:** chứng chỉ `certs/localhost.pem` chỉ cấp cho `localhost`, nên mở qua IP thì trình duyệt cảnh báo chứng chỉ; bấm tiếp tục là vào được.
+- **Trạng thái:** Hoàn tất.
+
+### [HOAN-DOT-7] - Nhật ký nói cùng một thứ tiếng, báo cáo có đơn hoàn, chưa mở ca thì không quay, hạn lưu riêng
+
+- **Mục tiêu:** Chủ dự án chốt 23/09/2026, năm việc. Kế hoạch: `plans/active/HOAN-HANG-dot-7-nhat-ky-bao-cao-han-luu.md`.
+- **1. Cột Loại và Ghi chú của hàng hoàn ghi y như đóng hàng:**
+  - `src/lib/warehouse/live/returns.ts`: `classifyReturnEvent` trả đúng các loại của đóng hàng (`waybill_valid`, `waybill_duplicated`, `waybill_no_session`, `waybill_return_suspect`). Bỏ các loại tự chế (Đang mở / Hàng ổn / Có vấn đề / Quét lại / Lưới an toàn).
+  - Ghi chú của hàng hoàn LUÔN rỗng: cột Loại đã nói đủ, cột Ghi chú chỉ còn cảnh báo video nặng như trang đóng hàng. Không ghi lý do hoàn ("hoàn là hoàn thôi").
+  - `src/app/dashboard/(return-module)/returns/page.tsx`: chép đúng bảng nhãn của trang Giám sát đóng hàng (Hợp lệ, Trùng, Chưa vào ca, Máy quét chưa gán, Mã sai, Hàng hoàn, QR sai).
+  - `src/lib/warehouse/live/activity.ts`: bỏ 5 loại riêng khỏi `ActivityKind`.
+- **2. Quét khi chưa mở ca thì không quay, không có giờ:**
+  - `supabase/migrations/20260923090000_no_session_no_video.sql` (mới, ĐÃ ÁP 23/09/2026): trong `process_waybill_scan`, kiểm tra ca TRƯỚC lưới an toàn. Trước đây lưới an toàn ghi ngay kiện hoàn `return_suspect` kể cả khi không có ca, nên lượt quét có giờ bắt đầu = giờ kết thúc = giờ quét và vẫn hiện nút "Tạo clip", trong khi không có đoạn video nào.
+  - `src/lib/order-proof/proof-clip-gate.ts` + hai route `watch`, `watch/retry`: chặn cắt clip cho lượt quét `no_active_session`.
+- **3. Báo cáo hiệu suất có phần hàng hoàn:** `src/lib/reports/service.ts` thêm `aggregateReturns` (đếm riêng, không trộn vào sản lượng đóng hàng, không vào số đơn nhân sự); `src/app/dashboard/reports/page.tsx` thêm khung "Hàng hoàn" gồm số kiện hoàn, số lượt quét lại và bảng theo ngày.
+- **4. Cấu hình kho có ô số ngày giữ video hàng hoàn:** `supabase/migrations/20260923100000_org_return_retention_days.sql` (mới, ĐÃ ÁP 23/09/2026) thêm cột `organizations.return_retention_days` (7–365, NULL = 7 ngày); `src/app/api/organization/route.ts` cho đọc/ghi; `src/app/api/agent/retention-plan/route.ts` ưu tiên cấu hình cấp tổ chức rồi mới tới config kho; trang Cấu hình kho thêm ô nhập ngay dưới ô cũ.
+- **5. Cột mã vận đơn của Bằng chứng hoàn hàng chỉ còn hạn khiếu nại:** `src/app/dashboard/(return-module)/return-videos/page.tsx` bỏ nhãn lý do hoàn (Giao thất bại / Khách trả / Quét ở bàn đóng hàng) và nhãn kết quả kiểm (Hàng ổn / Hỏng / Thiếu / Tráo / Chưa kiểm) khỏi cột mã vận đơn, thẻ lưới và ngăn chi tiết; giữ nguyên thẻ hồ sơ khiếu nại kèm đồng hồ đếm ngược. Bỏ luôn ô "Loại hoàn" trong ngăn chi tiết. Chữ khắc trên video (`src/lib/agent-commands/enqueue.ts`) KHÔNG đổi.
+- **6. Khối "Cần xử lý" của Giám sát hoàn hàng làm y như đóng hàng:** trước đây khối này là danh sách hồ sơ khiếu nại còn hạn — một việc khác hẳn bên đóng hàng, lại lặp đúng đồng hồ đếm ngược đã có ở trang Bằng chứng hoàn hàng. Giờ nó liệt kê các lượt quét hỏng TRONG NGÀY của luồng hoàn, cùng bộ chữ với đóng hàng. `src/lib/warehouse/live/issues.ts` thêm `describeScanIssue` + `ISSUE_STATUSES` làm nguồn chữ duy nhất cho cả hai màn hình; `src/lib/warehouse/live/returns.ts` bỏ truy vấn `return_claims`; `src/lib/warehouse/live/summary.ts` đếm thêm `no_active_session / unmapped_scanner / invalid_code` cho luồng hoàn (và KHÔNG tính chúng là kiện nhận được nữa), bỏ `open_claims` nên hết một phép đếm mỗi nhịp poll 3 giây.
+  - **Nguồn dữ liệu vẫn tách đôi** (chủ dự án nhấn mạnh: "nguồn riêng nhé, chỉ là xử lý giống thôi"): mỗi màn hình chỉ đọc lượt quét của luồng mình. Truy vấn của đóng hàng nay có thêm `.eq("event_kind", "outbound")` cho chắc.
+  - Thẻ số "Cần xử lý" của trang hoàn đếm y công thức bên đóng hàng; lưới an toàn nằm ở dòng phụ như "đơn vượt ngưỡng".
+- **7. Cấu hình kho:** ô cũ đổi tên thành "Số ngày giữ video đóng hàng" để thành cặp rõ ràng với ô hàng hoàn.
+- **8. Khối "Hoạt động hôm nay" của hai màn hình giống hệt nhau:** trang hoàn đổi tab "Hàng ổn / Quét lại / Thẻ điều khiển" thành "Hợp lệ / Trùng / QR nhân sự" y như đóng hàng; bộ lọc tab chép đúng luật bên đóng hàng; thêm nhãn Vào ca / Ra ca / Đổi ca. `src/lib/warehouse/live/activity.ts` tách `describeStaffScan` làm nguồn chữ duy nhất cho lượt quét QR nhân sự; `buildReturnActivity` tự truy vấn `staff_qr_scan_results` của mình (nguồn riêng) rồi đọc qua hàm đó, nên nhật ký hoàn hàng giờ có cả dòng vào/ra ca như đóng hàng.
+- **9. Trang Báo cáo hiệu suất có phần hoàn hàng đầy đủ:** thêm thẻ số "Tổng đơn hoàn"; "Thời gian TB / thời gian xử lý" đổi thành "Thời gian đóng hàng TB / thời gian đóng hàng"; thêm biểu đồ "Sản lượng hoàn hàng theo ngày"; bảng nhân sự tách thành MỘT component `StaffReportTable` dùng hai lần — "Báo cáo đóng hàng theo nhân sự" và "Báo cáo hoàn hàng theo nhân sự"; bỏ khung "Hàng hoàn" (2 ô + bảng theo ngày) vì nội dung đã nằm ở thẻ số và biểu đồ.
+  - `src/lib/reports/service.ts`: `ReturnsSummary` đổi sang đúng hình dạng của đóng hàng (`totals` + `daily` + `staff`). Lượt quét hoàn được chuẩn hoá về từ vựng đóng hàng (`duplicated_return`→`duplicated`, `return_suspect`→`valid`, bỏ hẳn lượt quét hỏng) rồi dùng LẠI `aggregateDaily` / `computeTotals` / `aggregateStaff` — không viết phép đếm thứ hai.
+  - Hồ sơ nhân sự giờ nạp theo cả hai luồng, nếu không người chỉ nhận hoàn sẽ hiện "—".
+- **Files test:** `tests/return-dot7-nhat-ky-bao-cao.test.ts` (mới, 14 bài); cập nhật `tests/return-pages.test.ts`, `tests/counting-excludes-returns.test.ts` và `tests/role-permissions.test.ts` theo luật mới.
+- **Kết quả kiểm tra:** `pnpm test` 548/548, `tsc` đạt, `eslint` không lỗi. Đã áp cả hai migration và kiểm trên web thật (org test KHO_HN_01): lưu 10 ngày → 200 và đọc lại đúng; nhập 3 ngày bị chặn 400; máy kho nhận số ngày mới qua `/api/agent/retention-plan`; báo cáo trả khung hàng hoàn; sản lượng đóng hàng không đổi. Báo cáo: `/api/reports/performance?range=30d` trả tổng đơn hoàn 5, quét lại 2, biểu đồ 30 ngày và bảng nhân sự hoàn hàng CÙNG bộ thuộc tính với bảng đóng hàng. Khối "Cần xử lý": tạo tạm 2 lượt quét hỏng của luồng hoàn rồi xoá sạch — trang hoàn đọc ra "Quét khi chưa vào ca" và "Hàng hoàn", trang đóng hàng KHÔNG thấy hai mục đó.
+- **Trạng thái:** Hoàn tất.
+
+### [PERM-XOA-USER] - Chỉ chủ sở hữu được xoá tài khoản, và xoá là xoá thật
+
+- **Mục tiêu:** Chủ dự án chốt 23/09/2026: "chỉ có chủ sở hữu mới được quyền xoá tài khoản khác, các role khác không được phép, chủ sở hữu phải thật sự xoá được, xoá luôn dữ liệu tài khoản đó khỏi database".
+- **Hai lớp chặn:**
+  - `supabase/migrations/20260923110000_only_owner_deletes_users.sql` (mới, ĐÃ ÁP 23/09/2026): xoá `user.delete` khỏi mọi vai trò trừ `owner`. Trước đó owner + admin + trưởng kho đều có (đợt phân quyền 22/09). `user.create` và `user.update` GIỮ NGUYÊN cho admin và trưởng kho.
+  - `src/app/api/users/[id]/route.ts`: chốt độc lập với bảng quyền — `ctx.role !== "owner"` → 403 `owner_only`, đặt TRƯỚC mọi thao tác chạm database. Một dòng cấp nhầm trong `role_permission_matrix` không mở được cánh cửa này.
+- **Xoá thật:** vẫn `auth.admin.deleteUser` (hồ sơ `user_profiles` đi theo bằng khoá ngoại ON DELETE CASCADE — đã đo trên database thật), thêm lệnh xoá hồ sơ làm lưới an toàn cho hai ca hiếm: cascade bị gỡ, hoặc hồ sơ mồ côi khi tài khoản đăng nhập đã mất từ trước. Nhật ký `audit_logs` vẫn giữ (khoá ngoại ON DELETE SET NULL) — mất người nhưng không mất dấu vết.
+- **Giao diện:** nút Xoá đã chặn-khi-bấm sẵn theo `user.delete`, nên admin/trưởng kho bấm vào chỉ nhận "Bạn không có quyền xoá người dùng." Hộp xác nhận viết rõ hồ sơ bị xoá hẳn, nhật ký cũ vẫn giữ.
+- **Files test:** `tests/role-permissions.test.ts` — bỏ giả định trưởng kho có `user.delete`, thêm bài canh migration + chốt route + "không được biến thành xoá mềm".
+- **Kết quả kiểm tra:** `pnpm test` 549/549, `tsc` đạt. Kiểm trên web thật (org test, tài khoản tạm đã xoá sạch): admin → 403, trưởng kho → 403, tài khoản đích vẫn còn nguyên; chủ sở hữu → 200, hồ sơ biến khỏi `user_profiles`, tài khoản đăng nhập cũng mất, `audit_logs` vẫn ghi `user.delete`; chủ sở hữu tự xoá mình → 400.
+- **Sau khi áp migration:** kiểm lại trên web thật — bảng quyền chỉ còn `owner` có `user.delete`; `user.create`/`user.update` vẫn đủ owner + admin + trưởng kho; `/api/session-permissions` của admin không còn `user.delete` (nút Xoá mờ đi); admin gọi thẳng API → 403; chủ sở hữu xoá → 200 và cả hồ sơ lẫn tài khoản đăng nhập biến mất.
+- **Trạng thái:** Hoàn tất.

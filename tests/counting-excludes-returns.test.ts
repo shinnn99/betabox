@@ -24,6 +24,8 @@ import { COUNTED_OUTBOUND_EVENTS } from "@/lib/warehouse/outbound-only";
 const OUTBOUND_FILTER = `.eq("event_kind", "outbound")`;
 
 /** Truy vấn đọc thẳng `packing_events` thì phải có bộ lọc loại đơn. */
+const RETURN_FILTER = `.eq("event_kind", "return")`;
+
 const FILTERED_QUERY_FILES: Array<{ file: string; expected: number; why: string }> = [
   {
     file: "src/lib/reports/service.ts",
@@ -81,11 +83,13 @@ for (const target of FILTERED_QUERY_FILES) {
       `thiếu bộ lọc ${OUTBOUND_FILTER} — kiện hoàn sẽ bị đếm vào số đơn`,
     );
 
-    // Đếm số truy vấn đọc packing_events: mỗi truy vấn phải có một bộ lọc.
+    // Mỗi truy vấn packing_events phải khai rõ luồng: đơn đi cho số sản
+    // lượng, hoặc kiện hoàn cho khung Hàng hoàn của báo cáo (đợt 7).
     const queries = source.split(`.from("packing_events")`).length - 1;
+    const returnFilters = source.split(RETURN_FILTER).length - 1;
     assert.equal(
       queries,
-      target.expected,
+      target.expected + returnFilters,
       "số truy vấn packing_events khác số bộ lọc — có truy vấn chưa lọc loại đơn",
     );
   });

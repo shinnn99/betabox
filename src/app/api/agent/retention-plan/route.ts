@@ -68,14 +68,25 @@ export async function POST(req: Request) {
     );
   }
 
-  // Số ngày lấy từ config kho của agent. Kho chưa cấu hình → 7 ngày.
-  const { data: warehouses } = await admin
-    .from("warehouses")
-    .select("packing_timing_config")
-    .eq("organization_id", agent.organization_id)
-    .limit(1);
+  // Số ngày: ưu tiên cấu hình cấp tổ chức (ô trên trang Cấu hình kho, thêm
+  // 23/09/2026), rồi mới tới config kho cũ, cuối cùng mặc định 7 ngày.
+  const [{ data: org }, { data: warehouses }] = await Promise.all([
+    admin
+      .from("organizations")
+      .select("return_retention_days")
+      .eq("id", agent.organization_id)
+      .maybeSingle(),
+    admin
+      .from("warehouses")
+      .select("packing_timing_config")
+      .eq("organization_id", agent.organization_id)
+      .limit(1),
+  ]);
   const cfg = (warehouses?.[0]?.packing_timing_config ?? null) as Record<string, unknown> | null;
-  const rawDays = Number(cfg?.return_segment_retention_days);
+  const orgDays = Number(org?.return_retention_days);
+  const rawDays = Number.isFinite(orgDays) && orgDays > 0
+    ? orgDays
+    : Number(cfg?.return_segment_retention_days);
   const returnRetentionDays =
     Number.isFinite(rawDays) && rawDays >= 1 && rawDays <= 365 ? Math.floor(rawDays) : 7;
 

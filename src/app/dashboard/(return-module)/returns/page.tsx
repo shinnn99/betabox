@@ -9,12 +9,14 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleAlert,
+  CircleX,
   Clock,
   Copy,
   History,
   PackageCheck,
   PackageOpen,
   PackageX,
+  PlugZap,
   Radio,
   ScanLine,
   Timer,
@@ -42,8 +44,10 @@ import ReturnCapturePanel from "@/components/returns/ReturnCapturePanel";
  *
  * Khác chức năng:
  *   - Dữ liệu từ /api/returns/live/* (kiện hoàn, không phải đơn đi).
- *   - Thẻ số: Đã nhận · Quét lại · Cần xử lý (hồ sơ mở) · Nhân sự.
- *   - Cần xử lý: hồ sơ kiện có vấn đề, mã quay lại bàn đóng hàng.
+ *   - Thẻ số: Đã nhận · Quét lại · Cần xử lý · Nhân sự.
+ *   - Cần xử lý: LÀM Y NHƯ bên đóng hàng (chốt 23/09/2026) — các lượt quét
+ *     hỏng trong ngày, cùng bộ chữ, khác mỗi nguồn dữ liệu (chỉ đọc lượt
+ *     quét của luồng hoàn). Hồ sơ khiếu nại ở trang Bằng chứng hoàn hàng.
  *   - Nhật ký: kiện hoàn + thẻ điều khiển.
  *   - Ô Bắt đầu / Kết thúc nhận hoàn (tín hiệu module xuống agent).
  *
@@ -103,8 +107,10 @@ interface SummaryResponse {
     suspect: number;
     /** Kiện đang mở. */
     open: number;
-    /** Hồ sơ chưa khiếu nại — mọi ngày, không chỉ hôm nay. */
-    open_claims: number;
+    /** Lượt quét hỏng — đếm y như bên đóng hàng. */
+    no_active_session: number;
+    unmapped_scanner: number;
+    invalid_code: number;
   };
   active_sessions: { staff_count: number; station_count: number };
   stale_session_warnings: StaleSessionWarning[];
@@ -140,12 +146,18 @@ interface StationsResponse {
   stations: StationCard[];
 }
 
+// Cùng bộ với trang Giám sát đóng hàng — chủ dự án chốt 23/09/2026.
 type ActivityKind =
-  | "return_open"
-  | "return_ok"
-  | "return_problem"
-  | "return_duplicated"
-  | "return_suspect"
+  | "session_started"
+  | "session_ended"
+  | "session_forced_ended"
+  | "waybill_valid"
+  | "waybill_duplicated"
+  | "waybill_no_session"
+  | "waybill_unmapped"
+  | "waybill_invalid"
+  | "waybill_return_suspect"
+  | "qr_invalid"
   | "control_card";
 
 type ActivityCategory = "ok" | "warning" | "error" | "info";
@@ -180,7 +192,14 @@ interface ActivityResponse {
   total: number;
 }
 
-type IssueKind = "claim_open" | "return_suspect" | "duplicated_return";
+// Cùng bộ loại với Giám sát đóng hàng — xem src/lib/warehouse/live/issues.ts.
+// Chỉ khác: `return_suspect` là lưới an toàn, chỉ luồng hoàn mới có.
+type IssueKind =
+  | "no_active_session"
+  | "unmapped_scanner"
+  | "duplicated"
+  | "invalid_code"
+  | "return_suspect";
 
 interface Issue {
   id: string;
@@ -276,12 +295,19 @@ function formatDuration(seconds: number): string {
   return `${m} phút`;
 }
 
+// Chép đúng bảng nhãn của trang Giám sát đóng hàng — chủ dự án chốt
+// 23/09/2026: cùng một việc thì cùng một chữ.
 const ACTIVITY_KIND_LABEL: Record<ActivityKind, string> = {
-  return_open: "Đang mở",
-  return_ok: "Hàng ổn",
-  return_problem: "Có vấn đề",
-  return_duplicated: "Quét lại",
-  return_suspect: "Lưới an toàn",
+  session_started: "Vào ca",
+  session_ended: "Ra ca",
+  session_forced_ended: "Đổi ca",
+  waybill_valid: "Hợp lệ",
+  waybill_duplicated: "Trùng",
+  waybill_no_session: "Chưa vào ca",
+  waybill_unmapped: "Máy quét chưa gán",
+  waybill_invalid: "Mã sai",
+  waybill_return_suspect: "Hàng hoàn",
+  qr_invalid: "QR sai",
   control_card: "Thẻ",
 };
 
@@ -316,15 +342,19 @@ const CATEGORY_TONE: Record<
 };
 
 const ISSUE_KIND_ICON: Record<IssueKind, typeof CheckCircle2> = {
-  claim_open: PackageX,
+  duplicated: Copy,
+  no_active_session: PackageX,
+  unmapped_scanner: PlugZap,
+  invalid_code: CircleX,
   return_suspect: History,
-  duplicated_return: Copy,
 };
 
 const ISSUE_KIND_TONE: Record<IssueKind, "warning" | "error"> = {
-  claim_open: "error",
+  duplicated: "warning",
+  no_active_session: "error",
+  unmapped_scanner: "error",
+  invalid_code: "error",
   return_suspect: "warning",
-  duplicated_return: "warning",
 };
 
 function describeActivityToast(ev: ActivityItem): {
@@ -334,22 +364,17 @@ function describeActivityToast(ev: ActivityItem): {
   const where = ev.station_name ? ` · ${ev.station_name}` : "";
   const who = ev.staff_name ? ` · ${ev.staff_name}` : "";
   switch (ev.kind) {
-    case "return_open":
-      return { variant: "info", message: `Mở kiện hoàn ${ev.waybill_code}${who}${where}` };
-    case "return_ok":
-      return { variant: "success", message: `Kiện hoàn ${ev.waybill_code}: hàng ổn${where}` };
-    case "return_problem":
-      return {
-        variant: "error",
-        message: `Kiện hoàn ${ev.waybill_code} có vấn đề — đã mở hồ sơ${where}`,
-      };
-    case "return_duplicated":
-      return { variant: "info", message: `${ev.waybill_code} đã ghi hoàn trước đó` };
-    case "return_suspect":
+    case "waybill_valid":
+      return { variant: "success", message: `Kiện hoàn ${ev.waybill_code}${who}${where}` };
+    case "waybill_duplicated":
+      return { variant: "info", message: `${ev.waybill_code} đã được quét trước đó` };
+    case "waybill_no_session":
+      return { variant: "error", message: `${ev.waybill_code} quét khi chưa mở ca${where}` };
+    case "waybill_return_suspect":
       // Không phải lỗi: hệ thống đã tự tách khỏi số đơn đóng. Để mức thông tin.
       return {
         variant: "info",
-        message: `${ev.waybill_code} đã gửi đi quay lại bàn đóng hàng${where}`,
+        message: `${ev.waybill_code} đã đóng trước đó — hàng hoàn${where}`,
       };
     case "control_card":
       return { variant: "info", message: `${ev.waybill_code ?? "Thẻ điều khiển"}${where}` };
@@ -415,12 +440,13 @@ function computeAlerts(
 
 type ActivityTab = "all" | "ok" | "duplicated" | "issues" | "staff";
 
+// Y HET ben Giam sat dong hang — chu du an chot 23/09/2026.
 const ACTIVITY_TAB_LABEL: Record<ActivityTab, string> = {
   all: "Tất cả",
-  ok: "Hàng ổn",
-  duplicated: "Quét lại",
+  ok: "Hợp lệ",
+  duplicated: "Trùng",
   issues: "Cần xử lý",
-  staff: "Thẻ điều khiển",
+  staff: "QR nhân sự",
 };
 
 function formatMiB(bytes: number | null): string {
@@ -490,18 +516,29 @@ function matchActivityTab(
   proofRisk?: ProofRisk,
 ): boolean {
   if (tab === "all") return true;
-  if (tab === "ok") return ev.kind === "return_ok";
-  if (tab === "duplicated") return ev.kind === "return_duplicated";
+  if (tab === "ok") return ev.kind === "waybill_valid";
+  if (tab === "duplicated") return ev.kind === "waybill_duplicated";
   if (tab === "issues")
     return (
-      ev.kind === "return_problem" ||
-      ev.kind === "return_suspect" ||
-      ev.kind === "return_duplicated" ||
+      ev.category === "error" ||
+      ev.kind === "waybill_duplicated" ||
+      ev.kind === "waybill_return_suspect" ||
+      ev.kind === "session_forced_ended" ||
+      ev.timing_status === "capped_timeout" ||
+      ev.timing_status === "default_estimated" ||
       // Clip kiện hoàn dài tới 5 phút — vượt trần tải lên thì hồ sơ khiếu
       // nại không có video.
       proofRisk?.proof_size_risk === "over_limit"
     );
-  if (tab === "staff") return ev.kind === "control_card";
+  if (tab === "staff")
+    return (
+      ev.kind === "session_started" ||
+      ev.kind === "session_ended" ||
+      ev.kind === "session_forced_ended" ||
+      ev.kind === "qr_invalid" ||
+      // Thẻ điều khiển cũng là lượt quét của người, không phải của kiện.
+      ev.kind === "control_card"
+    );
   return true;
 }
 
@@ -779,9 +816,13 @@ export default function ReturnsMonitorPage() {
   const todayOpen = summary?.today.open ?? 0;
   const todayDuplicated = summary?.today.duplicated ?? 0;
   const todaySuspect = summary?.today.suspect ?? 0;
-  // Hồ sơ mở: việc phải làm trước khi hết hạn khiếu nại với sàn. Không bó
-  // hôm nay — hồ sơ sống 7 ngày.
-  const openClaims = summary?.today.open_claims ?? 0;
+  // Đếm y như bên đóng hàng: CHỈ lỗi hệ thống của lượt quét hôm nay. Kiện
+  // quét lại đã có thẻ riêng; lưới an toàn là anomaly nghiệp vụ nên chỉ
+  // nhắc ở dòng phụ, không cộng vào con số — xem operations/page.tsx.
+  const todayIssueCount =
+    (summary?.today.no_active_session ?? 0) +
+    (summary?.today.unmapped_scanner ?? 0) +
+    (summary?.today.invalid_code ?? 0);
   const openStationId = stations.some(
     (station) => station.station_id === selectedStationId,
   )
@@ -854,16 +895,18 @@ export default function ReturnsMonitorPage() {
           >
             <StatCard
               label="Cần xử lý"
-              value={String(openClaims)}
+              value={String(todayIssueCount)}
               hint={
-                openClaims > 0
-                  ? `${openClaims} hồ sơ chưa khiếu nại${todaySuspect > 0 ? ` · ${todaySuspect} mã quay lại bàn đóng hàng` : ""}`
+                todayIssueCount > 0
+                  ? `${summary?.today.no_active_session ?? 0} chưa vào ca · ${summary?.today.unmapped_scanner ?? 0} chưa gán bàn${todaySuspect > 0 ? ` · ${todaySuspect} hàng hoàn quét ở bàn đóng hàng` : ""}`
                   : todaySuspect > 0
-                    ? `Không có hồ sơ mở · ${todaySuspect} mã quay lại bàn đóng hàng`
-                    : "Không có hồ sơ cần xử lý"
+                    ? `Không có lỗi hệ thống · ${todaySuspect} hàng hoàn quét ở bàn đóng hàng`
+                    : "Không có lỗi hệ thống"
               }
               icon={AlertTriangle}
-              tone={openClaims > 0 ? "rose" : todaySuspect > 0 ? "amber" : "emerald"}
+              tone={
+                todayIssueCount > 0 ? "rose" : todaySuspect > 0 ? "amber" : "emerald"
+              }
             />
           </button>
           <StatCard
@@ -1032,8 +1075,8 @@ export default function ReturnsMonitorPage() {
               </p>
               <p className="text-xs text-slate-500">
                 {activityTotal > 0
-                  ? `${activityTotal} kiện hoàn và lượt quét thẻ trong ngày, mới nhất ở trên`
-                  : "Tất cả kiện hoàn và lượt quét thẻ trong ngày, mới nhất ở trên"}
+                  ? `${activityTotal} lần quét và vào/ra ca trong ngày, mới nhất ở trên`
+                  : "Tất cả lần quét và vào/ra ca trong ngày, mới nhất ở trên"}
                 {activityError ? ` · ${activityError}` : ""}
               </p>
             </div>

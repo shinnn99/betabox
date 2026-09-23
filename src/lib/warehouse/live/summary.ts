@@ -97,7 +97,7 @@ export async function buildLiveSummary(
     return {
       range: { start: startIso, end: endIso, timezone: "Asia/Ho_Chi_Minh" },
       agents: agentRows,
-      today: await summarizeReturnsToday(admin, orgId, packingToday.data ?? []),
+      today: summarizeReturnsToday(packingToday.data ?? []),
       active_sessions: {
         staff_count: new Set((activeSessions.data ?? []).map((s) => s.staff_id)).size,
         station_count: new Set((activeSessions.data ?? []).map((s) => s.station_id)).size,
@@ -133,12 +133,11 @@ export async function buildLiveSummary(
 /**
  * Thẻ số của Giám sát hoàn hàng.
  *
- * `open_claims` KHÔNG bó theo hôm nay: hồ sơ sống 7 ngày, và việc cần làm
- * là mọi hồ sơ chưa khiếu nại, không chỉ hồ sơ mở ra hôm nay.
+ * Thẻ "Cần xử lý" đếm ĐÚNG như bên đóng hàng: lượt quét hỏng trong ngày
+ * (chủ dự án chốt 23/09/2026). Hồ sơ khiếu nại không còn đếm ở đây — nó là
+ * việc của trang Bằng chứng hoàn hàng, nơi có đồng hồ đếm ngược.
  */
-async function summarizeReturnsToday(
-  admin: Admin,
-  orgId: string,
+function summarizeReturnsToday(
   rows: Array<{ status: string; timing_status: string | null; inspection_result: string | null }>,
 ) {
   let received = 0;
@@ -147,9 +146,27 @@ async function summarizeReturnsToday(
   let duplicated = 0;
   let suspect = 0;
   let open = 0;
+  // Lượt quét hỏng — đếm y như bên đóng hàng để thẻ "Cần xử lý" của hai màn
+  // hình nói cùng một thứ. Chúng KHÔNG phải kiện hoàn nhận được, nên không
+  // cộng vào `received` (trước đây lượt quét chưa vào ca bị tính là kiện).
+  let noActiveSession = 0;
+  let unmappedScanner = 0;
+  let invalidCode = 0;
   for (const r of rows) {
     if (r.status === "duplicated_return") {
       duplicated += 1;
+      continue;
+    }
+    if (r.status === "no_active_session") {
+      noActiveSession += 1;
+      continue;
+    }
+    if (r.status === "unmapped_scanner") {
+      unmappedScanner += 1;
+      continue;
+    }
+    if (r.status === "invalid_code") {
+      invalidCode += 1;
       continue;
     }
     if (r.status === "return_suspect") suspect += 1;
@@ -159,12 +176,6 @@ async function summarizeReturnsToday(
     else if (r.inspection_result) problem += 1;
   }
 
-  const { count: openClaims } = await admin
-    .from("return_claims")
-    .select("id", { count: "exact", head: true })
-    .eq("organization_id", orgId)
-    .eq("status", "open");
-
   return {
     received,
     ok,
@@ -172,6 +183,8 @@ async function summarizeReturnsToday(
     duplicated,
     suspect,
     open,
-    open_claims: openClaims ?? 0,
+    no_active_session: noActiveSession,
+    unmapped_scanner: unmappedScanner,
+    invalid_code: invalidCode,
   };
 }

@@ -146,38 +146,20 @@ const base = {
   close_reason: "result_card",
 };
 
-test("kiện hàng ổn", () => {
-  const r = classifyReturnEvent(base);
-  assert.equal(r.kind, "return_ok");
-  assert.equal(r.category, "ok");
-  assert.match(r.note, /Giao thất bại/);
-});
-
-test("kiện đang mở", () => {
-  const r = classifyReturnEvent({ ...base, timing_status: "open", inspection_result: null, close_reason: null });
-  assert.equal(r.kind, "return_open");
-  assert.match(r.note, /đang mở/);
-});
-
-test("kiện tráo là lỗi, có nói lý do đóng và có hồ sơ", () => {
-  const r = classifyReturnEvent({ ...base, inspection_result: "swapped" });
-  assert.equal(r.kind, "return_problem");
-  assert.equal(r.category, "error");
-  assert.match(r.note, /Tráo/);
-  assert.match(r.note, /thẻ kết quả/);
-  assert.match(r.note, /hồ sơ/);
-});
-
-test("chưa kiểm vì tự dừng là cảnh báo, không phải lỗi hàng", () => {
-  const r = classifyReturnEvent({ ...base, inspection_result: "unchecked", close_reason: "timeout" });
-  assert.equal(r.kind, "return_problem");
-  assert.equal(r.category, "warning");
-  assert.match(r.note, /tự dừng/);
-});
-
-test("quét lại và lưới an toàn có loại riêng", () => {
-  assert.equal(classifyReturnEvent({ ...base, status: "duplicated_return" }).kind, "return_duplicated");
-  assert.equal(classifyReturnEvent({ ...base, status: "return_suspect" }).kind, "return_suspect");
+test("kiện hoàn dùng chung bộ nhãn với đóng hàng, không đặt loại riêng", () => {
+  // Chi tiết từng trạng thái: tests/return-dot7-nhat-ky-bao-cao.test.ts.
+  // Ở đây chỉ canh không ai lặng lẽ thêm lại loại riêng cho hàng hoàn.
+  for (const e of [
+    base,
+    { ...base, timing_status: "open", inspection_result: null, close_reason: null },
+    { ...base, inspection_result: "swapped" },
+    { ...base, status: "duplicated_return" },
+    { ...base, status: "return_suspect" },
+    { ...base, status: "no_active_session" },
+  ]) {
+    const r = classifyReturnEvent(e);
+    assert.ok(r.kind.startsWith("waybill_"), `loại phải là loại của đóng hàng, đang là ${r.kind}`);
+  }
 });
 
 test("thẻ điều khiển đọc ra tên người dùng hiểu", () => {
