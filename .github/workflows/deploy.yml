@@ -41,9 +41,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Cổng chặn TRƯỚC khi chạm production (thêm 23/09/2026).
+  #
+  # Trước đó không có bước kiểm nào giữa `git push main` và `systemctl restart
+  # betabox`: code hỏng merge vào main là đi thẳng lên web khách. `pnpm build`
+  # dưới VPS có bắt lỗi biên dịch, nhưng bắt SAU khi đã pull đè lên repo
+  # production, còn `pnpm test` thì không ai chạy cả — nó là bước chỉ chạy khi
+  # có người nhớ, đúng hình dạng đã làm VPS kẹt 40 ngày và syscheck chết 27
+  # ngày. Job này biến "nhớ thì chạy" thành "không xanh thì không deploy".
+  kiem:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # File .exe trong warehouse-agent/releases nằm ở LFS. Job này chỉ
+          # cần mã nguồn TypeScript nên bỏ qua, khỏi tải hàng trăm MB.
+          lfs: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node 24 là bắt buộc, không phải tuỳ chọn: script test dùng
+          # --experimental-strip-types để chạy thẳng .ts, cờ này chưa có ở
+          # Node 20. Repo không khai engines/.nvmrc nên phải ghim tại đây.
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Kiểm kiểu (tsc)
+        run: npx tsc --noEmit
+
+      - name: Chạy test
+        run: pnpm test
+
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Đỏ ở `kiem` thì dừng tại đây — VPS không bị đụng tới.
+    needs: kiem
 
     steps:
       - name: Nạp SSH key
