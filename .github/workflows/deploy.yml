@@ -74,6 +74,19 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # 5 file test import thẳng `warehouse-agent/src/*.ts`, mà `dotenv` với
+      # `zod` chỉ khai trong warehouse-agent/package.json — không có ở gốc, và
+      # pnpm-workspace.yaml không khai `packages:` nên đây KHÔNG phải monorepo
+      # workspace: `pnpm install` ở gốc không đụng tới thư mục này.
+      #
+      # Máy dev không lộ ra lỗi vì đã có sẵn warehouse-agent/node_modules từ
+      # lần cài tay nào đó — local pass nhờ trạng thái tồn dư, không nhờ thứ gì
+      # được khai báo. Runner sạch thì 5 file kia chết lúc load module.
+      #
+      # `npm ci` chứ không `pnpm`: thư mục này dùng package-lock.json.
+      - name: Cài dependency cho warehouse-agent (test import vào đây)
+        run: npm ci --prefix warehouse-agent
+
       - name: Kiểm kiểu (tsc)
         run: npx tsc --noEmit
 
