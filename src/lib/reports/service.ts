@@ -69,22 +69,27 @@ export interface PerformanceSummary {
   returns: ReturnsSummary;
 }
 
-export interface ReturnDailyPoint {
-  date: string;
-  total: number;
+export interface PerformanceTotals {
+  total_scans: number;
+  valid: number;
+  duplicated: number;
+  errors: number;
+  accuracy: number;
+  avg_duration_seconds: number | null;
+  complaints_per_1000: number;
 }
 
 /**
- * Hoàn là hoàn — không tách theo lý do hoàn (chủ dự án chốt 23/09/2026).
- * Chỉ còn số kiện hoàn, để riêng khỏi sản lượng đóng hàng.
+ * Hàng hoàn dùng ĐÚNG hình dạng của đóng hàng (chủ dự án chốt 23/09/2026:
+ * "bảng của hoàn hàng viết y nguyên các thuộc tính như đóng hàng") — cùng
+ * `totals`, cùng `daily`, cùng `staff`, chỉ khác nguồn dữ liệu. Nhờ vậy một
+ * khung biểu đồ và một khung bảng vẽ được cả hai, không đẻ ra hai bộ số
+ * chực lệch nhau.
  */
 export interface ReturnsSummary {
-  totals: {
-    total: number;
-    /** Quét lại một kiện đã ghi hoàn — không phải kiện mới. */
-    duplicated: number;
-  };
-  daily: ReturnDailyPoint[];
+  totals: PerformanceTotals;
+  daily: DailyPoint[];
+  staff: StaffStat[];
 }
 
 const DAYS_BY_RANGE: Record<RangeKey, number> = {
@@ -165,31 +170,28 @@ async function fetchEvents(
   return out;
 }
 
-type ReturnRow = {
-  business_date: string;
-  status: string;
-};
-
 async function fetchReturnEvents(
   organizationId: string,
   fromDate: string,
   toDate: string,
-): Promise<ReturnRow[]> {
+): Promise<EventRow[]> {
   const admin = createAdminClient();
-  const out: ReturnRow[] = [];
+  const out: EventRow[] = [];
   const pageSize = 1000;
   let offset = 0;
   for (;;) {
     const { data, error } = await admin
       .from("packing_events")
-      .select("business_date, status")
+      .select(
+        "id, business_date, status, timing_status, work_duration_seconds, order_id, staff_id, manual_error",
+      )
       .eq("organization_id", organizationId)
       .eq("event_kind", "return")
       .gte("business_date", fromDate)
       .lte("business_date", toDate)
       .range(offset, offset + pageSize - 1);
     if (error) throw new Error(error.message);
-    const rows = (data ?? []) as ReturnRow[];
+    const rows = (data ?? []) as EventRow[];
     out.push(...rows);
     if (rows.length < pageSize) break;
     offset += pageSize;
@@ -197,35 +199,50 @@ async function fetchReturnEvents(
   return out;
 }
 
+/**
+ * Lượt quét của luồng hoàn nói lại bằng đúng từ vựng của đóng hàng, để
+ * dùng chung `aggregateDaily` / `computeTotals` / `aggregateStaff`.
+ *
+ * `return_suspect` (lưới an toàn) LÀ một kiện hoàn thật — mã đã gửi đi bị
+ * quét lại ở bàn đóng hàng — nên tính như kiện hợp lệ. Lượt quét hỏng thì
+ * bỏ hẳn: chưa vào ca / máy quét chưa gán / mã sai không phải kiện nào cả.
+ */
+function normalizeReturnRows(rows: EventRow[]): EventRow[] {
+  const out: EventRow[] = [];
+  for (const r of rows) {
+    if (
+      r.status === "no_active_session" ||
+      r.status === "unmapped_scanner" ||
+      r.status === "invalid_code"
+    ) {
+      continue;
+    }
+    const status =
+      r.status === "duplicated_return"
+        ? "duplicated"
+        : r.status === "return_suspect"
+          ? "valid"
+          : r.status;
+    out.push({ ...r, status });
+  }
+  return out;
+}
+
 export function aggregateReturns(
-  rows: ReturnRow[],
+  rows: EventRow[],
   fromDate: string,
   toDate: string,
+  clipEventIds: Set<string>,
+  staffProfiles: Map<string, { full_name: string; email: string | null }>,
+  rangeDays: number,
 ): ReturnsSummary {
-  const byDate = new Map<string, ReturnDailyPoint>();
-  const start = new Date(`${fromDate}T00:00:00Z`);
-  const end = new Date(`${toDate}T00:00:00Z`);
-  for (let d = new Date(start); d.getTime() <= end.getTime(); d.setUTCDate(d.getUTCDate() + 1)) {
-    const date = toIsoDate(d);
-    byDate.set(date, { date, total: 0 });
-  }
-
-  const totals = { total: 0, duplicated: 0 };
-  for (const r of rows) {
-    // Lượt quét khi chưa mở ca không phải kiện hoàn — không đếm.
-    if (r.status === "no_active_session" || r.status === "unmapped_scanner" || r.status === "invalid_code") {
-      continue;
-    }
-    if (r.status === "duplicated_return") {
-      totals.duplicated += 1;
-      continue;
-    }
-    totals.total += 1;
-    const day = byDate.get(r.business_date);
-    if (day) day.total += 1;
-  }
-
-  return { totals, daily: [...byDate.values()] };
+  const normalized = normalizeReturnRows(rows);
+  const daily = aggregateDaily(normalized, fromDate, toDate);
+  return {
+    totals: computeTotals(daily),
+    daily,
+    staff: aggregateStaff(normalized, clipEventIds, staffProfiles, rangeDays),
+  };
 }
 
 function aggregateDaily(
@@ -453,7 +470,13 @@ export async function getPerformanceReport(
     fetchReturnEvents(organizationId, fromIso, toIso),
   ]);
 
-  const staffIds = [...new Set(currentRows.map((r) => r.staff_id).filter((v): v is string => !!v))];
+  const staffIds = [
+    ...new Set(
+      [...currentRows, ...returnRows]
+        .map((r) => r.staff_id)
+        .filter((v): v is string => !!v),
+    ),
+  ];
   const staffProfiles = await fetchStaffProfiles(organizationId, staffIds);
 
   const daily = aggregateDaily(currentRows, fromIso, toIso);
@@ -479,6 +502,6 @@ export async function getPerformanceReport(
     },
     daily,
     staff,
-    returns: aggregateReturns(returnRows, fromIso, toIso),
+    returns: aggregateReturns(returnRows, fromIso, toIso, clipEventIds, staffProfiles, days),
   };
 }

@@ -92,24 +92,64 @@ test("migration: kiểm ca TRƯỚC lưới an toàn nên không có ca thì kh�
 // 3. Báo cáo hiệu suất có phần hàng hoàn, tính riêng
 // ---------------------------------------------------------------------------
 
-test("báo cáo đếm số kiện hoàn, bỏ lượt chưa mở ca", () => {
+test("báo cáo hoàn hàng viết y nguyên thuộc tính của đóng hàng", () => {
+  const row = (id: string, business_date: string, status: string, staff_id: string | null, dur: number | null) => ({
+    id,
+    business_date,
+    status,
+    timing_status: dur === null ? null : "finalized_by_next_scan",
+    work_duration_seconds: dur,
+    order_id: null,
+    staff_id,
+    manual_error: false,
+  });
   const rows = [
-    { business_date: "2026-09-22", status: "valid", return_kind: "rts", inspection_result: "ok" },
-    { business_date: "2026-09-22", status: "valid", return_kind: "customer_return", inspection_result: "swapped" },
-    { business_date: "2026-09-23", status: "return_suspect", return_kind: "suspect", inspection_result: "unchecked" },
-    { business_date: "2026-09-23", status: "duplicated_return", return_kind: "rts", inspection_result: null },
-    { business_date: "2026-09-23", status: "no_active_session", return_kind: null, inspection_result: null },
+    row("a", "2026-09-22", "valid", "nv1", 60),
+    row("b", "2026-09-22", "valid", "nv1", 120),
+    // Lưới an toàn LÀ kiện hoàn thật — tính như kiện hợp lệ.
+    row("c", "2026-09-23", "return_suspect", "nv2", null),
+    // Quét lại: không phải kiện mới.
+    row("d", "2026-09-23", "duplicated_return", "nv1", null),
+    // Lượt quét hỏng: không phải kiện nào cả.
+    row("e", "2026-09-23", "no_active_session", null, null),
   ];
-  const out = aggregateReturns(rows, "2026-09-22", "2026-09-23");
-  // Hoàn là hoàn: chỉ đếm số kiện, không tách theo lý do hoàn.
-  assert.deepEqual(out.totals, { total: 3, duplicated: 1 });
+  const profiles = new Map([
+    ["nv1", { full_name: "Nguyễn Văn A", email: null }],
+    ["nv2", { full_name: "Trần Thị B", email: null }],
+  ]);
+  const out = aggregateReturns(rows, "2026-09-22", "2026-09-23", new Set(["a"]), profiles, 2);
+
+  assert.equal(out.totals.total_scans, 4, "3 kiện + 1 lượt quét lại, bỏ lượt chưa vào ca");
+  assert.equal(out.totals.valid, 3);
+  assert.equal(out.totals.duplicated, 1);
+  assert.equal(out.totals.avg_duration_seconds, 90, "thời gian trung bình như bên đóng hàng");
   assert.deepEqual(
-    out.daily.map((d) => [d.date, d.total]),
+    out.daily.map((d) => [d.business_date, d.total]),
     [
       ["2026-09-22", 2],
-      ["2026-09-23", 1],
+      ["2026-09-23", 2],
     ],
   );
+
+  // Bảng theo nhân sự: ĐỦ các cột của đóng hàng, không thiếu thuộc tính nào.
+  const nv1 = out.staff.find((s) => s.staff_id === "nv1");
+  assert.ok(nv1);
+  assert.deepEqual(Object.keys(nv1).sort(), [
+    "active_days",
+    "avg_duration_seconds",
+    "avg_videos_per_day",
+    "duplicated_orders",
+    "email",
+    "full_name",
+    "manual_error_orders",
+    "staff_id",
+    "valid_orders",
+    "video_count",
+  ]);
+  assert.equal(nv1.valid_orders, 2);
+  assert.equal(nv1.duplicated_orders, 1);
+  assert.equal(nv1.video_count, 1);
+  assert.equal(out.staff.find((s) => s.staff_id === "nv2")?.valid_orders, 1);
 });
 
 test("số kiện hoàn KHÔNG trộn vào sản lượng đóng hàng", () => {
@@ -117,7 +157,15 @@ test("số kiện hoàn KHÔNG trộn vào sản lượng đóng hàng", () => {
   assert.ok(svc.includes('.eq("event_kind", "outbound")'), "sản lượng vẫn chỉ đếm đơn đi");
   assert.ok(svc.includes('.eq("event_kind", "return")'), "có truy vấn riêng cho kiện hoàn");
   const page = readFileSync("src/app/dashboard/reports/page.tsx", "utf8");
-  assert.ok(page.includes("<ReturnsReportCard"), "trang báo cáo có khung Hàng hoàn");
+  assert.ok(page.includes("Sản lượng hoàn hàng theo ngày"), "có biểu đồ riêng cho đơn hoàn");
+  assert.ok(page.includes('title="Báo cáo đóng hàng theo nhân sự"'));
+  assert.ok(page.includes('title="Báo cáo hoàn hàng theo nhân sự"'));
+  assert.ok(page.includes("Tổng đơn hoàn"), "thẻ số có tổng đơn hoàn");
+  assert.ok(page.includes("Thời gian đóng hàng TB"), "đổi tên thời gian xử lý");
+  assert.ok(!page.includes("ReturnsReportCard"), "bỏ khung Hàng hoàn cũ");
+  // MỘT khung bảng cho cả hai luồng thì không bao giờ lệch cột.
+  assert.equal(page.split("function StaffReportTable(").length - 1, 1);
+  assert.equal(page.split("<StaffReportTable").length - 1, 2);
 });
 
 // ---------------------------------------------------------------------------

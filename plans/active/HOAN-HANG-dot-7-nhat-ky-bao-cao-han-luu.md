@@ -66,7 +66,14 @@ ngược đã có ở trang Bằng chứng hoàn hàng. Sửa cho cùng một vi
 bộ chữ (`describeScanIssue`), nhưng NGUỒN DỮ LIỆU VẪN RIÊNG: mỗi màn hình
 chỉ đọc lượt quét của `event_kind` mình.
 
-## 7. Ghi chép
+## 7. Báo cáo hiệu suất đầy đủ cho hoàn hàng (bổ sung 23/09/2026)
+
+Tổng đơn hoàn ở thẻ số, một biểu đồ riêng, và bảng theo nhân sự viết y
+nguyên các thuộc tính của bảng đóng hàng. Cách làm: chuẩn hoá lượt quét
+hoàn về từ vựng đóng hàng rồi dùng lại chính các hàm tổng hợp của đóng
+hàng — một phép đếm, hai luồng.
+
+## 8. Ghi chép
 
 `change.md` và `changelog/2026-09-23.md`.
 

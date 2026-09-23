@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Download,
   PackageCheck,
+  PackageX,
   Clock,
   AlertTriangle,
   Target,
@@ -76,14 +77,19 @@ interface PerformanceSummary {
   returns: ReturnsSummary;
 }
 
-interface ReturnDailyPoint {
-  date: string;
-  total: number;
-}
-
+/** Hàng hoàn viết y nguyên các thuộc tính của đóng hàng — chốt 23/09/2026. */
 interface ReturnsSummary {
-  totals: { total: number; duplicated: number };
-  daily: ReturnDailyPoint[];
+  totals: {
+    total_scans: number;
+    valid: number;
+    duplicated: number;
+    errors: number;
+    accuracy: number;
+    avg_duration_seconds: number | null;
+    complaints_per_1000: number;
+  };
+  daily: DailyPoint[];
+  staff: StaffStat[];
 }
 
 const RANGE_LABEL: Record<RangeKey, string> = {
@@ -192,6 +198,9 @@ export default function ReportsPage() {
 
   const daily = useMemo(() => data?.daily ?? [], [data]);
   const staff = useMemo(() => data?.staff ?? [], [data]);
+  const returnsDaily = useMemo(() => data?.returns?.daily ?? [], [data]);
+  const returnsStaff = useMemo(() => data?.returns?.staff ?? [], [data]);
+  const returnsTotals = data?.returns?.totals;
 
   const totals = data?.totals;
   const previous = data?.previous_totals;
@@ -261,7 +270,7 @@ export default function ReportsPage() {
           </button>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           <StatCard
             label={`Tổng đơn (${rangeLabel})`}
             value={totals ? totals.total_scans.toLocaleString("vi-VN") : "—"}
@@ -270,12 +279,23 @@ export default function ReportsPage() {
             delta={deltaTotal}
           />
           <StatCard
-            label="Thời gian TB"
+            label={`Tổng đơn hoàn (${rangeLabel})`}
+            value={returnsTotals ? returnsTotals.total_scans.toLocaleString("vi-VN") : "—"}
+            icon={PackageX}
+            tone="amber"
+            hint={
+              returnsTotals
+                ? `${returnsTotals.duplicated.toLocaleString("vi-VN")} lượt quét lại`
+                : undefined
+            }
+          />
+          <StatCard
+            label="Thời gian đóng hàng TB"
             value={formatDuration(totals?.avg_duration_seconds ?? null)}
             icon={Clock}
             tone="blue"
             delta={deltaAvg !== undefined ? -deltaAvg : undefined}
-            hint="thời gian xử lý/đơn"
+            hint="thời gian đóng hàng/đơn"
           />
           <StatCard
             label="Tỷ lệ chuẩn xác"
@@ -319,14 +339,66 @@ export default function ReportsPage() {
           )}
         </div>
 
-        <ReturnsReportCard summary={data?.returns ?? null} loading={loading} />
+        <div className="bg-white rounded-2xl border border-slate-100 p-4 lg:p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <p className="text-sm font-semibold text-slate-800">
+                Sản lượng hoàn hàng theo ngày
+              </p>
+              <p className="text-xs text-slate-500">
+                Đếm riêng, không cộng vào sản lượng đóng hàng
+              </p>
+            </div>
+          </div>
+          {returnsDaily.length === 0 ? (
+            <div className="h-56 flex items-center justify-center text-sm text-slate-400">
+              {loading ? "Đang tải dữ liệu…" : "Chưa có kiện hoàn trong khoảng này"}
+            </div>
+          ) : (
+            <DailyLineChart daily={returnsDaily} totalDays={chartDays} />
+          )}
+        </div>
 
+        <StaffReportTable
+          title="Báo cáo đóng hàng theo nhân sự"
+          subtitle="Thống kê thao tác đóng hàng của từng thành viên trong khoảng đang xem"
+          staff={staff}
+          loading={loading}
+        />
+
+        <StaffReportTable
+          title="Báo cáo hoàn hàng theo nhân sự"
+          subtitle="Thống kê thao tác nhận hoàn của từng thành viên trong khoảng đang xem"
+          staff={returnsStaff}
+          loading={loading}
+        />
+      </div>
+    </DashboardLayout>
+  );
+}
+
+/**
+ * Bảng theo nhân sự — MỘT khung cho cả hai luồng.
+ *
+ * Chủ dự án chốt 23/09/2026: "bảng của hoàn hàng viết y nguyên các thuộc
+ * tính như đóng hàng". Một component thì không bao giờ lệch cột.
+ */
+function StaffReportTable({
+  title,
+  subtitle,
+  staff,
+  loading,
+}: {
+  title: string;
+  subtitle: string;
+  staff: StaffStat[];
+  loading: boolean;
+}) {
+  return (
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
           <div className="p-4 lg:p-5 border-b border-slate-100">
-            <p className="text-sm font-semibold text-slate-800">Báo cáo theo nhân sự</p>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Thống kê thao tác đóng hàng của từng thành viên trong khoảng đang xem
-            </p>
+            <p className="text-sm font-semibold text-slate-800">{title}</p>
+            <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -408,8 +480,6 @@ export default function ReportsPage() {
             </table>
           </div>
         </div>
-      </div>
-    </DashboardLayout>
   );
 }
 
@@ -713,69 +783,6 @@ function MonthCalendar({
         >
           Hôm nay
         </button>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Hàng hoàn để RIÊNG một khung, không trộn vào sản lượng đóng hàng: kiện hoàn
- * không phải đơn đóng, cộng chung là sai cả số đơn lẫn tỉ lệ chính xác.
- * Chủ dự án yêu cầu 23/09/2026.
- */
-function ReturnsReportCard({
-  summary,
-  loading,
-}: {
-  summary: ReturnsSummary | null;
-  loading: boolean;
-}) {
-  const t = summary?.totals;
-  const days = (summary?.daily ?? []).filter((d) => d.total > 0);
-  const tiles: Array<{ label: string; value: number; tone: string; hint: string }> = [
-    { label: "Kiện hoàn", value: t?.total ?? 0, tone: "text-slate-800", hint: "Tổng kiện nhận hoàn trong khoảng đang xem" },
-    { label: "Quét lại", value: t?.duplicated ?? 0, tone: "text-amber-700", hint: "Quét lại kiện đã ghi hoàn — không tính là kiện mới" },
-  ];
-  return (
-    <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-      <div className="p-4 lg:p-5 border-b border-slate-100">
-        <p className="text-sm font-semibold text-slate-800">Hàng hoàn</p>
-        <p className="text-xs text-slate-500 mt-0.5">
-          Đếm riêng, không tính vào sản lượng đóng hàng và không vào số đơn của nhân sự
-        </p>
-      </div>
-      <div className="grid grid-cols-2 gap-px bg-slate-100">
-        {tiles.map((tile) => (
-          <div key={tile.label} className="bg-white p-4" title={tile.hint}>
-            <p className="text-[11px] uppercase tracking-wider text-slate-500">{tile.label}</p>
-            <p className={`text-2xl font-bold ${tile.tone}`}>{loading && !summary ? "—" : tile.value}</p>
-          </div>
-        ))}
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50/60">
-            <tr className="text-left text-[11px] tracking-wider text-slate-500">
-              <th className="px-4 py-3 font-semibold">Ngày</th>
-              <th className="px-4 py-3 font-semibold text-right">Kiện hoàn</th>
-            </tr>
-          </thead>
-          <tbody>
-            {days.length === 0 && (
-              <tr>
-                <td colSpan={2} className="px-4 py-8 text-center text-sm text-slate-400">
-                  {loading ? "Đang tải dữ liệu…" : "Không có kiện hoàn nào trong khoảng này"}
-                </td>
-              </tr>
-            )}
-            {days.map((d) => (
-              <tr key={d.date} className="border-t border-slate-100">
-                <td className="px-4 py-2.5 text-slate-700">{d.date}</td>
-                <td className="px-4 py-2.5 text-right font-semibold text-slate-800">{d.total}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </div>
     </div>
   );
