@@ -130,7 +130,7 @@ export async function POST(req: Request, ctx: RouteContext) {
   const { data: pe } = await admin
     .from("packing_events")
     .select(
-      "id, order_id, organization_id, proof_camera_id, timing_status, work_started_at, scanned_at",
+      "id, order_id, organization_id, proof_camera_id, timing_status, status, work_started_at, scanned_at",
     )
     .eq("id", packingEventId)
     .maybeSingle();
@@ -272,7 +272,7 @@ export async function POST(req: Request, ctx: RouteContext) {
   // Vị trí chốt: SAU nhánh ready (clip đã cắt xong vẫn xem được — không
   // cắt mất tính khả dụng), TRƯỚC mọi nhánh enqueue. Đơn đóng xong thì
   // tick kế tự chuyển sang cắt với biên đúng, user không phải bấm gì.
-  if (!evaluateProofClipGate(pe.timing_status).allowed) {
+  if (!evaluateProofClipGate(pe.timing_status, pe.status).allowed) {
     const openedAtIso = pe.work_started_at ?? pe.scanned_at;
     const openedMs = openedAtIso ? new Date(openedAtIso).getTime() : NaN;
     const openSeconds = Number.isFinite(openedMs)

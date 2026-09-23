@@ -987,3 +987,20 @@ docs([Module]):     Cập nhật tài liệu
 - **Kết quả kiểm tra:** request từ 192.168.1.42 tải được script (200), HMR không bị chặn; request từ origin lạ vẫn bị chặn (403).
 - **Còn lưu ý:** chứng chỉ `certs/localhost.pem` chỉ cấp cho `localhost`, nên mở qua IP thì trình duyệt cảnh báo chứng chỉ; bấm tiếp tục là vào được.
 - **Trạng thái:** Hoàn tất.
+
+### [HOAN-DOT-7] - Nhật ký nói cùng một thứ tiếng, báo cáo có đơn hoàn, chưa mở ca thì không quay, hạn lưu riêng
+
+- **Mục tiêu:** Chủ dự án chốt 23/09/2026, năm việc. Kế hoạch: `plans/active/HOAN-HANG-dot-7-nhat-ky-bao-cao-han-luu.md`.
+- **1. Cột Loại và Ghi chú của hàng hoàn ghi y như đóng hàng:**
+  - `src/lib/warehouse/live/returns.ts`: `classifyReturnEvent` trả đúng các loại của đóng hàng (`waybill_valid`, `waybill_duplicated`, `waybill_no_session`, `waybill_return_suspect`). Bỏ các loại tự chế (Đang mở / Hàng ổn / Có vấn đề / Quét lại / Lưới an toàn).
+  - Ghi chú của hàng hoàn LUÔN rỗng: cột Loại đã nói đủ, cột Ghi chú chỉ còn cảnh báo video nặng như trang đóng hàng. Không ghi lý do hoàn ("hoàn là hoàn thôi").
+  - `src/app/dashboard/(return-module)/returns/page.tsx`: chép đúng bảng nhãn của trang Giám sát đóng hàng (Hợp lệ, Trùng, Chưa vào ca, Máy quét chưa gán, Mã sai, Hàng hoàn, QR sai).
+  - `src/lib/warehouse/live/activity.ts`: bỏ 5 loại riêng khỏi `ActivityKind`.
+- **2. Quét khi chưa mở ca thì không quay, không có giờ:**
+  - `supabase/migrations/20260923090000_no_session_no_video.sql` (mới, CHƯA ÁP): trong `process_waybill_scan`, kiểm tra ca TRƯỚC lưới an toàn. Trước đây lưới an toàn ghi ngay kiện hoàn `return_suspect` kể cả khi không có ca, nên lượt quét có giờ bắt đầu = giờ kết thúc = giờ quét và vẫn hiện nút "Tạo clip", trong khi không có đoạn video nào.
+  - `src/lib/order-proof/proof-clip-gate.ts` + hai route `watch`, `watch/retry`: chặn cắt clip cho lượt quét `no_active_session`.
+- **3. Báo cáo hiệu suất có phần hàng hoàn:** `src/lib/reports/service.ts` thêm `aggregateReturns` (đếm riêng, không trộn vào sản lượng đóng hàng, không vào số đơn nhân sự); `src/app/dashboard/reports/page.tsx` thêm khung "Hàng hoàn" gồm số kiện hoàn, số lượt quét lại và bảng theo ngày.
+- **4. Cấu hình kho có ô số ngày giữ video hàng hoàn:** `supabase/migrations/20260923100000_org_return_retention_days.sql` (mới, CHƯA ÁP) thêm cột `organizations.return_retention_days` (7–365, NULL = 7 ngày); `src/app/api/organization/route.ts` cho đọc/ghi; `src/app/api/agent/retention-plan/route.ts` ưu tiên cấu hình cấp tổ chức rồi mới tới config kho; trang Cấu hình kho thêm ô nhập ngay dưới ô cũ.
+- **Files test:** `tests/return-dot7-nhat-ky-bao-cao.test.ts` (mới, 8 bài); cập nhật `tests/return-pages.test.ts` và `tests/counting-excludes-returns.test.ts` theo luật mới.
+- **Kết quả kiểm tra:** `pnpm test` 542/542, `tsc` đạt. Dry-run hai migration trên database cục bộ rồi huỷ: hàm mới kiểm ca trước lưới an toàn, cột và ràng buộc mới tạo đúng.
+- **Trạng thái:** Chờ chủ dự án áp 2 migration.

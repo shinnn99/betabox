@@ -73,6 +73,17 @@ interface PerformanceSummary {
   };
   daily: DailyPoint[];
   staff: StaffStat[];
+  returns: ReturnsSummary;
+}
+
+interface ReturnDailyPoint {
+  date: string;
+  total: number;
+}
+
+interface ReturnsSummary {
+  totals: { total: number; duplicated: number };
+  daily: ReturnDailyPoint[];
 }
 
 const RANGE_LABEL: Record<RangeKey, string> = {
@@ -307,6 +318,8 @@ export default function ReportsPage() {
             <DailyLineChart daily={daily} totalDays={chartDays} />
           )}
         </div>
+
+        <ReturnsReportCard summary={data?.returns ?? null} loading={loading} />
 
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
           <div className="p-4 lg:p-5 border-b border-slate-100">
@@ -700,6 +713,69 @@ function MonthCalendar({
         >
           Hôm nay
         </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Hàng hoàn để RIÊNG một khung, không trộn vào sản lượng đóng hàng: kiện hoàn
+ * không phải đơn đóng, cộng chung là sai cả số đơn lẫn tỉ lệ chính xác.
+ * Chủ dự án yêu cầu 23/09/2026.
+ */
+function ReturnsReportCard({
+  summary,
+  loading,
+}: {
+  summary: ReturnsSummary | null;
+  loading: boolean;
+}) {
+  const t = summary?.totals;
+  const days = (summary?.daily ?? []).filter((d) => d.total > 0);
+  const tiles: Array<{ label: string; value: number; tone: string; hint: string }> = [
+    { label: "Kiện hoàn", value: t?.total ?? 0, tone: "text-slate-800", hint: "Tổng kiện nhận hoàn trong khoảng đang xem" },
+    { label: "Quét lại", value: t?.duplicated ?? 0, tone: "text-amber-700", hint: "Quét lại kiện đã ghi hoàn — không tính là kiện mới" },
+  ];
+  return (
+    <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+      <div className="p-4 lg:p-5 border-b border-slate-100">
+        <p className="text-sm font-semibold text-slate-800">Hàng hoàn</p>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Đếm riêng, không tính vào sản lượng đóng hàng và không vào số đơn của nhân sự
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-px bg-slate-100">
+        {tiles.map((tile) => (
+          <div key={tile.label} className="bg-white p-4" title={tile.hint}>
+            <p className="text-[11px] uppercase tracking-wider text-slate-500">{tile.label}</p>
+            <p className={`text-2xl font-bold ${tile.tone}`}>{loading && !summary ? "—" : tile.value}</p>
+          </div>
+        ))}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50/60">
+            <tr className="text-left text-[11px] tracking-wider text-slate-500">
+              <th className="px-4 py-3 font-semibold">Ngày</th>
+              <th className="px-4 py-3 font-semibold text-right">Kiện hoàn</th>
+            </tr>
+          </thead>
+          <tbody>
+            {days.length === 0 && (
+              <tr>
+                <td colSpan={2} className="px-4 py-8 text-center text-sm text-slate-400">
+                  {loading ? "Đang tải dữ liệu…" : "Không có kiện hoàn nào trong khoảng này"}
+                </td>
+              </tr>
+            )}
+            {days.map((d) => (
+              <tr key={d.date} className="border-t border-slate-100">
+                <td className="px-4 py-2.5 text-slate-700">{d.date}</td>
+                <td className="px-4 py-2.5 text-right font-semibold text-slate-800">{d.total}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

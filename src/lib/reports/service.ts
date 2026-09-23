@@ -61,6 +61,30 @@ export interface PerformanceSummary {
   };
   daily: DailyPoint[];
   staff: StaffStat[];
+  /**
+   * Hàng hoàn — để RIÊNG, không cộng vào số đơn đi (chủ dự án chốt
+   * 23/09/2026). Kiện hoàn không phải đơn đóng: gộp vào là sai cả số đơn
+   * lẫn tỉ lệ chính xác của nhân viên.
+   */
+  returns: ReturnsSummary;
+}
+
+export interface ReturnDailyPoint {
+  date: string;
+  total: number;
+}
+
+/**
+ * Hoàn là hoàn — không tách theo lý do hoàn (chủ dự án chốt 23/09/2026).
+ * Chỉ còn số kiện hoàn, để riêng khỏi sản lượng đóng hàng.
+ */
+export interface ReturnsSummary {
+  totals: {
+    total: number;
+    /** Quét lại một kiện đã ghi hoàn — không phải kiện mới. */
+    duplicated: number;
+  };
+  daily: ReturnDailyPoint[];
 }
 
 const DAYS_BY_RANGE: Record<RangeKey, number> = {
@@ -139,6 +163,69 @@ async function fetchEvents(
     offset += pageSize;
   }
   return out;
+}
+
+type ReturnRow = {
+  business_date: string;
+  status: string;
+};
+
+async function fetchReturnEvents(
+  organizationId: string,
+  fromDate: string,
+  toDate: string,
+): Promise<ReturnRow[]> {
+  const admin = createAdminClient();
+  const out: ReturnRow[] = [];
+  const pageSize = 1000;
+  let offset = 0;
+  for (;;) {
+    const { data, error } = await admin
+      .from("packing_events")
+      .select("business_date, status")
+      .eq("organization_id", organizationId)
+      .eq("event_kind", "return")
+      .gte("business_date", fromDate)
+      .lte("business_date", toDate)
+      .range(offset, offset + pageSize - 1);
+    if (error) throw new Error(error.message);
+    const rows = (data ?? []) as ReturnRow[];
+    out.push(...rows);
+    if (rows.length < pageSize) break;
+    offset += pageSize;
+  }
+  return out;
+}
+
+export function aggregateReturns(
+  rows: ReturnRow[],
+  fromDate: string,
+  toDate: string,
+): ReturnsSummary {
+  const byDate = new Map<string, ReturnDailyPoint>();
+  const start = new Date(`${fromDate}T00:00:00Z`);
+  const end = new Date(`${toDate}T00:00:00Z`);
+  for (let d = new Date(start); d.getTime() <= end.getTime(); d.setUTCDate(d.getUTCDate() + 1)) {
+    const date = toIsoDate(d);
+    byDate.set(date, { date, total: 0 });
+  }
+
+  const totals = { total: 0, duplicated: 0 };
+  for (const r of rows) {
+    // Lượt quét khi chưa mở ca không phải kiện hoàn — không đếm.
+    if (r.status === "no_active_session" || r.status === "unmapped_scanner" || r.status === "invalid_code") {
+      continue;
+    }
+    if (r.status === "duplicated_return") {
+      totals.duplicated += 1;
+      continue;
+    }
+    totals.total += 1;
+    const day = byDate.get(r.business_date);
+    if (day) day.total += 1;
+  }
+
+  return { totals, daily: [...byDate.values()] };
 }
 
 function aggregateDaily(
@@ -359,10 +446,11 @@ export async function getPerformanceReport(
   prevToIsoDate.setUTCDate(from.getUTCDate() - 1);
   const prevToIso = toIsoDate(prevToIsoDate);
 
-  const [currentRows, previousRows, clipEventIds] = await Promise.all([
+  const [currentRows, previousRows, clipEventIds, returnRows] = await Promise.all([
     fetchEvents(organizationId, fromIso, toIso),
     fetchEvents(organizationId, prevFromIso, prevToIso),
     fetchReadyClipEventIds(organizationId, fromIso, toIso),
+    fetchReturnEvents(organizationId, fromIso, toIso),
   ]);
 
   const staffIds = [...new Set(currentRows.map((r) => r.staff_id).filter((v): v is string => !!v))];
@@ -391,5 +479,6 @@ export async function getPerformanceReport(
     },
     daily,
     staff,
+    returns: aggregateReturns(returnRows, fromIso, toIso),
   };
 }

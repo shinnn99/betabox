@@ -28,6 +28,9 @@ export const INSPECTION_LABEL: Record<string, string> = {
   unchecked: "Chưa kiểm",
 };
 
+/** Cùng một câu cho cả hai luồng — xem activity.ts. */
+export const NO_SESSION_NOTE = "Quét khi chưa có người vào ca";
+
 export const RETURN_KIND_LABEL: Record<string, string> = {
   rts: "Giao thất bại",
   customer_return: "Khách trả",
@@ -60,39 +63,24 @@ export interface ReturnEventForActivity {
 export function classifyReturnEvent(e: ReturnEventForActivity): {
   kind: ActivityItem["kind"];
   category: ActivityCategory;
-  note: string;
+  note: string | null;
 } {
+  // Hàng hoàn dùng ĐÚNG bộ chữ của đóng hàng (chủ dự án chốt 23/09/2026):
+  // cùng một việc thì cùng một chữ. Hoàn là hoàn, không ghi vì sao hoàn.
+  //
+  // Ghi chú LUÔN rỗng: cột Loại đã nói đủ (Hợp lệ / Trùng / Chưa mở ca /
+  // Hàng hoàn), nên cột Ghi chú chỉ dành cho cảnh báo video nặng — đúng như
+  // trang Giám sát đóng hàng.
   if (e.status === "duplicated_return") {
-    return {
-      kind: "return_duplicated",
-      category: "warning",
-      note: "Kiện này đã ghi hoàn trước đó — không mở kiện mới",
-    };
+    return { kind: "waybill_duplicated", category: "warning", note: null };
   }
   if (e.status === "return_suspect") {
-    return {
-      kind: "return_suspect",
-      category: "warning",
-      note: "Mã đã gửi đi quét lại ở bàn đóng hàng — không tính đơn",
-    };
+    return { kind: "waybill_return_suspect", category: "warning", note: null };
   }
-  const kindLabel = e.return_kind ? (RETURN_KIND_LABEL[e.return_kind] ?? e.return_kind) : "Kiện hoàn";
-  if (e.timing_status === "open") {
-    return { kind: "return_open", category: "info", note: `${kindLabel} · đang mở kiện` };
+  if (e.status === "no_active_session") {
+    return { kind: "waybill_no_session", category: "error", note: null };
   }
-  if (e.inspection_result === "ok") {
-    return { kind: "return_ok", category: "ok", note: `${kindLabel} · hàng ổn` };
-  }
-  const result = e.inspection_result
-    ? (INSPECTION_LABEL[e.inspection_result] ?? e.inspection_result)
-    : "Chưa kiểm";
-  const reason = e.close_reason ? CLOSE_REASON_LABEL[e.close_reason] ?? e.close_reason : null;
-  return {
-    kind: "return_problem",
-    // Chưa kiểm là thiếu sót thao tác, không phải hàng hỏng: tô cảnh báo.
-    category: e.inspection_result === "unchecked" || !e.inspection_result ? "warning" : "error",
-    note: `${kindLabel} · ${result}${reason ? ` (${reason})` : ""} — có hồ sơ`,
-  };
+  return { kind: "waybill_valid", category: "ok", note: null };
 }
 
 /** Nhãn một thẻ điều khiển cho cột nội dung của nhật ký. */

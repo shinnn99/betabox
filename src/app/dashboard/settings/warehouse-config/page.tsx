@@ -82,6 +82,11 @@ export default function WarehouseConfigPage() {
   const [retentionSaving, setRetentionSaving] = useState(false);
   const [retentionCurrent, setRetentionCurrent] = useState<number | null>(null);
   const [retentionInput, setRetentionInput] = useState("");
+  // Hàng hoàn giữ riêng: đoạn video thuần hàng hoàn thường chỉ cần đủ cho
+  // hạn khiếu nại (7 ngày), giữ bằng đơn đi là phí ổ đĩa máy kho.
+  const [returnRetentionCurrent, setReturnRetentionCurrent] = useState<number | null>(null);
+  const [returnRetentionInput, setReturnRetentionInput] = useState("");
+  const [returnRetentionSaving, setReturnRetentionSaving] = useState(false);
 
   const loadRetention = useCallback(async () => {
     setRetentionLoading(true);
@@ -95,6 +100,9 @@ export default function WarehouseConfigPage() {
       const rd = json.organization?.retention_days ?? null;
       setRetentionCurrent(rd);
       setRetentionInput(rd === null ? "" : String(rd));
+      const rr = json.organization?.return_retention_days ?? null;
+      setReturnRetentionCurrent(rr);
+      setReturnRetentionInput(rr === null ? "" : String(rr));
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
@@ -146,6 +154,51 @@ export default function WarehouseConfigPage() {
       setRetentionSaving(false);
     }
   };
+
+  const handleSaveReturnRetention = async () => {
+    const trimmed = returnRetentionInput.trim();
+    let value: number | null;
+    if (trimmed === "") {
+      value = null;
+    } else {
+      const n = Number(trimmed);
+      if (!Number.isInteger(n) || n < RETENTION_MIN || n > RETENTION_MAX) {
+        toast.error(
+          `Số ngày giữ video hàng hoàn phải trong khoảng ${RETENTION_MIN}-${RETENTION_MAX} (hoặc để trống).`,
+        );
+        return;
+      }
+      value = n;
+    }
+
+    setReturnRetentionSaving(true);
+    try {
+      const res = await apiFetch("/api/organization", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ return_retention_days: value }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        toast.error(json.message ?? json.error ?? "Lưu thất bại.");
+        return;
+      }
+      setReturnRetentionCurrent(value);
+      toast.success(
+        value === null
+          ? "Đã xóa cấu hình riêng cho hàng hoàn — máy kho quay về 7 ngày."
+          : `Đã lưu: video hàng hoàn giữ ${value} ngày. Máy kho nhận danh sách mới trong tối đa 6 giờ.`,
+      );
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setReturnRetentionSaving(false);
+    }
+  };
+
+  const returnRetentionDirty =
+    (returnRetentionInput.trim() === "" ? null : Number(returnRetentionInput.trim())) !==
+    returnRetentionCurrent;
 
   const retentionDirty =
     (retentionInput.trim() === "" ? null : Number(retentionInput.trim())) !==
@@ -316,6 +369,42 @@ export default function WarehouseConfigPage() {
                         Chấp nhận {RETENTION_MIN}-{RETENTION_MAX} ngày. Để trống
                         nếu chưa muốn cấu hình.
                       </p>
+
+                      <div className="mt-5 pt-5 border-t border-slate-100">
+                        <label className="block text-sm font-medium text-slate-700 mb-1">
+                          Số ngày giữ video hàng hoàn
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={RETENTION_MIN}
+                            max={RETENTION_MAX}
+                            step={1}
+                            value={returnRetentionInput}
+                            onChange={(e) => setReturnRetentionInput(e.target.value)}
+                            placeholder="Để trống = 7 ngày"
+                            className="w-32 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-emerald-400"
+                          />
+                          <span className="text-sm text-slate-500">ngày</span>
+                          <button
+                            type="button"
+                            onClick={guard(allowOrg, "đổi số ngày giữ video hàng hoàn", () => void handleSaveReturnRetention())}
+                            disabled={returnRetentionSaving || !returnRetentionDirty}
+                            className={`ml-auto inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed${deniedClass(allowOrg)}`}
+                          >
+                            {returnRetentionSaving ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Save className="h-4 w-4" />
+                            )}
+                            Lưu
+                          </button>
+                        </div>
+                        <p className="mt-2 text-xs text-slate-500">
+                          Chỉ áp cho đoạn video THUẦN hàng hoàn trên ổ đĩa máy kho.
+                          Để trống = 7 ngày. Đoạn có cả đơn đi vẫn giữ theo số ngày ở trên.
+                        </p>
+                      </div>
 
                       {retentionCurrent === null && (
                         <div className="mt-3 flex gap-2 p-3 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-800">

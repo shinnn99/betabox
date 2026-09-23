@@ -1,7 +1,11 @@
 import "server-only";
 import type { createAdminClient } from "@/lib/supabase/admin";
 import { resolveVietnamDayScope } from "@/lib/warehouse/time-range";
-import { classifyReturnEvent, describeControlCard } from "@/lib/warehouse/live/returns";
+import {
+  NO_SESSION_NOTE,
+  classifyReturnEvent,
+  describeControlCard,
+} from "@/lib/warehouse/live/returns";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
@@ -19,12 +23,8 @@ export type ActivityKind =
   | "waybill_invalid"
   | "waybill_return_suspect"
   | "qr_invalid"
-  // Luồng hoàn hàng — xem src/lib/warehouse/live/returns.ts
-  | "return_open"
-  | "return_ok"
-  | "return_problem"
-  | "return_duplicated"
-  | "return_suspect"
+  // Hàng hoàn dùng chung các kind ở trên (chủ dự án chốt 23/09/2026);
+  // riêng thẻ điều khiển chỉ còn trong lịch sử cũ.
   | "control_card";
 
 export type ActivityCategory = "ok" | "warning" | "error" | "info";
@@ -268,10 +268,7 @@ export async function buildLiveActivity(
       workDuration = pe.work_duration_seconds;
       timingStatus = pe.timing_status;
       if (pe.event_kind === "return" && pe.status !== "return_suspect") {
-        // Lượt quét ở bàn đang nhận hoàn. Trước đây rơi vào nhánh 'valid'
-        // bên dưới và hiện "Hợp lệ" như một đơn đi — sai nghĩa và lọt cả
-        // vào tab Hợp lệ. Giờ gắn nhãn kiện hoàn; tab Hợp lệ chỉ khớp
-        // waybill_valid nên không còn lẫn.
+        // Kiện hoàn dùng chung bộ chữ với đơn đi (xem classifyReturnEvent).
         ({ kind, category, note } = classifyReturnEvent(pe));
       } else if (pe.status === "valid") {
         kind = "waybill_valid";
@@ -287,7 +284,7 @@ export async function buildLiveActivity(
       } else if (pe.status === "no_active_session") {
         kind = "waybill_no_session";
         category = "error";
-        note = "Quét khi chưa có người vào ca";
+        note = NO_SESSION_NOTE;
       } else if (pe.status === "unmapped_scanner") {
         kind = "waybill_unmapped";
         category = "error";

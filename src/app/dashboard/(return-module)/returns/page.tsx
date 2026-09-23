@@ -140,12 +140,15 @@ interface StationsResponse {
   stations: StationCard[];
 }
 
+// Cùng bộ với trang Giám sát đóng hàng — chủ dự án chốt 23/09/2026.
 type ActivityKind =
-  | "return_open"
-  | "return_ok"
-  | "return_problem"
-  | "return_duplicated"
-  | "return_suspect"
+  | "waybill_valid"
+  | "waybill_duplicated"
+  | "waybill_no_session"
+  | "waybill_unmapped"
+  | "waybill_invalid"
+  | "waybill_return_suspect"
+  | "qr_invalid"
   | "control_card";
 
 type ActivityCategory = "ok" | "warning" | "error" | "info";
@@ -276,12 +279,16 @@ function formatDuration(seconds: number): string {
   return `${m} phút`;
 }
 
+// Chép đúng bảng nhãn của trang Giám sát đóng hàng — chủ dự án chốt
+// 23/09/2026: cùng một việc thì cùng một chữ.
 const ACTIVITY_KIND_LABEL: Record<ActivityKind, string> = {
-  return_open: "Đang mở",
-  return_ok: "Hàng ổn",
-  return_problem: "Có vấn đề",
-  return_duplicated: "Quét lại",
-  return_suspect: "Lưới an toàn",
+  waybill_valid: "Hợp lệ",
+  waybill_duplicated: "Trùng",
+  waybill_no_session: "Chưa vào ca",
+  waybill_unmapped: "Máy quét chưa gán",
+  waybill_invalid: "Mã sai",
+  waybill_return_suspect: "Hàng hoàn",
+  qr_invalid: "QR sai",
   control_card: "Thẻ",
 };
 
@@ -334,22 +341,17 @@ function describeActivityToast(ev: ActivityItem): {
   const where = ev.station_name ? ` · ${ev.station_name}` : "";
   const who = ev.staff_name ? ` · ${ev.staff_name}` : "";
   switch (ev.kind) {
-    case "return_open":
-      return { variant: "info", message: `Mở kiện hoàn ${ev.waybill_code}${who}${where}` };
-    case "return_ok":
-      return { variant: "success", message: `Kiện hoàn ${ev.waybill_code}: hàng ổn${where}` };
-    case "return_problem":
-      return {
-        variant: "error",
-        message: `Kiện hoàn ${ev.waybill_code} có vấn đề — đã mở hồ sơ${where}`,
-      };
-    case "return_duplicated":
-      return { variant: "info", message: `${ev.waybill_code} đã ghi hoàn trước đó` };
-    case "return_suspect":
+    case "waybill_valid":
+      return { variant: "success", message: `Kiện hoàn ${ev.waybill_code}${who}${where}` };
+    case "waybill_duplicated":
+      return { variant: "info", message: `${ev.waybill_code} đã được quét trước đó` };
+    case "waybill_no_session":
+      return { variant: "error", message: `${ev.waybill_code} quét khi chưa mở ca${where}` };
+    case "waybill_return_suspect":
       // Không phải lỗi: hệ thống đã tự tách khỏi số đơn đóng. Để mức thông tin.
       return {
         variant: "info",
-        message: `${ev.waybill_code} đã gửi đi quay lại bàn đóng hàng${where}`,
+        message: `${ev.waybill_code} đã đóng trước đó — hàng hoàn${where}`,
       };
     case "control_card":
       return { variant: "info", message: `${ev.waybill_code ?? "Thẻ điều khiển"}${where}` };
@@ -490,13 +492,15 @@ function matchActivityTab(
   proofRisk?: ProofRisk,
 ): boolean {
   if (tab === "all") return true;
-  if (tab === "ok") return ev.kind === "return_ok";
-  if (tab === "duplicated") return ev.kind === "return_duplicated";
+  if (tab === "ok") return ev.kind === "waybill_valid";
+  if (tab === "duplicated") return ev.kind === "waybill_duplicated";
   if (tab === "issues")
     return (
-      ev.kind === "return_problem" ||
-      ev.kind === "return_suspect" ||
-      ev.kind === "return_duplicated" ||
+      ev.kind === "waybill_no_session" ||
+      ev.kind === "waybill_invalid" ||
+      ev.kind === "waybill_unmapped" ||
+      ev.kind === "waybill_return_suspect" ||
+      ev.kind === "waybill_duplicated" ||
       // Clip kiện hoàn dài tới 5 phút — vượt trần tải lên thì hồ sơ khiếu
       // nại không có video.
       proofRisk?.proof_size_risk === "over_limit"
