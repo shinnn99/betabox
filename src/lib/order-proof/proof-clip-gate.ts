@@ -23,11 +23,14 @@
 /** Giá trị `packing_events.timing_status` nghĩa là đơn chưa đóng. */
 export const TIMING_STATUS_OPEN = "open";
 
+/** `packing_events.status` của lượt quét khi bàn chưa mở ca. */
+export const NO_SESSION_STATUS = "no_active_session";
+
 export interface ProofClipGateResult {
   /** true = được phép enqueue cut. */
   allowed: boolean;
   /** Mã lỗi máy đọc, chỉ có khi bị chặn. */
-  reason?: "order_still_open";
+  reason?: "order_still_open" | "no_active_session";
   /** Câu người đọc, chỉ có khi bị chặn. */
   message?: string;
 }
@@ -44,7 +47,18 @@ const ALLOWED: ProofClipGateResult = { allowed: true };
  */
 export function evaluateProofClipGate(
   timingStatus: string | null | undefined,
+  scanStatus?: string | null,
 ): ProofClipGateResult {
+  // Chưa mở ca thì camera không ghi, nên không có đoạn video nào để cắt.
+  // Chốt thứ hai sau migration 20260923090000: lượt quét không ca giờ dừng ở
+  // 'no_active_session', nhưng dữ liệu cũ vẫn còn và có thể có đường vào khác.
+  if (scanStatus === NO_SESSION_STATUS) {
+    return {
+      allowed: false,
+      reason: "no_active_session",
+      message: "Lượt quét khi chưa mở ca — không có video để cắt.",
+    };
+  }
   if (timingStatus === TIMING_STATUS_OPEN) {
     return {
       allowed: false,

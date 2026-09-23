@@ -7,6 +7,7 @@ const EDITABLE_FIELDS = [
   "name",
   "logo_url",
   "retention_days",
+  "return_retention_days",
 ] as const;
 
 // Retention hợp lệ: 7-365 ngày. Dưới 7 = mất bằng chứng ngay; trên 365 = ổ đầy
@@ -29,7 +30,7 @@ export async function GET() {
   const admin = createAdminClient();
   const { data, error } = await admin
     .from("organizations")
-    .select("id, name, slug, logo_url, status, retention_days, created_at, updated_at")
+    .select("id, name, slug, logo_url, status, retention_days, return_retention_days, created_at, updated_at")
     .eq("id", ctx.organizationId)
     .single();
 
@@ -64,8 +65,9 @@ export async function PATCH(req: Request) {
     );
   }
 
-  if ("retention_days" in update) {
-    const v = update.retention_days;
+  for (const field of ["retention_days", "return_retention_days"] as const) {
+    if (!(field in update)) continue;
+    const v = update[field];
     if (v === null) {
       // Cho phép null để clear cấu hình. Resolver sẽ trả nhãn trung tính,
       // cleanup script sẽ fail-loud → Hạnh biết chưa cấu hình.
@@ -78,7 +80,7 @@ export async function PATCH(req: Request) {
       return NextResponse.json(
         {
           error: "validation",
-          message: `retention_days phải là số nguyên trong khoảng ${RETENTION_MIN_DAYS}-${RETENTION_MAX_DAYS} ngày (hoặc null để bỏ cấu hình).`,
+          message: `${field} phải là số nguyên trong khoảng ${RETENTION_MIN_DAYS}-${RETENTION_MAX_DAYS} ngày (hoặc null để bỏ cấu hình).`,
         },
         { status: 400 }
       );
@@ -96,7 +98,7 @@ export async function PATCH(req: Request) {
     .from("organizations")
     .update(update)
     .eq("id", ctx.organizationId)
-    .select("id, name, slug, logo_url, status, retention_days, created_at, updated_at")
+    .select("id, name, slug, logo_url, status, retention_days, return_retention_days, created_at, updated_at")
     .single();
 
   if (error) {

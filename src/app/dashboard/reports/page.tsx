@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Download,
   PackageCheck,
+  PackageX,
   Clock,
   AlertTriangle,
   Target,
@@ -69,6 +70,22 @@ interface PerformanceSummary {
     duplicated: number;
     avg_duration_seconds: number | null;
     accuracy: number;
+    complaints_per_1000: number;
+  };
+  daily: DailyPoint[];
+  staff: StaffStat[];
+  returns: ReturnsSummary;
+}
+
+/** Hàng hoàn viết y nguyên các thuộc tính của đóng hàng — chốt 23/09/2026. */
+interface ReturnsSummary {
+  totals: {
+    total_scans: number;
+    valid: number;
+    duplicated: number;
+    errors: number;
+    accuracy: number;
+    avg_duration_seconds: number | null;
     complaints_per_1000: number;
   };
   daily: DailyPoint[];
@@ -181,6 +198,9 @@ export default function ReportsPage() {
 
   const daily = useMemo(() => data?.daily ?? [], [data]);
   const staff = useMemo(() => data?.staff ?? [], [data]);
+  const returnsDaily = useMemo(() => data?.returns?.daily ?? [], [data]);
+  const returnsStaff = useMemo(() => data?.returns?.staff ?? [], [data]);
+  const returnsTotals = data?.returns?.totals;
 
   const totals = data?.totals;
   const previous = data?.previous_totals;
@@ -250,7 +270,7 @@ export default function ReportsPage() {
           </button>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           <StatCard
             label={`Tổng đơn (${rangeLabel})`}
             value={totals ? totals.total_scans.toLocaleString("vi-VN") : "—"}
@@ -259,12 +279,23 @@ export default function ReportsPage() {
             delta={deltaTotal}
           />
           <StatCard
-            label="Thời gian TB"
+            label={`Tổng đơn hoàn (${rangeLabel})`}
+            value={returnsTotals ? returnsTotals.total_scans.toLocaleString("vi-VN") : "—"}
+            icon={PackageX}
+            tone="amber"
+            hint={
+              returnsTotals
+                ? `${returnsTotals.duplicated.toLocaleString("vi-VN")} lượt quét lại`
+                : undefined
+            }
+          />
+          <StatCard
+            label="Thời gian đóng hàng TB"
             value={formatDuration(totals?.avg_duration_seconds ?? null)}
             icon={Clock}
             tone="blue"
             delta={deltaAvg !== undefined ? -deltaAvg : undefined}
-            hint="thời gian xử lý/đơn"
+            hint="thời gian đóng hàng/đơn"
           />
           <StatCard
             label="Tỷ lệ chuẩn xác"
@@ -308,12 +339,66 @@ export default function ReportsPage() {
           )}
         </div>
 
+        <div className="bg-white rounded-2xl border border-slate-100 p-4 lg:p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <p className="text-sm font-semibold text-slate-800">
+                Sản lượng hoàn hàng theo ngày
+              </p>
+              <p className="text-xs text-slate-500">
+                Đếm riêng, không cộng vào sản lượng đóng hàng
+              </p>
+            </div>
+          </div>
+          {returnsDaily.length === 0 ? (
+            <div className="h-56 flex items-center justify-center text-sm text-slate-400">
+              {loading ? "Đang tải dữ liệu…" : "Chưa có kiện hoàn trong khoảng này"}
+            </div>
+          ) : (
+            <DailyLineChart daily={returnsDaily} totalDays={chartDays} />
+          )}
+        </div>
+
+        <StaffReportTable
+          title="Báo cáo đóng hàng theo nhân sự"
+          subtitle="Thống kê thao tác đóng hàng của từng thành viên trong khoảng đang xem"
+          staff={staff}
+          loading={loading}
+        />
+
+        <StaffReportTable
+          title="Báo cáo hoàn hàng theo nhân sự"
+          subtitle="Thống kê thao tác nhận hoàn của từng thành viên trong khoảng đang xem"
+          staff={returnsStaff}
+          loading={loading}
+        />
+      </div>
+    </DashboardLayout>
+  );
+}
+
+/**
+ * Bảng theo nhân sự — MỘT khung cho cả hai luồng.
+ *
+ * Chủ dự án chốt 23/09/2026: "bảng của hoàn hàng viết y nguyên các thuộc
+ * tính như đóng hàng". Một component thì không bao giờ lệch cột.
+ */
+function StaffReportTable({
+  title,
+  subtitle,
+  staff,
+  loading,
+}: {
+  title: string;
+  subtitle: string;
+  staff: StaffStat[];
+  loading: boolean;
+}) {
+  return (
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
           <div className="p-4 lg:p-5 border-b border-slate-100">
-            <p className="text-sm font-semibold text-slate-800">Báo cáo theo nhân sự</p>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Thống kê thao tác đóng hàng của từng thành viên trong khoảng đang xem
-            </p>
+            <p className="text-sm font-semibold text-slate-800">{title}</p>
+            <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -395,8 +480,6 @@ export default function ReportsPage() {
             </table>
           </div>
         </div>
-      </div>
-    </DashboardLayout>
   );
 }
 

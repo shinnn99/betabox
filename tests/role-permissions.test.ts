@@ -54,8 +54,11 @@ const ALL = [
   "warehouse.update", "warehouse.view", "work_session.force_end", "return.operate",
 ];
 
-const ADMIN = new Set(ALL);
-const MANAGER = new Set(ALL.filter((p) => !SETUP.includes(p)));
+// Xoá tài khoản là của RIÊNG chủ sở hữu (chủ dự án chốt 23/09/2026) —
+// xem 20260923110000_only_owner_deletes_users.sql.
+const OWNER_ONLY = ["user.delete"];
+const ADMIN = new Set(ALL.filter((p) => !OWNER_ONLY.includes(p)));
+const MANAGER = new Set(ALL.filter((p) => !SETUP.includes(p) && !OWNER_ONLY.includes(p)));
 const VIEWER_SET = new Set(VIEWER);
 const canFor = (set: Set<string>) => (anyOf: string[]) => anyOf.some((p) => set.has(p));
 // nav.ts kéo theo icon, không import được dưới react-server — đọc href từ nguồn.
@@ -268,9 +271,10 @@ test("trưởng kho quản lý người dùng vai trò THẤP HƠN, không đụ
   for (const r of ["warehouse_manager", "admin", "owner"] as const) {
     assert.equal(canAssignRole("warehouse_manager", r), false, `trưởng kho không được đụng ${r}`);
   }
-  for (const p of ["user.view", "user.create", "user.update", "user.delete"]) {
+  for (const p of ["user.view", "user.create", "user.update"]) {
     assert.ok(MANAGER.has(p), `trưởng kho phải có ${p}`);
   }
+  assert.ok(!MANAGER.has("user.delete"), "nhưng xoá tài khoản thì không");
   // API sửa/xoá chặn theo cấp bậc của tài khoản ĐÍCH, không chỉ vai trò mới.
   const api = readFileSync("src/app/api/users/[id]/route.ts", "utf8");
   assert.equal((api.match(/canAssignRole\(ctx\.role, target\.role as Role\)/g) ?? []).length, 2);
@@ -316,7 +320,7 @@ test("mọi trang có nút ghi dữ liệu đều chặn từ nút, không ẩn-
     ["src/app/dashboard/warehouses/page.tsx", ['"sửa thông tin tổ chức"', '"thêm kho"', '"quản lý kho"', '"xoá kho"']],
     ["src/app/dashboard/packing-stations/page.tsx", ['"thêm bàn"', '"sửa bàn"', '"lưu trữ bàn"', "allowed={allow.edit}"]],
     ["src/components/stations/StationPurposeCell.tsx", ["Bạn không có quyền đổi chế độ bàn."]],
-    ["src/app/dashboard/settings/warehouse-config/page.tsx", ['"đổi số ngày giữ video"', '"sửa cấu hình kho"', '"test webhook"', '"xoá cấu hình thông báo"']],
+    ["src/app/dashboard/settings/warehouse-config/page.tsx", ['"đổi số ngày giữ video đóng hàng"', '"đổi số ngày giữ video hàng hoàn"', '"sửa cấu hình kho"', '"test webhook"', '"xoá cấu hình thông báo"']],
     ["src/app/dashboard/devices/page.tsx", ['"thêm thiết bị"', '"xoá thiết bị"']],
     ["src/components/devices/StationAssignCell.tsx", ["Bạn không có quyền đổi bàn cho thiết bị.", "Bạn không có quyền đổi nguồn quét của bàn."]],
     ["src/app/dashboard/staff/page.tsx", ['"thêm nhân viên"', "Bạn không có quyền cấp QR cho nhân viên."]],
@@ -384,4 +388,35 @@ test("API che thông tin nhạy cảm với người thiếu quyền", () => {
     "POST dò mạng là lệnh GHI — phải truyền req cho guard chống ghi-nhầm-org",
   );
   assert.ok(read("src/app/dashboard/agents/page.tsx").includes('guard(allowSetup, "cấp secret mới cho máy trạm"'));
+});
+
+test("chỉ chủ sở hữu được xoá tài khoản, và xoá là xoá thật", () => {
+  const sql = readFileSync(
+    "supabase/migrations/20260923110000_only_owner_deletes_users.sql",
+    "utf8",
+  );
+  const flat = sql.split(/\s+/).join(" ");
+  assert.ok(
+    flat.includes(
+      "DELETE FROM public.role_permission_matrix WHERE permission_code = 'user.delete' AND role <> 'owner'",
+    ),
+    "migration thu quyền xoá về riêng owner",
+  );
+  assert.ok(flat.includes("VALUES ('owner', 'user.delete')"), "owner vẫn phải giữ quyền");
+
+  const api = readFileSync("src/app/api/users/[id]/route.ts", "utf8");
+  assert.ok(api.includes('if (ctx.role !== "owner")'), "route chặn mọi vai trò khác owner");
+  assert.ok(api.includes("Chỉ chủ sở hữu mới được xoá tài khoản người dùng."));
+
+  // Chốt phải đứng TRƯỚC mọi thao tác chạm database.
+  const body = api.slice(api.indexOf("export async function DELETE("));
+  assert.ok(body.indexOf('ctx.role !== "owner"') < body.indexOf("deleteUser(id)"));
+
+  // Xoá THẬT, không phải đánh dấu ngừng dùng.
+  assert.ok(body.includes("admin.auth.admin.deleteUser(id)"));
+  assert.ok(
+    body.includes('.from("user_profiles")') && body.includes(".delete()"),
+    "có lưới an toàn xoá hồ sơ nếu khoá ngoại không cascade",
+  );
+  assert.ok(!body.includes('status: "inactive"'), "không được biến thành xoá mềm");
 });

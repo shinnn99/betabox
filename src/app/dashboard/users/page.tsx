@@ -102,7 +102,9 @@ export default function UsersPage() {
       title: "Xoá tài khoản?",
       message: (
         <>
-          Tài khoản <b>{u.email}</b> sẽ không đăng nhập được nữa. Thao tác này không thể hoàn tác.
+          Hồ sơ của <b>{u.email}</b> bị xoá hẳn khỏi hệ thống: không đăng nhập
+          được nữa, tên và vai trò cũng mất. Nhật ký thao tác cũ vẫn giữ để đối
+          chiếu. Thao tác này không thể hoàn tác.
         </>
       ),
       confirmLabel: "Xoá",

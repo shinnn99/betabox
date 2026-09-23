@@ -56,7 +56,7 @@ export async function POST(req: Request, ctx: RouteContext) {
 
   const { data: pe } = await admin
     .from("packing_events")
-    .select("id, organization_id, timing_status")
+    .select("id, organization_id, timing_status, status")
     .eq("id", packingEventId)
     .maybeSingle();
   if (!pe) {
@@ -78,7 +78,7 @@ export async function POST(req: Request, ctx: RouteContext) {
   // Cùng lý do với chốt chặn ở /watch — resolver thiếu work_ended_at sẽ
   // rơi nhánh default_post 60s và lưu clip cụt làm bằng chứng. Retry thủ
   // công là đường thứ hai vào enqueueCutClip nên phải chặn cả hai.
-  const gate = evaluateProofClipGate(pe.timing_status);
+  const gate = evaluateProofClipGate(pe.timing_status, pe.status);
   if (!gate.allowed) {
     return NextResponse.json(
       { error: gate.reason, message: gate.message },

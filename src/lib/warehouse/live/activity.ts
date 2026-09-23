@@ -1,7 +1,11 @@
 import "server-only";
 import type { createAdminClient } from "@/lib/supabase/admin";
 import { resolveVietnamDayScope } from "@/lib/warehouse/time-range";
-import { classifyReturnEvent, describeControlCard } from "@/lib/warehouse/live/returns";
+import {
+  NO_SESSION_NOTE,
+  classifyReturnEvent,
+  describeControlCard,
+} from "@/lib/warehouse/live/returns";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
@@ -19,12 +23,8 @@ export type ActivityKind =
   | "waybill_invalid"
   | "waybill_return_suspect"
   | "qr_invalid"
-  // Luồng hoàn hàng — xem src/lib/warehouse/live/returns.ts
-  | "return_open"
-  | "return_ok"
-  | "return_problem"
-  | "return_duplicated"
-  | "return_suspect"
+  // Hàng hoàn dùng chung các kind ở trên (chủ dự án chốt 23/09/2026);
+  // riêng thẻ điều khiển chỉ còn trong lịch sử cũ.
   | "control_card";
 
 export type ActivityCategory = "ok" | "warning" | "error" | "info";
@@ -79,6 +79,36 @@ function pickOne<T>(v: T | T[] | null | undefined): T | null {
  * Throw khi query gốc lỗi: caller quyết cách trình bày (route trả 500,
  * overview hạ xuống `activity_error` để phần còn lại của màn hình vẫn vẽ).
  */
+/**
+ * Một lượt quét QR nhân sự đọc thành dòng nhật ký.
+ *
+ * Dùng CHUNG cho cả hai màn hình giám sát (chủ dự án chốt 23/09/2026:
+ * nhật ký hoàn hàng phải giống hệt nhật ký đóng hàng). Nguồn dữ liệu vẫn
+ * riêng — mỗi màn hình tự truy vấn phần của mình.
+ */
+export function describeStaffScan(sr: {
+  action: string | null;
+  warning_code: string | null;
+  message: string | null;
+}): { kind: ActivityKind; category: ActivityCategory; note: string | null } {
+  if (sr.warning_code) {
+    return { kind: "qr_invalid", category: "error", note: sr.message ?? "QR nhân sự không hợp lệ" };
+  }
+  if (sr.action === "checked_in") {
+    return { kind: "session_started", category: "ok", note: "Bắt đầu ca" };
+  }
+  if (sr.action === "checked_out") {
+    return { kind: "session_ended", category: "ok", note: "Kết thúc ca" };
+  }
+  if (sr.action === "switched_station") {
+    return { kind: "session_forced_ended", category: "warning", note: "Chuyển bàn (phiên cũ bị đóng)" };
+  }
+  if (sr.action === "replaced_staff") {
+    return { kind: "session_forced_ended", category: "warning", note: "Thay người tại bàn" };
+  }
+  return { kind: "qr_invalid", category: "info", note: sr.message ?? null };
+}
+
 export async function buildLiveActivity(
   admin: Admin,
   orgId: string,
@@ -233,31 +263,7 @@ export async function buildLiveActivity(
       staff = pickOne(sr.staff_profiles);
       station = pickOne(sr.packing_stations);
       warehouseCode = pickOne(sr.warehouses)?.code ?? null;
-      if (sr.warning_code) {
-        kind = "qr_invalid";
-        category = "error";
-        note = sr.message ?? "QR nhân sự không hợp lệ";
-      } else if (sr.action === "checked_in") {
-        kind = "session_started";
-        category = "ok";
-        note = "Bắt đầu ca";
-      } else if (sr.action === "checked_out") {
-        kind = "session_ended";
-        category = "ok";
-        note = "Kết thúc ca";
-      } else if (sr.action === "switched_station") {
-        kind = "session_forced_ended";
-        category = "warning";
-        note = "Chuyển bàn (phiên cũ bị đóng)";
-      } else if (sr.action === "replaced_staff") {
-        kind = "session_forced_ended";
-        category = "warning";
-        note = "Thay người tại bàn";
-      } else {
-        kind = "qr_invalid";
-        category = "info";
-        note = sr.message ?? null;
-      }
+      ({ kind, category, note } = describeStaffScan(sr));
     } else if (!isStaff && pe) {
       staff = pickOne(pe.staff_profiles);
       station = pickOne(pe.packing_stations);
@@ -268,10 +274,7 @@ export async function buildLiveActivity(
       workDuration = pe.work_duration_seconds;
       timingStatus = pe.timing_status;
       if (pe.event_kind === "return" && pe.status !== "return_suspect") {
-        // Lượt quét ở bàn đang nhận hoàn. Trước đây rơi vào nhánh 'valid'
-        // bên dưới và hiện "Hợp lệ" như một đơn đi — sai nghĩa và lọt cả
-        // vào tab Hợp lệ. Giờ gắn nhãn kiện hoàn; tab Hợp lệ chỉ khớp
-        // waybill_valid nên không còn lẫn.
+        // Kiện hoàn dùng chung bộ chữ với đơn đi (xem classifyReturnEvent).
         ({ kind, category, note } = classifyReturnEvent(pe));
       } else if (pe.status === "valid") {
         kind = "waybill_valid";
@@ -287,7 +290,7 @@ export async function buildLiveActivity(
       } else if (pe.status === "no_active_session") {
         kind = "waybill_no_session";
         category = "error";
-        note = "Quét khi chưa có người vào ca";
+        note = NO_SESSION_NOTE;
       } else if (pe.status === "unmapped_scanner") {
         kind = "waybill_unmapped";
         category = "error";
