@@ -136,3 +136,17 @@ test("cấu hình kho có ô số ngày giữ video hàng hoàn, lưu qua API t�
   assert.ok(sql.includes("ADD COLUMN IF NOT EXISTS return_retention_days"));
   assert.ok(sql.includes(">= 7 AND return_retention_days <= 365"), "cùng dải với hạn chung");
 });
+
+// ---------------------------------------------------------------------------
+// 5. Cột mã vận đơn của Bằng chứng hoàn hàng: chỉ còn hạn khiếu nại
+// ---------------------------------------------------------------------------
+
+test("bằng chứng hoàn hàng bỏ lý do hoàn và kết quả kiểm, chỉ giữ đếm ngược", () => {
+  const page = readFileSync("src/app/dashboard/(return-module)/return-videos/page.tsx", "utf8");
+  for (const gone of ["RETURN_KIND_LABEL", "INSPECTION_LABEL", "Khách trả", "Chưa kiểm", "Loại hoàn"]) {
+    assert.ok(!page.includes(gone), `cột mã vận đơn không còn ghi chú: ${gone}`);
+  }
+  // Hạn khiếu nại đếm ngược vẫn còn — đây là thứ duy nhất cần nhìn.
+  assert.ok(page.includes("function remainingLabel("), "giữ hàm đếm ngược");
+  assert.ok(page.includes("remainingLabel(scan.claim.deadline_at)"), "vẫn hiện thời gian còn lại");
+});

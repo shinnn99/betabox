@@ -50,7 +50,8 @@ import { useCan } from "@/lib/usePermissions";
  * Khác chức năng:
  *   - Danh sách kiện hoàn, từ /api/returns/proof/scans.
  *   - Cột "T/g kiểm hàng" thay "T/g đóng đơn".
- *   - Nhãn dòng: kết quả kiểm + trạng thái hồ sơ, thay "Đơn lỗi".
+ *   - Nhãn dòng: chỉ hạn khiếu nại đếm ngược, thay "Đơn lỗi". Lý do hoàn và
+ *     kết quả kiểm không hiện ở cột mã vận đơn (chốt 23/09/2026).
  *   - Hành động hàng loạt: Đã khiếu nại / Không cần, thay Đánh dấu lỗi.
  *     Kiện hoàn KHÔNG BAO GIỜ được đánh dấu "Đơn lỗi" — dấu đó tính vào báo
  *     cáo hiệu suất đóng gói của nhân viên.
@@ -135,20 +136,6 @@ interface ScanRow {
   } | null;
 }
 
-const INSPECTION_LABEL: Record<string, string> = {
-  ok: "Hàng ổn",
-  damaged: "Hỏng",
-  missing: "Thiếu",
-  swapped: "Tráo",
-  unchecked: "Chưa kiểm",
-};
-
-const RETURN_KIND_LABEL: Record<string, string> = {
-  rts: "Giao thất bại",
-  customer_return: "Khách trả",
-  suspect: "Quét ở bàn đóng hàng",
-};
-
 const CLAIM_LABEL: Record<string, string> = {
   open: "Cần khiếu nại",
   submitted: "Đã khiếu nại",
@@ -177,20 +164,17 @@ function remainingLabel(deadlineIso: string): string {
   return `còn ${Math.max(1, Math.floor(ms / 60_000))} phút`;
 }
 
-/** Nhãn kết quả kiểm + hồ sơ — vị trí của badge "Đơn lỗi" bên đóng hàng. */
+/**
+ * Hạn khiếu nại đếm ngược — vị trí của badge "Đơn lỗi" bên đóng hàng.
+ *
+ * Chỉ còn hồ sơ khiếu nại (chủ dự án chốt 23/09/2026): lý do hoàn và kết quả
+ * kiểm KHÔNG hiện ở đây nữa — hoàn là hoàn, thứ duy nhất cần nhìn là còn bao
+ * lâu để kịp khiếu nại.
+ */
 function ReturnBadges({ scan, compact }: { scan: ScanRow; compact?: boolean }) {
-  const result = scan.inspection_result;
+  if (!scan.claim) return null;
   return (
     <div className={`flex flex-wrap items-center gap-1 ${compact ? "" : "mt-1"} font-sans`}>
-      {result && (
-        <span
-          className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-            result === "ok" ? "text-emerald-700 bg-emerald-100" : "text-rose-700 bg-rose-100"
-          }`}
-        >
-          {INSPECTION_LABEL[result] ?? result}
-        </span>
-      )}
       {scan.claim && (
         <span
           className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded ${CLAIM_TONE[scan.claim.status] ?? ""}`}
@@ -1196,11 +1180,6 @@ function ScanRowView({
       </td>
       <td className="px-3 py-2.5 font-mono text-xs font-semibold text-slate-800">
         {scan.waybill_code}
-        {scan.return_kind && (
-          <div className="text-[10px] text-slate-500 mt-0.5 font-sans font-normal">
-            {RETURN_KIND_LABEL[scan.return_kind] ?? scan.return_kind}
-          </div>
-        )}
         <ReturnBadges scan={scan} />
         {scan.timing_status === "open" && (
           <div className="text-[10px] text-blue-700 mt-1 font-sans">
@@ -1595,17 +1574,6 @@ function PlayerModal({
               label={isReturn ? "T/g kiểm hàng" : "T/g đóng đơn"}
               value={formatDuration(scan.work_duration_seconds)}
             />
-            {isReturn && (
-              <DetailField
-                icon={Package}
-                label="Loại hoàn"
-                value={
-                  scan.return_kind
-                    ? RETURN_KIND_LABEL[scan.return_kind] ?? scan.return_kind
-                    : "—"
-                }
-              />
-            )}
             {scan.clip?.cut_ended_at && (
               <DetailField
                 icon={Clock}

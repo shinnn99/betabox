@@ -51,7 +51,14 @@ Hạn riêng cho đoạn video thuần hàng hoàn ĐÃ có ở tầng agent
 nhưng không có chỗ nào chỉnh. Thêm ô chỉnh ngay dưới ô "Số ngày giữ video",
 cùng dải 7–365 ngày, cùng cách lưu.
 
-## 5. Ghi chép
+## 5. Cột mã vận đơn của Bằng chứng hoàn hàng (bổ sung 23/09/2026)
+
+Bỏ hẳn nhãn lý do hoàn ("Khách trả", "Giao thất bại"...) và nhãn kết quả kiểm
+("Chưa kiểm", "Hàng ổn"...) khỏi cột mã vận đơn — cùng một lẽ với mục 1: hoàn
+là hoàn. Thứ duy nhất còn lại ở đó là hồ sơ khiếu nại kèm đồng hồ đếm ngược,
+vì đó là cái có hạn và làm chậm là mất tiền. Chữ khắc trên video giữ nguyên.
+
+## 6. Ghi chép
 
 `change.md` và `changelog/2026-09-23.md`.
 
