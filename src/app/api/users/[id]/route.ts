@@ -175,6 +175,20 @@ export async function DELETE(req: Request, { params }: RouteContext) {
   if (isError(ctx)) return ctx;
   const { id } = await params;
 
+  // Chốt thứ hai, độc lập với bảng quyền: CHỈ chủ sở hữu được xoá tài khoản
+  // (chủ dự án chốt 23/09/2026). Xoá là mất sạch hồ sơ khỏi database, không
+  // hoàn tác được — một dòng cấp nhầm trong role_permission_matrix không
+  // được phép mở cánh cửa này.
+  if (ctx.role !== "owner") {
+    return NextResponse.json(
+      {
+        error: "owner_only",
+        message: "Chỉ chủ sở hữu mới được xoá tài khoản người dùng.",
+      },
+      { status: 403 },
+    );
+  }
+
   if (id === ctx.userId) {
     return NextResponse.json(
       { error: "self_delete_forbidden", message: "Không thể tự xoá tài khoản mình." },
@@ -212,9 +226,24 @@ export async function DELETE(req: Request, { params }: RouteContext) {
   }
 
   const admin = createAdminClient();
+  // Xoá THẬT: tài khoản đăng nhập đi trước, hồ sơ trong user_profiles theo
+  // sau bằng khoá ngoại ON DELETE CASCADE. Dòng delete bên dưới là lưới an
+  // toàn cho hai ca hiếm: cascade bị gỡ, hoặc hồ sơ mồ côi (tài khoản đăng
+  // nhập đã mất từ trước nên deleteUser báo not found).
   const { error } = await admin.auth.admin.deleteUser(id);
-  if (error) {
+  const authUserMissing =
+    !!error && /not.?found/i.test(`${error.message} ${(error as { code?: string }).code ?? ""}`);
+  if (error && !authUserMissing) {
     return NextResponse.json({ error: error.message }, { status: 400 });
+  }
+
+  const { error: profileError } = await admin
+    .from("user_profiles")
+    .delete()
+    .eq("id", id)
+    .eq("organization_id", ctx.organizationId);
+  if (profileError) {
+    return NextResponse.json({ error: profileError.message }, { status: 400 });
   }
 
   await audit({
