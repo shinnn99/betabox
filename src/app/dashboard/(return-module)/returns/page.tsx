@@ -148,6 +148,9 @@ interface StationsResponse {
 
 // Cùng bộ với trang Giám sát đóng hàng — chủ dự án chốt 23/09/2026.
 type ActivityKind =
+  | "session_started"
+  | "session_ended"
+  | "session_forced_ended"
   | "waybill_valid"
   | "waybill_duplicated"
   | "waybill_no_session"
@@ -295,6 +298,9 @@ function formatDuration(seconds: number): string {
 // Chép đúng bảng nhãn của trang Giám sát đóng hàng — chủ dự án chốt
 // 23/09/2026: cùng một việc thì cùng một chữ.
 const ACTIVITY_KIND_LABEL: Record<ActivityKind, string> = {
+  session_started: "Vào ca",
+  session_ended: "Ra ca",
+  session_forced_ended: "Đổi ca",
   waybill_valid: "Hợp lệ",
   waybill_duplicated: "Trùng",
   waybill_no_session: "Chưa vào ca",
@@ -434,12 +440,13 @@ function computeAlerts(
 
 type ActivityTab = "all" | "ok" | "duplicated" | "issues" | "staff";
 
+// Y HET ben Giam sat dong hang — chu du an chot 23/09/2026.
 const ACTIVITY_TAB_LABEL: Record<ActivityTab, string> = {
   all: "Tất cả",
-  ok: "Hàng ổn",
-  duplicated: "Quét lại",
+  ok: "Hợp lệ",
+  duplicated: "Trùng",
   issues: "Cần xử lý",
-  staff: "Thẻ điều khiển",
+  staff: "QR nhân sự",
 };
 
 function formatMiB(bytes: number | null): string {
@@ -513,16 +520,25 @@ function matchActivityTab(
   if (tab === "duplicated") return ev.kind === "waybill_duplicated";
   if (tab === "issues")
     return (
-      ev.kind === "waybill_no_session" ||
-      ev.kind === "waybill_invalid" ||
-      ev.kind === "waybill_unmapped" ||
-      ev.kind === "waybill_return_suspect" ||
+      ev.category === "error" ||
       ev.kind === "waybill_duplicated" ||
+      ev.kind === "waybill_return_suspect" ||
+      ev.kind === "session_forced_ended" ||
+      ev.timing_status === "capped_timeout" ||
+      ev.timing_status === "default_estimated" ||
       // Clip kiện hoàn dài tới 5 phút — vượt trần tải lên thì hồ sơ khiếu
       // nại không có video.
       proofRisk?.proof_size_risk === "over_limit"
     );
-  if (tab === "staff") return ev.kind === "control_card";
+  if (tab === "staff")
+    return (
+      ev.kind === "session_started" ||
+      ev.kind === "session_ended" ||
+      ev.kind === "session_forced_ended" ||
+      ev.kind === "qr_invalid" ||
+      // Thẻ điều khiển cũng là lượt quét của người, không phải của kiện.
+      ev.kind === "control_card"
+    );
   return true;
 }
 
@@ -1059,8 +1075,8 @@ export default function ReturnsMonitorPage() {
               </p>
               <p className="text-xs text-slate-500">
                 {activityTotal > 0
-                  ? `${activityTotal} kiện hoàn và lượt quét thẻ trong ngày, mới nhất ở trên`
-                  : "Tất cả kiện hoàn và lượt quét thẻ trong ngày, mới nhất ở trên"}
+                  ? `${activityTotal} lần quét và vào/ra ca trong ngày, mới nhất ở trên`
+                  : "Tất cả lần quét và vào/ra ca trong ngày, mới nhất ở trên"}
                 {activityError ? ` · ${activityError}` : ""}
               </p>
             </div>

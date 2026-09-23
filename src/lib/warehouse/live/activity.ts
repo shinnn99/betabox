@@ -79,6 +79,36 @@ function pickOne<T>(v: T | T[] | null | undefined): T | null {
  * Throw khi query gốc lỗi: caller quyết cách trình bày (route trả 500,
  * overview hạ xuống `activity_error` để phần còn lại của màn hình vẫn vẽ).
  */
+/**
+ * Một lượt quét QR nhân sự đọc thành dòng nhật ký.
+ *
+ * Dùng CHUNG cho cả hai màn hình giám sát (chủ dự án chốt 23/09/2026:
+ * nhật ký hoàn hàng phải giống hệt nhật ký đóng hàng). Nguồn dữ liệu vẫn
+ * riêng — mỗi màn hình tự truy vấn phần của mình.
+ */
+export function describeStaffScan(sr: {
+  action: string | null;
+  warning_code: string | null;
+  message: string | null;
+}): { kind: ActivityKind; category: ActivityCategory; note: string | null } {
+  if (sr.warning_code) {
+    return { kind: "qr_invalid", category: "error", note: sr.message ?? "QR nhân sự không hợp lệ" };
+  }
+  if (sr.action === "checked_in") {
+    return { kind: "session_started", category: "ok", note: "Bắt đầu ca" };
+  }
+  if (sr.action === "checked_out") {
+    return { kind: "session_ended", category: "ok", note: "Kết thúc ca" };
+  }
+  if (sr.action === "switched_station") {
+    return { kind: "session_forced_ended", category: "warning", note: "Chuyển bàn (phiên cũ bị đóng)" };
+  }
+  if (sr.action === "replaced_staff") {
+    return { kind: "session_forced_ended", category: "warning", note: "Thay người tại bàn" };
+  }
+  return { kind: "qr_invalid", category: "info", note: sr.message ?? null };
+}
+
 export async function buildLiveActivity(
   admin: Admin,
   orgId: string,
@@ -233,31 +263,7 @@ export async function buildLiveActivity(
       staff = pickOne(sr.staff_profiles);
       station = pickOne(sr.packing_stations);
       warehouseCode = pickOne(sr.warehouses)?.code ?? null;
-      if (sr.warning_code) {
-        kind = "qr_invalid";
-        category = "error";
-        note = sr.message ?? "QR nhân sự không hợp lệ";
-      } else if (sr.action === "checked_in") {
-        kind = "session_started";
-        category = "ok";
-        note = "Bắt đầu ca";
-      } else if (sr.action === "checked_out") {
-        kind = "session_ended";
-        category = "ok";
-        note = "Kết thúc ca";
-      } else if (sr.action === "switched_station") {
-        kind = "session_forced_ended";
-        category = "warning";
-        note = "Chuyển bàn (phiên cũ bị đóng)";
-      } else if (sr.action === "replaced_staff") {
-        kind = "session_forced_ended";
-        category = "warning";
-        note = "Thay người tại bàn";
-      } else {
-        kind = "qr_invalid";
-        category = "info";
-        note = sr.message ?? null;
-      }
+      ({ kind, category, note } = describeStaffScan(sr));
     } else if (!isStaff && pe) {
       staff = pickOne(pe.staff_profiles);
       station = pickOne(pe.packing_stations);

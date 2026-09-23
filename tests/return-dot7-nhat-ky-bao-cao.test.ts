@@ -202,3 +202,42 @@ test("Cần xử lý của hoàn hàng không còn là danh sách hồ sơ khi�
   const proof = readFileSync("src/app/dashboard/(return-module)/return-videos/page.tsx", "utf8");
   assert.ok(proof.includes("remainingLabel(scan.claim.deadline_at)"));
 });
+
+// ---------------------------------------------------------------------------
+// 7. "Hoạt động hôm nay" của hai màn hình giống hệt nhau
+// ---------------------------------------------------------------------------
+
+test("hai nhật ký dùng chung bộ tab và bộ nhãn, không còn chữ riêng", () => {
+  const ops = readFileSync("src/app/dashboard/operations/page.tsx", "utf8");
+  const ret = readFileSync("src/app/dashboard/(return-module)/returns/page.tsx", "utf8");
+  const tabs = (src: string) =>
+    src.slice(src.indexOf("ACTIVITY_TAB_LABEL"), src.indexOf("ACTIVITY_TAB_LABEL") + 250)
+      .match(/(all|ok|duplicated|issues|staff): "[^"]+"/g);
+  assert.deepEqual(tabs(ret), tabs(ops), "tên tab phải y hệt bên đóng hàng");
+  for (const nhan of [
+    'session_started: "Vào ca"',
+    'session_ended: "Ra ca"',
+    'session_forced_ended: "Đổi ca"',
+    'waybill_valid: "Hợp lệ"',
+    'waybill_duplicated: "Trùng"',
+    'qr_invalid: "QR sai"',
+  ]) {
+    assert.ok(ret.includes(nhan), `nhật ký hoàn hàng thiếu nhãn dùng chung: ${nhan}`);
+  }
+  for (const cu of ['ok: "Hàng ổn"', 'duplicated: "Quét lại"', 'staff: "Thẻ điều khiển"']) {
+    assert.ok(!ret.includes(cu), `còn tab tự chế: ${cu}`);
+  }
+  assert.ok(
+    ret.includes("lần quét và vào/ra ca trong ngày"),
+    "dòng phụ dưới tiêu đề cũng nói cùng một câu",
+  );
+});
+
+test("nhật ký hoàn hàng có vào/ra ca, đọc bằng cùng hàm với đóng hàng", () => {
+  const lib = readFileSync("src/lib/warehouse/live/returns.ts", "utf8");
+  assert.ok(lib.includes('.from("staff_qr_scan_results")'), "tự đọc QR nhân sự — nguồn riêng");
+  assert.ok(lib.includes("describeStaffScan(sr)"), "nhưng đọc ra chữ bằng hàm dùng chung");
+  const act = readFileSync("src/lib/warehouse/live/activity.ts", "utf8");
+  assert.ok(act.includes("export function describeStaffScan("), "hàm dùng chung nằm ở nguồn duy nhất");
+  assert.ok(act.includes("({ kind, category, note } = describeStaffScan(sr));"), "đóng hàng cũng dùng đúng hàm đó");
+});

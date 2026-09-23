@@ -2,7 +2,12 @@ import "server-only";
 import type { createAdminClient } from "@/lib/supabase/admin";
 import { resolveVietnamDayScope, vietnamTodayUtcRange } from "@/lib/warehouse/time-range";
 import { parseControlCard } from "@/lib/station/control-cards";
-import type { ActivityCategory, ActivityItem, ActivityPayload } from "@/lib/warehouse/live/activity";
+import {
+  describeStaffScan,
+  type ActivityCategory,
+  type ActivityItem,
+  type ActivityPayload,
+} from "@/lib/warehouse/live/activity";
 import { describeScanIssue, ISSUE_STATUSES, type Issue } from "@/lib/warehouse/live/issues";
 
 /**
@@ -180,7 +185,7 @@ export async function buildReturnActivity(
 ): Promise<ActivityPayload> {
   const day = resolveVietnamDayScope(dateParam);
 
-  const [eventsRes, eventsCount, cardsRes, cardsCount] = await Promise.all([
+  const [eventsRes, eventsCount, cardsRes, cardsCount, staffRes, staffCount] = await Promise.all([
     admin
       .from("packing_events")
       .select(
@@ -220,6 +225,28 @@ export async function buildReturnActivity(
       .eq("scan_type", "control")
       .gte("scanned_at", day.startIso)
       .lt("scanned_at", day.endIso),
+    // Vào/ra ca và QR nhân sự: nhật ký hoàn hàng phải đọc giống hệt nhật ký
+    // đóng hàng (chủ dự án chốt 23/09/2026). Ca là của người, không của
+    // luồng — cùng một ca vừa đóng hàng vừa nhận hoàn.
+    admin
+      .from("staff_qr_scan_results")
+      .select(
+        `id, raw_event_id, action, warning_code, message, created_at,
+         staff_profiles ( staff_code, full_name ),
+         packing_stations ( code, name ),
+         warehouses ( code )`,
+      )
+      .eq("organization_id", orgId)
+      .gte("created_at", day.startIso)
+      .lt("created_at", day.endIso)
+      .order("created_at", { ascending: false })
+      .limit(limit),
+    admin
+      .from("staff_qr_scan_results")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", orgId)
+      .gte("created_at", day.startIso)
+      .lt("created_at", day.endIso),
   ]);
 
   if (eventsRes.error) throw new Error(eventsRes.error.message);
@@ -307,6 +334,31 @@ export async function buildReturnActivity(
     });
   }
 
+  for (const sr of staffRes.data ?? []) {
+    const staff = pickOne(sr.staff_profiles);
+    const station = pickOne(sr.packing_stations);
+    const { kind, category, note } = describeStaffScan(sr);
+    items.push({
+      id: sr.id,
+      raw_event_id: sr.raw_event_id,
+      kind,
+      category,
+      occurred_at: sr.created_at,
+      scanner_device_code: null,
+      station_code: station?.code ?? null,
+      station_name: station?.name ?? null,
+      warehouse_code: pickOne(sr.warehouses)?.code ?? null,
+      staff_code: staff?.staff_code ?? null,
+      staff_name: staff?.full_name ?? null,
+      waybill_code: null,
+      note,
+      work_started_at: null,
+      work_ended_at: null,
+      work_duration_seconds: null,
+      timing_status: null,
+    });
+  }
+
   items.sort((a, b) => (a.occurred_at < b.occurred_at ? 1 : -1));
 
   return {
@@ -314,6 +366,6 @@ export async function buildReturnActivity(
     date: day.dateKey,
     invalid_date: day.invalidDate,
     limit,
-    total: (eventsCount.count ?? 0) + (cardsCount.count ?? 0),
+    total: (eventsCount.count ?? 0) + (cardsCount.count ?? 0) + (staffCount.count ?? 0),
   };
 }
