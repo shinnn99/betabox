@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { classifyReturnEvent } from "../src/lib/warehouse/live/returns.ts";
 import { aggregateReturns } from "../src/lib/reports/service.ts";
 import { evaluateProofClipGate } from "../src/lib/order-proof/proof-clip-gate.ts";
+import { describeScanIssue, ISSUE_STATUSES } from "../src/lib/warehouse/live/issues.ts";
 
 /**
  * Hàng hoàn đợt 7 (chủ dự án chốt 23/09/2026) — xem
@@ -149,4 +150,55 @@ test("bằng chứng hoàn hàng bỏ lý do hoàn và kết quả kiểm, chỉ
   // Hạn khiếu nại đếm ngược vẫn còn — đây là thứ duy nhất cần nhìn.
   assert.ok(page.includes("function remainingLabel("), "giữ hàm đếm ngược");
   assert.ok(page.includes("remainingLabel(scan.claim.deadline_at)"), "vẫn hiện thời gian còn lại");
+});
+
+// ---------------------------------------------------------------------------
+// 6. "Cần xử lý" của hoàn hàng làm y như đóng hàng — nguồn riêng, xử lý chung
+// ---------------------------------------------------------------------------
+
+test("hai luồng cùng một bộ chữ cho việc cần xử lý", () => {
+  const cases: Array<[string, string, string]> = [
+    ["duplicated", "duplicated", "Đơn quét trùng"],
+    ["duplicated_return", "duplicated", "Đơn quét trùng"],
+    ["no_active_session", "no_active_session", "Quét khi chưa vào ca"],
+    ["unmapped_scanner", "unmapped_scanner", "Máy quét chưa gán bàn"],
+    ["invalid_code", "invalid_code", "Mã không hợp lệ"],
+  ];
+  for (const [status, kind, title] of cases) {
+    const out = describeScanIssue({
+      status,
+      waybill_code: "LEX1",
+      scanner_device_code: "SC-1",
+      station_name: "Bàn 3",
+    });
+    assert.equal(out.kind, kind);
+    assert.equal(out.title, title, `trạng thái ${status} phải dùng chữ của đóng hàng`);
+  }
+  // Lưới an toàn chỉ có ở luồng hoàn, và đọc đúng chữ của nhật ký.
+  assert.equal(describeScanIssue({ status: "return_suspect", waybill_code: "LEX2", scanner_device_code: null, station_name: "Bàn 1" }).title, "Hàng hoàn");
+});
+
+test("nguồn riêng: mỗi màn hình chỉ đọc lượt quét của luồng mình", () => {
+  const outbound = readFileSync("src/lib/warehouse/live/issues.ts", "utf8");
+  const ret = readFileSync("src/lib/warehouse/live/returns.ts", "utf8");
+  assert.ok(outbound.includes('.eq("event_kind", "outbound")'), "đóng hàng chỉ đọc đơn đi");
+  assert.ok(ret.includes('.eq("event_kind", "return")'), "hoàn hàng chỉ đọc kiện hoàn");
+  assert.deepEqual([...ISSUE_STATUSES.outbound], [
+    "duplicated",
+    "no_active_session",
+    "unmapped_scanner",
+    "invalid_code",
+  ]);
+  assert.ok(ISSUE_STATUSES.return.includes("return_suspect"), "luồng hoàn có thêm lưới an toàn");
+});
+
+test("Cần xử lý của hoàn hàng không còn là danh sách hồ sơ khiếu nại", () => {
+  const ret = readFileSync("src/lib/warehouse/live/returns.ts", "utf8");
+  assert.ok(!ret.includes("return_claims"), "khối việc cần làm không đọc hồ sơ khiếu nại nữa");
+  assert.ok(!ret.includes("claim_open"));
+  const summary = readFileSync("src/lib/warehouse/live/summary.ts", "utf8");
+  assert.ok(!summary.includes("open_claims"), "thẻ số bỏ luôn phép đếm hồ sơ mỗi nhịp poll");
+  // Đồng hồ đếm ngược vẫn còn — ở đúng chỗ của nó.
+  const proof = readFileSync("src/app/dashboard/(return-module)/return-videos/page.tsx", "utf8");
+  assert.ok(proof.includes("remainingLabel(scan.claim.deadline_at)"));
 });

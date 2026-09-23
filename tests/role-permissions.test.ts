@@ -316,7 +316,7 @@ test("mọi trang có nút ghi dữ liệu đều chặn từ nút, không ẩn-
     ["src/app/dashboard/warehouses/page.tsx", ['"sửa thông tin tổ chức"', '"thêm kho"', '"quản lý kho"', '"xoá kho"']],
     ["src/app/dashboard/packing-stations/page.tsx", ['"thêm bàn"', '"sửa bàn"', '"lưu trữ bàn"', "allowed={allow.edit}"]],
     ["src/components/stations/StationPurposeCell.tsx", ["Bạn không có quyền đổi chế độ bàn."]],
-    ["src/app/dashboard/settings/warehouse-config/page.tsx", ['"đổi số ngày giữ video"', '"sửa cấu hình kho"', '"test webhook"', '"xoá cấu hình thông báo"']],
+    ["src/app/dashboard/settings/warehouse-config/page.tsx", ['"đổi số ngày giữ video đóng hàng"', '"đổi số ngày giữ video hàng hoàn"', '"sửa cấu hình kho"', '"test webhook"', '"xoá cấu hình thông báo"']],
     ["src/app/dashboard/devices/page.tsx", ['"thêm thiết bị"', '"xoá thiết bị"']],
     ["src/components/devices/StationAssignCell.tsx", ["Bạn không có quyền đổi bàn cho thiết bị.", "Bạn không có quyền đổi nguồn quét của bàn."]],
     ["src/app/dashboard/staff/page.tsx", ['"thêm nhân viên"', "Bạn không có quyền cấp QR cho nhân viên."]],

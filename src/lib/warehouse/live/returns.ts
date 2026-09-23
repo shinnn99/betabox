@@ -3,13 +3,15 @@ import type { createAdminClient } from "@/lib/supabase/admin";
 import { resolveVietnamDayScope, vietnamTodayUtcRange } from "@/lib/warehouse/time-range";
 import { parseControlCard } from "@/lib/station/control-cards";
 import type { ActivityCategory, ActivityItem, ActivityPayload } from "@/lib/warehouse/live/activity";
-import type { Issue } from "@/lib/warehouse/live/issues";
+import { describeScanIssue, ISSUE_STATUSES, type Issue } from "@/lib/warehouse/live/issues";
 
 /**
  * Khối "Cần xử lý" và "Nhật ký" của màn hình Giám sát hoàn hàng.
  *
  * Trả về ĐÚNG hình dạng của bản đóng hàng (`Issue`, `ActivityPayload`) để
- * một khung giao diện vẽ được cả hai — chỉ khác nội dung. Xem
+ * một khung giao diện vẽ được cả hai. Dữ liệu là NGUỒN RIÊNG — mỗi màn hình
+ * chỉ đọc lượt quét của luồng mình (`event_kind`), không bao giờ trộn; chỉ
+ * cách xử lý và bộ chữ là dùng chung (chủ dự án chốt 23/09/2026). Xem
  * plans/active/HOAN-HANG-giao-dien-giam-sat-bang-chung.md.
  */
 
@@ -98,20 +100,14 @@ export function describeControlCard(rawValue: string): string {
 // Cần xử lý
 // ---------------------------------------------------------------------------
 
-function remainingText(deadlineIso: string): string {
-  const ms = Date.parse(deadlineIso) - Date.now();
-  if (ms <= 0) return "đã tới hạn";
-  const hours = Math.floor(ms / 3_600_000);
-  if (hours >= 24) return `còn ${Math.floor(hours / 24)} ngày`;
-  if (hours >= 1) return `còn ${hours} giờ`;
-  return `còn ${Math.max(1, Math.floor(ms / 60_000))} phút`;
-}
-
 /**
- * Việc cần làm của luồng hoàn:
- *   - Hồ sơ mở (kiện có vấn đề chưa khiếu nại) — mọi ngày, hạn gần nhất trước.
- *   - Kiện bị lưới an toàn bắt ở bàn đóng hàng hôm nay.
- *   - Quét lại kiện đã ghi hoàn hôm nay.
+ * Việc cần làm của luồng hoàn — CÙNG một việc với bên đóng hàng (chủ dự án
+ * chốt 23/09/2026): các lượt quét hỏng TRONG NGÀY, mới nhất trước, cùng một
+ * bộ chữ lấy từ `describeScanIssue`.
+ *
+ * Trước đây khối này là danh sách hồ sơ khiếu nại còn hạn — một thứ khác hẳn
+ * bên đóng hàng, lại lặp đúng cái đồng hồ đếm ngược đã có ở trang Bằng chứng
+ * hoàn hàng. Hồ sơ khiếu nại giờ chỉ sống ở trang đó.
  */
 export async function buildReturnIssues(
   admin: Admin,
@@ -120,73 +116,37 @@ export async function buildReturnIssues(
 ): Promise<{ issues: Issue[] }> {
   const { startIso, endIso } = vietnamTodayUtcRange();
 
-  const [claimsRes, todayRes] = await Promise.all([
-    admin
-      .from("return_claims")
-      .select(
-        `id, deadline_at, created_at,
-         packing_events!inner ( id, raw_event_id, waybill_code, scanned_at, scanner_device_code,
-           inspection_result,
-           staff_profiles ( staff_code, full_name ),
-           packing_stations ( code, name ) )`,
-      )
-      .eq("organization_id", orgId)
-      .eq("status", "open")
-      .order("deadline_at", { ascending: true })
-      .limit(limit),
-    admin
-      .from("packing_events")
-      .select(
-        `id, raw_event_id, status, waybill_code, scanned_at, scanner_device_code,
-         staff_profiles ( staff_code, full_name ),
-         packing_stations ( code, name )`,
-      )
-      .eq("organization_id", orgId)
-      .eq("event_kind", "return")
-      .in("status", ["return_suspect", "duplicated_return"])
-      .gte("scanned_at", startIso)
-      .lt("scanned_at", endIso)
-      .order("scanned_at", { ascending: false })
-      .limit(limit),
-  ]);
+  const todayRes = await admin
+    .from("packing_events")
+    .select(
+      `id, raw_event_id, status, waybill_code, scanned_at, scanner_device_code,
+       staff_profiles ( staff_code, full_name ),
+       packing_stations ( code, name )`,
+    )
+    .eq("organization_id", orgId)
+    .eq("event_kind", "return")
+    .in("status", ISSUE_STATUSES.return)
+    .gte("scanned_at", startIso)
+    .lt("scanned_at", endIso)
+    .order("scanned_at", { ascending: false })
+    .limit(limit);
 
   const issues: Issue[] = [];
-
-  for (const c of claimsRes.data ?? []) {
-    const pe = pickOne(c.packing_events);
-    if (!pe) continue;
-    const staff = pickOne(pe.staff_profiles);
-    const station = pickOne(pe.packing_stations);
-    const result = pe.inspection_result
-      ? (INSPECTION_LABEL[pe.inspection_result] ?? pe.inspection_result)
-      : "Chưa kiểm";
-    issues.push({
-      id: `claim-${c.id}`,
-      kind: "claim_open",
-      title: `Kiện hoàn: ${result}`,
-      message: `${pe.waybill_code ?? "—"} · ${remainingText(c.deadline_at)} để khiếu nại với sàn`,
-      occurred_at: pe.scanned_at,
-      scanner_device_code: pe.scanner_device_code,
-      station_code: station?.code ?? null,
-      station_name: station?.name ?? null,
-      staff_code: staff?.staff_code ?? null,
-      staff_name: staff?.full_name ?? null,
-      waybill_code: pe.waybill_code,
-      raw_event_id: pe.raw_event_id,
-    });
-  }
 
   for (const p of todayRes.data ?? []) {
     const staff = pickOne(p.staff_profiles);
     const station = pickOne(p.packing_stations);
-    const suspect = p.status === "return_suspect";
+    const { kind, title, message } = describeScanIssue({
+      status: p.status,
+      waybill_code: p.waybill_code,
+      scanner_device_code: p.scanner_device_code,
+      station_name: station?.name ?? null,
+    });
     issues.push({
       id: p.id,
-      kind: suspect ? "return_suspect" : "duplicated_return",
-      title: suspect ? "Mã đã gửi đi quay lại bàn đóng hàng" : "Quét lại kiện đã ghi hoàn",
-      message: suspect
-        ? `${p.waybill_code} quét ở ${station?.name ?? p.scanner_device_code} — có thể là hàng hoàn, không tính đơn`
-        : `${p.waybill_code} đã ghi hoàn trước đó`,
+      kind,
+      title,
+      message,
       occurred_at: p.scanned_at,
       scanner_device_code: p.scanner_device_code,
       station_code: station?.code ?? null,

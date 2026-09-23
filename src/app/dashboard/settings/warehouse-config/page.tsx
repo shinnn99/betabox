@@ -337,7 +337,7 @@ export default function WarehouseConfigPage() {
                   ) : (
                     <>
                       <label className="block text-sm font-medium text-slate-700 mb-1">
-                        Số ngày giữ video
+                        Số ngày giữ video đóng hàng
                       </label>
                       <div className="flex items-center gap-2">
                         <input
@@ -353,7 +353,7 @@ export default function WarehouseConfigPage() {
                         <span className="text-sm text-slate-500">ngày</span>
                         <button
                           type="button"
-                          onClick={guard(allowOrg, "đổi số ngày giữ video", () => void handleSaveRetention())}
+                          onClick={guard(allowOrg, "đổi số ngày giữ video đóng hàng", () => void handleSaveRetention())}
                           disabled={retentionSaving || !retentionDirty}
                           className={`ml-auto inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed${deniedClass(allowOrg)}`}
                         >
@@ -402,7 +402,8 @@ export default function WarehouseConfigPage() {
                         </div>
                         <p className="mt-2 text-xs text-slate-500">
                           Chỉ áp cho đoạn video THUẦN hàng hoàn trên ổ đĩa máy kho.
-                          Để trống = 7 ngày. Đoạn có cả đơn đi vẫn giữ theo số ngày ở trên.
+                          Để trống = 7 ngày. Đoạn có cả đơn đi vẫn giữ theo số ngày
+                          của đóng hàng ở trên.
                         </p>
                       </div>
 

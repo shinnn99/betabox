@@ -9,12 +9,14 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleAlert,
+  CircleX,
   Clock,
   Copy,
   History,
   PackageCheck,
   PackageOpen,
   PackageX,
+  PlugZap,
   Radio,
   ScanLine,
   Timer,
@@ -42,8 +44,10 @@ import ReturnCapturePanel from "@/components/returns/ReturnCapturePanel";
  *
  * Khác chức năng:
  *   - Dữ liệu từ /api/returns/live/* (kiện hoàn, không phải đơn đi).
- *   - Thẻ số: Đã nhận · Quét lại · Cần xử lý (hồ sơ mở) · Nhân sự.
- *   - Cần xử lý: hồ sơ kiện có vấn đề, mã quay lại bàn đóng hàng.
+ *   - Thẻ số: Đã nhận · Quét lại · Cần xử lý · Nhân sự.
+ *   - Cần xử lý: LÀM Y NHƯ bên đóng hàng (chốt 23/09/2026) — các lượt quét
+ *     hỏng trong ngày, cùng bộ chữ, khác mỗi nguồn dữ liệu (chỉ đọc lượt
+ *     quét của luồng hoàn). Hồ sơ khiếu nại ở trang Bằng chứng hoàn hàng.
  *   - Nhật ký: kiện hoàn + thẻ điều khiển.
  *   - Ô Bắt đầu / Kết thúc nhận hoàn (tín hiệu module xuống agent).
  *
@@ -103,8 +107,10 @@ interface SummaryResponse {
     suspect: number;
     /** Kiện đang mở. */
     open: number;
-    /** Hồ sơ chưa khiếu nại — mọi ngày, không chỉ hôm nay. */
-    open_claims: number;
+    /** Lượt quét hỏng — đếm y như bên đóng hàng. */
+    no_active_session: number;
+    unmapped_scanner: number;
+    invalid_code: number;
   };
   active_sessions: { staff_count: number; station_count: number };
   stale_session_warnings: StaleSessionWarning[];
@@ -183,7 +189,14 @@ interface ActivityResponse {
   total: number;
 }
 
-type IssueKind = "claim_open" | "return_suspect" | "duplicated_return";
+// Cùng bộ loại với Giám sát đóng hàng — xem src/lib/warehouse/live/issues.ts.
+// Chỉ khác: `return_suspect` là lưới an toàn, chỉ luồng hoàn mới có.
+type IssueKind =
+  | "no_active_session"
+  | "unmapped_scanner"
+  | "duplicated"
+  | "invalid_code"
+  | "return_suspect";
 
 interface Issue {
   id: string;
@@ -323,15 +336,19 @@ const CATEGORY_TONE: Record<
 };
 
 const ISSUE_KIND_ICON: Record<IssueKind, typeof CheckCircle2> = {
-  claim_open: PackageX,
+  duplicated: Copy,
+  no_active_session: PackageX,
+  unmapped_scanner: PlugZap,
+  invalid_code: CircleX,
   return_suspect: History,
-  duplicated_return: Copy,
 };
 
 const ISSUE_KIND_TONE: Record<IssueKind, "warning" | "error"> = {
-  claim_open: "error",
+  duplicated: "warning",
+  no_active_session: "error",
+  unmapped_scanner: "error",
+  invalid_code: "error",
   return_suspect: "warning",
-  duplicated_return: "warning",
 };
 
 function describeActivityToast(ev: ActivityItem): {
@@ -783,9 +800,13 @@ export default function ReturnsMonitorPage() {
   const todayOpen = summary?.today.open ?? 0;
   const todayDuplicated = summary?.today.duplicated ?? 0;
   const todaySuspect = summary?.today.suspect ?? 0;
-  // Hồ sơ mở: việc phải làm trước khi hết hạn khiếu nại với sàn. Không bó
-  // hôm nay — hồ sơ sống 7 ngày.
-  const openClaims = summary?.today.open_claims ?? 0;
+  // Đếm y như bên đóng hàng: CHỈ lỗi hệ thống của lượt quét hôm nay. Kiện
+  // quét lại đã có thẻ riêng; lưới an toàn là anomaly nghiệp vụ nên chỉ
+  // nhắc ở dòng phụ, không cộng vào con số — xem operations/page.tsx.
+  const todayIssueCount =
+    (summary?.today.no_active_session ?? 0) +
+    (summary?.today.unmapped_scanner ?? 0) +
+    (summary?.today.invalid_code ?? 0);
   const openStationId = stations.some(
     (station) => station.station_id === selectedStationId,
   )
@@ -858,16 +879,18 @@ export default function ReturnsMonitorPage() {
           >
             <StatCard
               label="Cần xử lý"
-              value={String(openClaims)}
+              value={String(todayIssueCount)}
               hint={
-                openClaims > 0
-                  ? `${openClaims} hồ sơ chưa khiếu nại${todaySuspect > 0 ? ` · ${todaySuspect} mã quay lại bàn đóng hàng` : ""}`
+                todayIssueCount > 0
+                  ? `${summary?.today.no_active_session ?? 0} chưa vào ca · ${summary?.today.unmapped_scanner ?? 0} chưa gán bàn${todaySuspect > 0 ? ` · ${todaySuspect} hàng hoàn quét ở bàn đóng hàng` : ""}`
                   : todaySuspect > 0
-                    ? `Không có hồ sơ mở · ${todaySuspect} mã quay lại bàn đóng hàng`
-                    : "Không có hồ sơ cần xử lý"
+                    ? `Không có lỗi hệ thống · ${todaySuspect} hàng hoàn quét ở bàn đóng hàng`
+                    : "Không có lỗi hệ thống"
               }
               icon={AlertTriangle}
-              tone={openClaims > 0 ? "rose" : todaySuspect > 0 ? "amber" : "emerald"}
+              tone={
+                todayIssueCount > 0 ? "rose" : todaySuspect > 0 ? "amber" : "emerald"
+              }
             />
           </button>
           <StatCard

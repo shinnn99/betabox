@@ -58,7 +58,15 @@ Bỏ hẳn nhãn lý do hoàn ("Khách trả", "Giao thất bại"...) và nhãn
 là hoàn. Thứ duy nhất còn lại ở đó là hồ sơ khiếu nại kèm đồng hồ đếm ngược,
 vì đó là cái có hạn và làm chậm là mất tiền. Chữ khắc trên video giữ nguyên.
 
-## 6. Ghi chép
+## 6. Khối "Cần xử lý" (bổ sung 23/09/2026)
+
+Bên đóng hàng khối này là "các lượt quét hỏng hôm nay". Bên hoàn hàng nó
+từng là "hồ sơ khiếu nại còn hạn" — một việc khác hẳn, lại lặp đồng hồ đếm
+ngược đã có ở trang Bằng chứng hoàn hàng. Sửa cho cùng một việc, cùng một
+bộ chữ (`describeScanIssue`), nhưng NGUỒN DỮ LIỆU VẪN RIÊNG: mỗi màn hình
+chỉ đọc lượt quét của `event_kind` mình.
+
+## 7. Ghi chép
 
 `change.md` và `changelog/2026-09-23.md`.
 
