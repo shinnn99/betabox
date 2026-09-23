@@ -1018,10 +1018,11 @@ docs([Module]):     Cập nhật tài liệu
 
 - **Mục tiêu:** Chủ dự án chốt 23/09/2026: "chỉ có chủ sở hữu mới được quyền xoá tài khoản khác, các role khác không được phép, chủ sở hữu phải thật sự xoá được, xoá luôn dữ liệu tài khoản đó khỏi database".
 - **Hai lớp chặn:**
-  - `supabase/migrations/20260923110000_only_owner_deletes_users.sql` (mới, CHƯA ÁP): xoá `user.delete` khỏi mọi vai trò trừ `owner`. Trước đó owner + admin + trưởng kho đều có (đợt phân quyền 22/09). `user.create` và `user.update` GIỮ NGUYÊN cho admin và trưởng kho.
+  - `supabase/migrations/20260923110000_only_owner_deletes_users.sql` (mới, ĐÃ ÁP 23/09/2026): xoá `user.delete` khỏi mọi vai trò trừ `owner`. Trước đó owner + admin + trưởng kho đều có (đợt phân quyền 22/09). `user.create` và `user.update` GIỮ NGUYÊN cho admin và trưởng kho.
   - `src/app/api/users/[id]/route.ts`: chốt độc lập với bảng quyền — `ctx.role !== "owner"` → 403 `owner_only`, đặt TRƯỚC mọi thao tác chạm database. Một dòng cấp nhầm trong `role_permission_matrix` không mở được cánh cửa này.
 - **Xoá thật:** vẫn `auth.admin.deleteUser` (hồ sơ `user_profiles` đi theo bằng khoá ngoại ON DELETE CASCADE — đã đo trên database thật), thêm lệnh xoá hồ sơ làm lưới an toàn cho hai ca hiếm: cascade bị gỡ, hoặc hồ sơ mồ côi khi tài khoản đăng nhập đã mất từ trước. Nhật ký `audit_logs` vẫn giữ (khoá ngoại ON DELETE SET NULL) — mất người nhưng không mất dấu vết.
 - **Giao diện:** nút Xoá đã chặn-khi-bấm sẵn theo `user.delete`, nên admin/trưởng kho bấm vào chỉ nhận "Bạn không có quyền xoá người dùng." Hộp xác nhận viết rõ hồ sơ bị xoá hẳn, nhật ký cũ vẫn giữ.
 - **Files test:** `tests/role-permissions.test.ts` — bỏ giả định trưởng kho có `user.delete`, thêm bài canh migration + chốt route + "không được biến thành xoá mềm".
 - **Kết quả kiểm tra:** `pnpm test` 549/549, `tsc` đạt. Kiểm trên web thật (org test, tài khoản tạm đã xoá sạch): admin → 403, trưởng kho → 403, tài khoản đích vẫn còn nguyên; chủ sở hữu → 200, hồ sơ biến khỏi `user_profiles`, tài khoản đăng nhập cũng mất, `audit_logs` vẫn ghi `user.delete`; chủ sở hữu tự xoá mình → 400.
-- **Trạng thái:** Chờ chủ dự án áp migration (bảng `role_permission_matrix` không sửa được bằng service role).
+- **Sau khi áp migration:** kiểm lại trên web thật — bảng quyền chỉ còn `owner` có `user.delete`; `user.create`/`user.update` vẫn đủ owner + admin + trưởng kho; `/api/session-permissions` của admin không còn `user.delete` (nút Xoá mờ đi); admin gọi thẳng API → 403; chủ sở hữu xoá → 200 và cả hồ sơ lẫn tài khoản đăng nhập biến mất.
+- **Trạng thái:** Hoàn tất.
