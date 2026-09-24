@@ -1042,4 +1042,9 @@ docs([Module]):     Cập nhật tài liệu
   - Đo bằng ảnh dựng sẵn: mã QR cỡ nhãn TikTok (~50 pixel trong khung 2560x1440) đọc ra đúng mã; cũng mã đó sau khi bóp xuống 640x360 theo cách cũ thì KHÔNG đọc được. Mã Code128 thật đọc ra đúng chuỗi. ffprobe thật trả đúng 2560x1440 cho luồng dựng bằng ffmpeg.
   - CHƯA thử được trên camera thật: cả 3 camera của kho test đều không kết nối được (gõ cửa cổng RTSP không ai trả lời).
 - **Phiên bản:** 0.11.0 — `warehouse-agent/package.json`, `installer/betacom-agent.iss`, `RELEASES.md`. Đã build `warehouse-agent/dist-exe/betacom-agent.exe` (68 MB, không vào git). CHƯA dựng được bộ cài `.exe`: máy này không còn Inno Setup.
+- **Đo lại sau khi chủ dự án cho thông số hiện trường (ống 12mm, nhãn cách ~50cm, khung hình chỉ rộng hơn tờ A6 một chút → tầm nhìn ~12-16cm ngang):**
+  - Ở khung 1920x1080 và 2560x1440: QR 2x2cm, QR 3x3cm và mã vạch Code128 đều đọc ra đúng mã trong CẢ bốn kiểu ảnh xấu (nét / hơi mờ / mờ + nghiêng 12° / mờ nặng), ở cả ba mốc tầm nhìn 12, 16, 23cm. Chốt thành `tests/qr-size-commitment.test.ts`.
+  - **Phát hiện ngược:** với khung hẹp cỡ A6 thì ĐƯỜNG CŨ (ép 640x360) cũng đủ pixel cho QR 2cm. Nghĩa là ở hiện trường này, độ phân giải KHÔNG phải nút thắt duy nhất.
+  - Đo ngưỡng nhoè (bán kính nhoè quy về mm trên nhãn): QR 2x2cm chịu tới ~0,5mm, QR 3x3cm ~1mm, mã vạch Code128 ~0,3mm — và con số này GIỐNG NHAU ở mọi độ phân giải, vì nhoè là mất thông tin quang học, thêm pixel không cứu được. Mã vạch 6cm tuy to nhưng vạch hẹp ~0,33mm nên chịu nhoè kém hơn QR.
+  - Kết luận: phần mềm hết chặn (ceiling 640x360 + chỉ đọc QR), nhưng nếu ảnh ra mờ thì phải xử lý quang học — ống 12mm thường có cự ly lấy nét gần tối thiểu quanh 0,5-1m, cần soi lại nét tại chỗ.
 - **Trạng thái:** Chờ cập nhật agent tại kho rồi thử bằng nhãn thật.
