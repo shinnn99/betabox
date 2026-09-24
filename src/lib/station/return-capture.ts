@@ -162,18 +162,21 @@ export async function releaseReturnCapture(params: {
    */
   force?: boolean;
 }): Promise<ReleaseResult> {
-  // Chỉ truyền `p_force` khi thật sự cần ép: bản database chưa áp
-  // migration 20260924100000 không có tham số này, và gọi thừa một tham
-  // số là PostgREST không tìm thấy hàm — tắt thường sẽ hỏng theo. Tắt
-  // thường phải chạy được trên cả hai bản.
-  const args: Record<string, unknown> = {
+  // LUÔN truyền `p_force`, kể cả khi bằng false.
+  //
+  // Thêm tham số bằng CREATE OR REPLACE sinh ra bản hàm THỨ HAI bên cạnh
+  // bản cũ chứ không thay nó. Gọi thiếu tham số thì database không biết
+  // chọn bản nào ("could not choose the best candidate function") và tắt
+  // phiên hoàn chết hẳn — đo được trên database thật 24/09/2026. Truyền đủ
+  // 5 tham số thì khớp đúng một bản, chạy được cả trước lẫn sau khi bản cũ
+  // bị bỏ (20260924110000).
+  const { data, error } = await params.admin.rpc("release_return_capture", {
     p_station_id: params.stationId,
     p_holder: params.holder,
     p_reason: params.reason ?? "module_exit",
     p_at: params.at ?? new Date().toISOString(),
-  };
-  if (params.force) args.p_force = true;
-  const { data, error } = await params.admin.rpc("release_return_capture", args);
+    p_force: params.force ?? false,
+  });
   if (error) throw new Error(`release_return_capture: ${error.message}`);
 
   const row = (Array.isArray(data) ? data[0] : data) as
