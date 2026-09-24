@@ -4,13 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "next dev --experimental-https --experimental-https-key ./certs/localhost-key.pem --experimental-https-cert ./certs/localhost.pem",
-    "prebuild": "node scripts/check-proof-clip-signed-url.mjs && node scripts/check-write-routes-pass-request.mjs && node scripts/check-client-writes-use-apifetch.mjs",
+    "prebuild": "node --experimental-strip-types scripts/build-changelog.mjs && node scripts/check-proof-clip-signed-url.mjs && node scripts/check-write-routes-pass-request.mjs && node scripts/check-client-writes-use-apifetch.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "test": "node --import ./tests/register.mjs --conditions=react-server --experimental-strip-types --test \"tests/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
+    "build:changelog": "node --experimental-strip-types scripts/build-changelog.mjs",
     "check:signed-url": "node scripts/check-proof-clip-signed-url.mjs",
     "check:write-routes": "node scripts/check-write-routes-pass-request.mjs",
     "check:client-writes": "node scripts/check-client-writes-use-apifetch.mjs"

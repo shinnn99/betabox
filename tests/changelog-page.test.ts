@@ -7,6 +7,7 @@ import {
   scaleFromVersion,
   scaleOf,
 } from "../src/lib/changelog/releases.ts";
+import { collectReleases, parseReleaseSection } from "../src/lib/changelog/parse.ts";
 
 /**
  * Nhật ký cập nhật phiên bản (chủ dự án chốt 24/09/2026).
@@ -107,4 +108,82 @@ test("máy kho lên phiên bản mới thì nhật ký phải có mục tương 
       );
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// Nguồn nội dung là thư mục changelog/ — giao diện chỉ đọc lại
+// ---------------------------------------------------------------------------
+
+test("nội dung trên giao diện khớp đúng với thư mục changelog/", () => {
+  // Sửa markdown mà quên chạy lại bộ sinh thì bài này đỏ, kèm cách sửa.
+  const files = readdirSync("changelog")
+    .filter((name) => /^\d{4}-\d{2}-\d{2}\.md$/.test(name))
+    .sort()
+    .reverse()
+    .map((name) => ({ name, content: readFileSync(`changelog/${name}`, "utf8") }));
+  assert.deepEqual(
+    RELEASES,
+    collectReleases(files),
+    "generated.ts đã cũ — chạy: pnpm build:changelog",
+  );
+});
+
+test("bộ đọc hiểu đúng khuôn, và từ chối khuôn sai", () => {
+  const md = [
+    "# 24/09/2026",
+    "",
+    "## Việc kỹ thuật trong ngày",
+    "- sửa hàm abc trong file xyz.ts",
+    "",
+    "## Phát hành cho người dùng",
+    "",
+    "<!-- ban: agent=0.12.0 -->",
+    "### Tiêu đề bản phát hành",
+    "Đoạn tóm tắt.",
+    "",
+    "#### [Mới] Mục một",
+    "Chi tiết mục một.",
+    "",
+    "#### [Sửa lỗi] Mục hai",
+    "Chi tiết mục hai.",
+    "",
+    "## Mục kỹ thuật khác",
+    "- không được đọc vào đây",
+  ].join("\n");
+
+  const out = parseReleaseSection(md, "2026-09-24");
+  assert.equal(out.length, 1);
+  assert.equal(out[0].agentVersion, "0.12.0");
+  assert.equal(out[0].title, "Tiêu đề bản phát hành");
+  assert.equal(out[0].summary, "Đoạn tóm tắt.");
+  assert.deepEqual(
+    out[0].items.map((i) => [i.tag, i.title]),
+    [
+      ["Mới", "Mục một"],
+      ["Sửa lỗi", "Mục hai"],
+    ],
+  );
+  assert.equal(scaleOf(out[0]), "lon", "0.12.0 là bản lớn");
+
+  // File nhật ký kỹ thuật thuần thì không đẩy gì ra giao diện.
+  assert.deepEqual(parseReleaseSection("# 14/09\n\n## Việc trong ngày\n- abc", "2026-09-14"), []);
+
+  // Nhãn lạ phải báo lỗi ngay lúc build, không im lặng bỏ qua.
+  const badTag = [
+    "## Phát hành cho người dùng",
+    "### Tiêu đề",
+    "Tóm tắt.",
+    "#### [Linh tinh] Mục",
+    "Chi tiết.",
+  ].join("\n");
+  assert.throws(() => parseReleaseSection(badTag, "2026-09-24"), /không hợp lệ/);
+
+  // Thiếu tóm tắt cũng phải báo.
+  const noSummary = [
+    "## Phát hành cho người dùng",
+    "### Tiêu đề",
+    "#### [Mới] Mục",
+    "Chi tiết.",
+  ].join("\n");
+  assert.throws(() => parseReleaseSection(noSummary, "2026-09-24"), /thiếu đoạn tóm tắt/);
 });

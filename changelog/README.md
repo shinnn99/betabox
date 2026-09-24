@@ -6,6 +6,41 @@ Mỗi file là một ngày làm việc. Nội dung tổng hợp từ lịch sử
 
 ---
 
+## Cách viết mục hiện ra trên giao diện
+
+Trang **Quản lý hệ thống → Nhật ký cập nhật phiên bản** đọc TỰ ĐỘNG từ thư mục này. Nhưng chỉ đọc đúng một mục trong mỗi file — phần còn lại là nhật ký kỹ thuật, người vận hành kho đọc không hiểu và cũng không cần.
+
+Muốn một thay đổi hiện ra ngoài giao diện thì thêm mục này vào file của ngày đó:
+
+```markdown
+## Phát hành cho người dùng
+
+<!-- ban: agent=0.12.0 -->
+### Đọc được mã QR nhỏ và cả mã vạch
+
+Một đoạn tóm tắt: việc gì đổi, vì sao. Viết bằng chữ của người dùng kho —
+không tên file, không tên hàm, không mã migration.
+
+#### [Sửa lỗi] Mã QR nhỏ trên nhãn TikTok giờ đọc được
+
+Một đoạn chi tiết.
+
+#### [Mới] Quét trúng mã vạch cũng được
+
+Một đoạn chi tiết.
+```
+
+Luật:
+
+- `<!-- ban: agent=0.12.0 -->` — số máy kho. Ghi `agent=web` (hoặc bỏ dòng này) khi chỉ đổi phần trên web.
+- Mức độ suy ra từ số phiên bản: số cuối bằng 0 (`0.9.0`, `0.12.0`) là **thay đổi lớn**; khác 0 (`0.9.1`) là nhỏ. Muốn đè thì thêm `muc=lon` hoặc `muc=nho` — dùng cho thay đổi chỉ trên web nhưng đổi cách vận hành, ví dụ phân quyền.
+- Nhãn mục con chỉ được là `[Mới]`, `[Sửa lỗi]`, `[Cải tiến]`. Nhãn lạ làm hỏng build — cố ý, để không có mục nào lọt ra ngoài mà không ai đọc lại.
+- Một file có thể chứa nhiều bản phát hành; mỗi `### ` là một bản.
+
+Sau khi viết xong chạy `pnpm build:changelog` để sinh lại `src/lib/changelog/generated.ts` (lệnh `pnpm build` tự chạy bước này). Quên chạy thì `pnpm test` đỏ và nói rõ phải chạy lệnh gì.
+
+---
+
 ## Dòng thời gian
 
 | Ngày | Chủ đề chính | File |

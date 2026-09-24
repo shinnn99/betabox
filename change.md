@@ -1080,5 +1080,12 @@ docs([Module]):     Cập nhật tài liệu
 - **Files:** `src/lib/changelog/releases.ts` (mới), `src/app/dashboard/settings/changelog/page.tsx` (mới), `src/lib/nav.ts` + `src/lib/nav-access.ts` (thêm mục, quyền `audit.view` — cùng quyền với Nhật ký hệ thống nên Viewer không thấy).
 - **Files test:** `tests/changelog-page.test.ts` (mới, 6 bài); cập nhật `tests/role-permissions.test.ts` (Viewer không thấy trang mới).
 - **Kết quả kiểm tra:** `pnpm test` 555/555, `tsc` đạt, `eslint` không lỗi. Trên web thật: admin và trưởng kho mở được trang và thấy mục menu; Viewer không thấy mục menu, mở thẳng đường dẫn thì giao diện chặn bằng màn "Bạn không có quyền xem trang này".
-- **Không tự cập nhật, nhưng không thể quên:** nội dung là file viết tay nên mỗi lần cập nhật hệ thống phải thêm mục. Chốt chống quên nằm trong `tests/changelog-page.test.ts`: nâng số phiên bản máy kho ở `warehouse-agent/package.json` mà chưa có mục tương ứng thì test đỏ ngay, kèm câu chỉ đúng file cần sửa. Bộ cài đã phát hành trong `warehouse-agent/releases/` cũng phải có mục. Thử nghiệm: đổi tạm lên 0.13.0 → test đỏ đúng như mong đợi, trả lại 0.12.0 → xanh.
+- **Đổi sang TỰ ĐỘNG đọc từ `changelog/` (chủ dự án chốt 24/09/2026: "cập nhật gì thì ghi vào folder changelog, sau đó từ changelog đó đọc và tự đẩy ra giao diện"):**
+  - Mỗi file `changelog/YYYY-MM-DD.md` có thể chứa mục `## Phát hành cho người dùng`. CHỈ mục đó được đọc ra giao diện — phần còn lại là nhật ký kỹ thuật (tên file, tên hàm, mã migration), đổ thẳng ra thì người vận hành kho không hiểu. Khuôn viết ghi ở `changelog/README.md`.
+  - `src/lib/changelog/parse.ts` (mới): đọc khuôn đó, suy mức độ lớn/nhỏ từ số phiên bản, và NÉM LỖI khi khuôn sai (nhãn lạ, thiếu tóm tắt, thiếu chi tiết) — hỏng lúc build còn hơn lọt ra ngoài một mục rỗng.
+  - `scripts/build-changelog.mjs` (mới) sinh `src/lib/changelog/generated.ts`, chạy tự động trong `prebuild`. Sinh ra file .ts chứ không .json vì Node ESM đòi `with { type: "json" }` mà bộ test chạy thẳng bằng Node.
+  - Vì sao sinh lúc build chứ không đọc lúc chạy: trang chạy trên Vercel, nơi thư mục `changelog/` không đi theo bản build.
+  - Bài test so nội dung sinh ra với `changelog/`: sửa markdown mà quên chạy lại thì test đỏ, kèm đúng lệnh cần chạy. Thử nghiệm: đổi một tiêu đề trong `changelog/2026-09-24.md` → test đỏ; trả lại → xanh.
+  - Backfill 10 bản phát hành (agent 0.8.9 → 0.12.0 và các thay đổi chỉ trên web) vào đúng file ngày tương ứng; thêm `changelog/2026-08-11.md` và `changelog/2026-09-22.md` cho hai bản trước đây chưa có file.
+- **Kết quả kiểm tra (sau khi đổi):** `pnpm test` 558/558, `tsc` đạt, `eslint` không lỗi. Trên web thật: trang đọc ra đủ 10 bản, có cả hai mốc đổi cách vận hành.
 - **Trạng thái:** Hoàn tất.
