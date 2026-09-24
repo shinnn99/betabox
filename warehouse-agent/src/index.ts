@@ -1900,6 +1900,18 @@ async function main(): Promise<void> {
         watchdogLastTickMsAgo: runtimeWatchdog.current?.getLivenessMsAgo(),
       });
       if (!r.ok) console.error(`[HEARTBEAT-FAIL ${r.status}]`);
+      // Đồng bộ phiên ghi hoàn theo TRẠNG THÁI cloud, không chỉ theo lệnh.
+      // `null` = không đọc được (mạng lỗi / cloud bản cũ) → giữ nguyên,
+      // tuyệt đối không tự tắt phiên đang chạy.
+      if (r.activeCaptures !== null) {
+        try {
+          await returnCapture.reconcile(
+            r.activeCaptures.map((c) => ({ ...c, active: true })),
+          );
+        } catch (err) {
+          console.warn(`[return-capture] đồng bộ thất bại: ${(err as Error).message}`);
+        }
+      }
       // Cache retention_days từ cloud xuống file local. Chỉ cache khi
       // cloud trả số hợp lệ (heartbeat.ts đã validate range 7-365 và
       // integer). NULL = cloud chưa cấu hình → KHÔNG ghi cache (script

@@ -174,6 +174,62 @@ export class ReturnCaptureStore {
     return null;
   }
 
+  /**
+   * Đồng bộ với danh sách phiên ĐANG BẬT mà cloud gửi kèm mỗi nhịp
+   * heartbeat.
+   *
+   * Vì sao phải có (sự cố 24/09/2026 — "chuyển từ đóng hàng sang hoàn
+   * hàng thì được, chuyển ngược lại thì không"): trước đây agent chỉ biết
+   * tắt phiên khi nhận được LỆNH tắt, mà lệnh đó chỉ sinh ra từ đúng một
+   * đường (người dùng bấm Kết thúc và mình là người giữ cuối cùng). Bốn
+   * đường còn lại — bàn tự về sau 5 phút, đóng ca, đổi mục đích bàn, hết
+   * hạn phiên — đều đóng kỳ THẲNG TRONG DATABASE, không ai báo agent. Agent
+   * giữ phiên mãi, tiếp tục gán nhãn hàng hoàn cho video đóng hàng, và
+   * video đơn đi bị xoá theo hạn 7 ngày của hàng hoàn.
+   *
+   * Kiểm chứng trên database thật: mọi lệnh `set_return_capture` từng gửi
+   * đều `active=true`, chưa từng có một lệnh tắt nào.
+   *
+   * Giờ cloud gửi DANH SÁCH phiên đang bật; phiên nào agent giữ mà không
+   * có trong danh sách thì tắt. Trễ nhất là một nhịp heartbeat.
+   */
+  async reconcile(active: CaptureSignal[]): Promise<void> {
+    const wanted = new Map(active.map((c) => [c.capture_id, c]));
+
+    for (const entry of [...this.captures.values()]) {
+      if (entry.draining) continue;
+      if (wanted.has(entry.capture_id)) continue;
+      console.warn(
+        `[return-capture] cloud không còn phiên ${entry.capture_id} — tắt theo trạng thái cloud`,
+      );
+      await this.apply({
+        capture_id: entry.capture_id,
+        station_id: entry.station_id,
+        camera_ids: entry.camera_ids,
+        active: false,
+      });
+    }
+
+    for (const signal of wanted.values()) {
+      const existing = this.captures.get(signal.capture_id);
+      if (existing && !existing.draining) {
+        if (existing.camera_ids.join() !== signal.camera_ids.join()) {
+          existing.camera_ids = [...signal.camera_ids];
+          await this.persist();
+        }
+        continue;
+      }
+      if (existing?.draining) continue;
+      // Phiên cloud đang bật mà agent không giữ: lệnh BẬT rơi mất, hoặc
+      // agent vừa khởi động lại. Nhận lại — `finishedIds` không chặn
+      // đường này, vì đây là trạng thái HIỆN TẠI của cloud chứ không phải
+      // một lệnh cũ giao trễ.
+      this.finishedIds = this.finishedIds.filter((id) => id !== signal.capture_id);
+      console.warn(`[return-capture] nhận lại phiên ${signal.capture_id} theo trạng thái cloud`);
+      await this.apply({ ...signal, active: true });
+    }
+  }
+
   /** Nhận tín hiệu BẬT/TẮT từ cloud. Idempotent theo capture_id. */
   async apply(signal: CaptureSignal): Promise<void> {
     const existing = this.captures.get(signal.capture_id);

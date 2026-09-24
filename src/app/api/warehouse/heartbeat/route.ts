@@ -10,6 +10,7 @@ import { enqueueCutClip } from "@/lib/agent-commands/enqueue";
 import { forceStopExpiredOrders } from "@/lib/station/force-stop-expired-orders";
 import { revertIdleReturnModes } from "@/lib/station/station-mode";
 import { requestClipsForOpenReturnClaims } from "@/lib/station/return-clip-requests";
+import { listActiveCaptures } from "@/lib/station/return-capture";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -146,9 +147,25 @@ export async function POST(req: Request) {
     .maybeSingle();
   const retentionDays = org?.retention_days ?? null;
 
+  // Trạng thái phiên ghi hoàn ĐANG BẬT — agent tự đồng bộ theo danh sách
+  // này. Trước 24/09/2026 agent chỉ biết tắt phiên qua lệnh, mà bốn trong
+  // năm đường đóng kỳ nằm gọn trong database nên không ai báo agent: bàn
+  // đã về đóng hàng mà agent vẫn gán nhãn hàng hoàn. Gửi kèm heartbeat thì
+  // sai lệch nhiều nhất chỉ sống một nhịp.
+  let activeCaptures: Array<{ capture_id: string; station_id: string; camera_ids: string[] }> = [];
+  try {
+    activeCaptures = await listActiveCaptures({
+      admin,
+      organizationId: agent.organization_id,
+    });
+  } catch (error) {
+    console.warn(`[heartbeat] không đọc được phiên hoàn đang bật: ${(error as Error).message}`);
+  }
+
   return NextResponse.json({
     ok: true,
     last_seen_at: now,
     retention_days: retentionDays,
+    return_captures: activeCaptures,
   });
 }

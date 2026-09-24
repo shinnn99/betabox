@@ -1048,3 +1048,19 @@ docs([Module]):     Cập nhật tài liệu
   - Đo ngưỡng nhoè (bán kính nhoè quy về mm trên nhãn): QR 2x2cm chịu tới ~0,5mm, QR 3x3cm ~1mm, mã vạch Code128 ~0,3mm — và con số này GIỐNG NHAU ở mọi độ phân giải, vì nhoè là mất thông tin quang học, thêm pixel không cứu được. Mã vạch 6cm tuy to nhưng vạch hẹp ~0,33mm nên chịu nhoè kém hơn QR.
   - Kết luận: phần mềm hết chặn (ceiling 640x360 + chỉ đọc QR), nhưng nếu ảnh ra mờ thì phải xử lý quang học — ống 12mm thường có cự ly lấy nét gần tối thiểu quanh 0,5-1m, cần soi lại nét tại chỗ.
 - **Trạng thái:** Chờ cập nhật agent tại kho rồi thử bằng nhãn thật.
+
+### [MODE-2CHIEU] - Chuyển qua lại giữa hai luồng: chiều về đóng hàng bị kẹt
+
+- **Triệu chứng:** chủ dự án báo 24/09/2026 — "chuyển từ đóng hàng sang hoàn hàng thì chưa sao nhưng chuyển ngược lại thì không được".
+- **Bằng chứng trên database thật:** MỌI lệnh `set_return_capture` từng gửi xuống máy kho đều `active=true`. Chưa từng có một lệnh tắt nào. Đó là gốc rễ.
+- **Ba cái kẹt tìm được:**
+  1. **Máy kho không bao giờ được báo.** Có năm đường đóng kỳ hoàn, nhưng chỉ MỘT đường (người giữ cuối cùng bấm Kết thúc) sinh lệnh tắt. Bốn đường còn lại — bàn tự về sau 5 phút, đóng ca, đổi mục đích bàn, hết hạn phiên — chạy gọn trong database nên không ai báo agent. Agent giữ phiên mãi, tiếp tục gán nhãn hàng hoàn cho video đóng hàng, và video đơn đi bị xoá theo hạn 7 ngày.
+  2. **Người giữ treo.** Mỗi tab trình duyệt là một tên trong `holders`. Tab chết đột ngột thì tín hiệu nhả không gửi được; mở lại trang sinh tab mới nên bấm Kết thúc chỉ gỡ tên mới. Còn tên cũ thì `release_return_capture` trả `still_held` và bàn không rời chế độ hoàn. Giao diện lại không có nút nào ép tắt.
+  3. **Bàn chuyên hoàn kẹt vĩnh viễn.** Với bàn `purpose='return'`, tắt phiên gọi `set_station_mode` với chế độ đích TRÙNG chế độ đang chạy → hàm thoát sớm, kỳ không đóng, mã phiên không đổi. Lần bật sau agent thấy trùng mã phiên đã kết thúc nên im lặng bỏ qua.
+- **Sửa:**
+  - `warehouse-agent/src/return-capture.ts` thêm `reconcile()`; `src/app/api/warehouse/heartbeat/route.ts` trả kèm `return_captures` (danh sách phiên ĐANG BẬT); agent tự so mỗi nhịp và tắt phiên cloud không còn công nhận. Phân biệt rõ `null` (không đọc được) với `[]` (cloud nói không có phiên) — nhầm là tự tắt phiên đang chạy mỗi lần mạng chập.
+  - `supabase/migrations/20260924100000_mode_switch_both_ways.sql` (mới, CHƯA ÁP): `release_return_capture` thêm `p_force`; tự đóng kỳ trước khi đặt chế độ (nên bàn chuyên hoàn cũng có mã phiên mới); trigger rút dọn `holders` ở mọi trạng thái phiên.
+  - Giao diện: bàn đang nhận hoàn do nguồn khác bật giờ hiện nút **"Ép dừng"**; "Kết thúc tất cả" cũng ép. `releaseReturnCapture` chỉ truyền `p_force` khi thật sự ép, để bản database chưa áp migration vẫn tắt thường được.
+- **Files test:** `warehouse-agent/tests/return-capture-reconcile.test.ts` (mới, 6 bài); `scripts/qa-mode-switch-loop.mjs` (mới) — chuyển qua lại N vòng trên web thật, kèm ba tình huống khó; cập nhật `tests/return-parallel-stations.test.ts`.
+- **Kết quả kiểm tra:** web 549/549, agent 216/217 (bài trượt là khởi động thử MediaMTX, trượt vì cổng 8554 đang bị MediaMTX của agent đang chạy chiếm). Trên web thật (kho test): 8/8 vòng bật-tắt liên tiếp đều đúng cả bốn điểm kiểm, hai-tab đúng, tắt-thường-khi-còn-người-giữ đúng thiết kế. Hai ca CÒN SAI vì chờ migration: ép dừng khi có người giữ treo, và bàn chuyên hoàn sinh mã phiên mới (đo được: hai lần bật ra cùng mã `d4c3092f`).
+- **Trạng thái:** Chờ chủ dự án áp migration rồi chạy lại `node scripts/qa-mode-switch-loop.mjs` cho xanh hết.

@@ -60,6 +60,10 @@ export default function ReturnCapturePanel() {
   };
 
   const notHeld = stations.filter((s) => !s.capture.heldByMe).map((s) => s.id);
+  // Bàn đang nhận hoàn — kể cả do nguồn khác bật. Phải tắt được, nếu không
+  // một tab đã chết sẽ giữ bàn ở chế độ hoàn vĩnh viễn (sự cố 24/09/2026).
+  const running = stations.filter((s) => s.capture.heldByMe || s.capture.state === "active");
+  const runningIds = running.map((s) => s.id);
   const anyBusy = busyIds.size > 0;
 
   return (
@@ -83,8 +87,8 @@ export default function ReturnCapturePanel() {
           </button>
           <button
             type="button"
-            onClick={g(() => void stop(heldIds))}
-            disabled={anyBusy || heldIds.length === 0}
+            onClick={g(() => void stop(runningIds, true))}
+            disabled={anyBusy || runningIds.length === 0}
             className={`h-8 px-3 rounded-xl text-xs font-semibold text-white bg-slate-800 hover:bg-slate-900 inline-flex items-center gap-1.5 disabled:opacity-60${denied}`}
           >
             <Square className="h-3.5 w-3.5" />
@@ -122,15 +126,17 @@ export default function ReturnCapturePanel() {
                     {status.text}
                   </span>
                 </div>
-                {held ? (
+                {held || s.capture.state === "active" ? (
                   <button
                     type="button"
-                    onClick={g(() => void stop([s.id]))}
+                    // Không phải mình giữ thì ép dừng luôn: nguồn kia có
+                    // thể là một tab đã chết, không ai gỡ tên nó được nữa.
+                    onClick={g(() => void stop([s.id], !held))}
                     disabled={busy}
                     className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 inline-flex items-center gap-1 disabled:opacity-60${denied}`}
                   >
                     {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3" />}
-                    Kết thúc
+                    {held ? "Kết thúc" : "Ép dừng"}
                   </button>
                 ) : (
                   <button

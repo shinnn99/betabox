@@ -66,7 +66,13 @@ export async function POST(req: NextRequest) {
   const ctx = await requirePermission("return.operate", req);
   if (isError(ctx)) return ctx;
 
-  let body: { station_id?: unknown; station_ids?: unknown; action?: unknown; tab_id?: unknown };
+  let body: {
+    station_id?: unknown;
+    station_ids?: unknown;
+    action?: unknown;
+    tab_id?: unknown;
+    force?: unknown;
+  };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -144,7 +150,11 @@ export async function POST(req: NextRequest) {
           organizationId: ctx.organizationId,
           stationId,
           holder,
-          reason: "module_exit",
+          reason: body.force ? "module_force_exit" : "module_exit",
+          // Ép tắt: dùng khi bàn đang bật bởi một nguồn đã chết (tab đóng
+          // đột ngột nên tên người giữ kẹt lại). Không có đường này thì
+          // bàn không bao giờ rời được chế độ hoàn.
+          force: body.force === true,
         });
         return { station_id: stationId, ok: true, capture_id: r.captureId, still_held: r.stillHeld };
       } catch (err) {

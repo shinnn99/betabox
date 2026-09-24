@@ -62,7 +62,7 @@ interface CaptureContextValue {
   /** Bàn đang có thao tác chờ server trả lời. */
   busyIds: Set<string>;
   start: (stationIds: string[]) => Promise<void>;
-  stop: (stationIds: string[]) => Promise<void>;
+  stop: (stationIds: string[], force?: boolean) => Promise<void>;
 }
 
 const CaptureContext = createContext<CaptureContextValue | null>(null);
@@ -188,14 +188,14 @@ export default function ReturnCaptureProvider({ children }: { children: ReactNod
   }, [tabId]);
 
   const run = useCallback(
-    async (stationIds: string[], action: "open" | "close") => {
+    async (stationIds: string[], action: "open" | "close", force = false) => {
       if (stationIds.length === 0) return;
       setBusyIds((prev) => new Set([...prev, ...stationIds]));
       try {
         const res = await apiFetch("/api/returns/capture", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ station_ids: stationIds, action, tab_id: tabId }),
+          body: JSON.stringify({ station_ids: stationIds, action, tab_id: tabId, force }),
         });
         const body = (await res.json().catch(() => ({}))) as {
           message?: string;
@@ -239,7 +239,7 @@ export default function ReturnCaptureProvider({ children }: { children: ReactNod
         }
         if (stillHeld.length > 0) {
           toast.info(
-            `${stillHeld.map((r) => codeOf(r.station_id)).join(", ")} vẫn đang nhận hoàn vì còn máy khác đang mở trang Hàng hoàn.`,
+            `${stillHeld.map((r) => codeOf(r.station_id)).join(", ")} vẫn đang nhận hoàn vì còn máy khác đang mở trang Hàng hoàn. Bấm "Kết thúc" lần nữa để ép dừng.`,
           );
         }
       } catch (err) {
@@ -257,7 +257,18 @@ export default function ReturnCaptureProvider({ children }: { children: ReactNod
   );
 
   const start = useCallback((ids: string[]) => run(ids, "open"), [run]);
-  const stop = useCallback((ids: string[]) => run(ids, "close"), [run]);
+  /**
+   * `force` = ép dừng dù nguồn khác đang giữ.
+   *
+   * Cần vì tên người giữ có thể kẹt lại mãi: tab trình duyệt chết đột ngột
+   * thì tín hiệu nhả không gửi được, mà mở lại trang là sinh tab mới nên
+   * bấm Kết thúc chỉ gỡ đúng tab mới. Không có đường ép thì bàn không bao
+   * giờ rời được chế độ hoàn (sự cố 24/09/2026).
+   */
+  const stop = useCallback(
+    (ids: string[], force = false) => run(ids, "close", force),
+    [run],
+  );
 
   const value = useMemo(
     () => ({ stations, heldIds, busyIds, start, stop }),

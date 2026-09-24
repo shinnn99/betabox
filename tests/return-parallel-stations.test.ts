@@ -55,5 +55,11 @@ test("giao diện giữ nhiều bàn: một nhịp, một tín hiệu đóng cho
 
   const panel = readFileSync("src/components/returns/ReturnCapturePanel.tsx", "utf8");
   assert.ok(panel.includes("Bắt đầu tất cả bàn") && panel.includes("Kết thúc tất cả"));
-  assert.ok(panel.includes("stop([s.id])") && panel.includes("start([s.id])"), "mỗi bàn bật tắt độc lập");
+  // `stop([s.id], !held)`: bàn do nguồn khác bật thì ÉP dừng — nếu không,
+  // một tab đã chết giữ bàn ở chế độ hoàn vĩnh viễn (sự cố 24/09/2026).
+  assert.ok(
+    panel.includes("stop([s.id], !held)") && panel.includes("start([s.id])"),
+    "mỗi bàn bật tắt độc lập, và bàn do nguồn khác bật vẫn ép dừng được",
+  );
+  assert.ok(panel.includes('{held ? "Kết thúc" : "Ép dừng"}'), "nút nói rõ đang ép dừng");
 });

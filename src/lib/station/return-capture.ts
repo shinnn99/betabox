@@ -154,13 +154,26 @@ export async function releaseReturnCapture(params: {
   holder: string;
   reason?: string;
   at?: string;
+  /**
+   * Ép tắt dù còn nguồn khác đang giữ.
+   *
+   * Cần vì tên người giữ có thể kẹt lại mãi khi tab trình duyệt chết đột
+   * ngột — xem 20260924100000_mode_switch_both_ways.sql.
+   */
+  force?: boolean;
 }): Promise<ReleaseResult> {
-  const { data, error } = await params.admin.rpc("release_return_capture", {
+  // Chỉ truyền `p_force` khi thật sự cần ép: bản database chưa áp
+  // migration 20260924100000 không có tham số này, và gọi thừa một tham
+  // số là PostgREST không tìm thấy hàm — tắt thường sẽ hỏng theo. Tắt
+  // thường phải chạy được trên cả hai bản.
+  const args: Record<string, unknown> = {
     p_station_id: params.stationId,
     p_holder: params.holder,
     p_reason: params.reason ?? "module_exit",
     p_at: params.at ?? new Date().toISOString(),
-  });
+  };
+  if (params.force) args.p_force = true;
+  const { data, error } = await params.admin.rpc("release_return_capture", args);
   if (error) throw new Error(`release_return_capture: ${error.message}`);
 
   const row = (Array.isArray(data) ? data[0] : data) as
@@ -308,6 +321,48 @@ export async function readCaptureStatuses(params: {
       holders: row.ended_at === null ? (row.holders ?? []) : [],
       agentAcked: row.agent_acked_at !== null,
       open: row.ended_at === null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Các phiên ghi hoàn ĐANG BẬT của tổ chức — trạng thái hiện tại, không
+ * phải lệnh.
+ *
+ * Agent gọi mỗi nhịp heartbeat và tự đồng bộ theo danh sách này. Lý do có
+ * hàm này: trước 24/09/2026 agent chỉ tắt phiên khi nhận được LỆNH tắt, mà
+ * lệnh đó chỉ sinh từ một đường duy nhất (người giữ cuối cùng bấm Kết
+ * thúc). Bốn đường đóng kỳ còn lại nằm gọn trong database nên agent không
+ * bao giờ hay biết — kiểm trên database thật: mọi lệnh từng gửi đều
+ * `active=true`, chưa từng có lệnh tắt. Đó là lý do "chuyển sang hoàn hàng
+ * thì được, chuyển ngược lại thì không".
+ */
+export async function listActiveCaptures(params: {
+  admin: SupabaseClient;
+  organizationId: string;
+}): Promise<Array<{ capture_id: string; station_id: string; camera_ids: string[] }>> {
+  const { data, error } = await params.admin
+    .from("station_mode_periods")
+    .select("id, station_id")
+    .eq("organization_id", params.organizationId)
+    .eq("mode", "return")
+    .eq("capture_state", "active")
+    .is("ended_at", null);
+  if (error) throw new Error(`listActiveCaptures: ${error.message}`);
+
+  const rows = (data ?? []) as Array<{ id: string; station_id: string }>;
+  if (rows.length === 0) return [];
+
+  const out: Array<{ capture_id: string; station_id: string; camera_ids: string[] }> = [];
+  for (const row of rows) {
+    const { data: ids } = await params.admin.rpc("station_camera_ids", {
+      p_station_id: row.station_id,
+    });
+    out.push({
+      capture_id: row.id,
+      station_id: row.station_id,
+      camera_ids: Array.isArray(ids) ? (ids as string[]) : [],
     });
   }
   return out;

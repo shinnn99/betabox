@@ -12,6 +12,12 @@ import { fetchWithRetrySigned } from "./fetch-error";
  * để dashboard hiện badge cảnh báo. Nếu time-check fail, bỏ qua drift
  * (không blocker heartbeat).
  */
+export interface ActiveCapture {
+  capture_id: string;
+  station_id: string;
+  camera_ids: string[];
+}
+
 export async function sendHeartbeat(params: {
   backendUrl: string;
   agentCode: string;
@@ -26,6 +32,8 @@ export async function sendHeartbeat(params: {
   status: number;
   driftSeconds: number | null;
   retentionDays: number | null;
+  /** null = không đọc được; [] = cloud nói không có phiên nào đang bật. */
+  activeCaptures: ActiveCapture[] | null;
 }> {
   // Đo drift trước heartbeat. Nếu fail, tiếp tục với null.
   const driftSeconds = await measureTimeDrift(params.backendUrl);
@@ -65,9 +73,16 @@ export async function sendHeartbeat(params: {
   // hình → agent KHÔNG cache (script cleanup fail-loud). Chỉ cache khi
   // cloud trả số hợp lệ.
   let retentionDays: number | null = null;
+  // Phiên ghi hoàn cloud đang bật. `null` = không đọc được (mạng lỗi, bản
+  // cloud cũ chưa gửi) — KHÁC hẳn `[]` (cloud nói không có phiên nào).
+  // Nhầm hai cái này là tự tắt phiên đang chạy mỗi lần mạng chập.
+  let activeCaptures: ActiveCapture[] | null = null;
   if (res.ok) {
     try {
-      const json = (await res.json()) as { retention_days?: unknown };
+      const json = (await res.json()) as {
+        retention_days?: unknown;
+        return_captures?: unknown;
+      };
       if (
         typeof json.retention_days === "number" &&
         Number.isInteger(json.retention_days) &&
@@ -76,12 +91,27 @@ export async function sendHeartbeat(params: {
       ) {
         retentionDays = json.retention_days;
       }
+      if (Array.isArray(json.return_captures)) {
+        activeCaptures = json.return_captures.flatMap((item) => {
+          const row = item as Record<string, unknown>;
+          if (typeof row.capture_id !== "string" || typeof row.station_id !== "string") return [];
+          return [
+            {
+              capture_id: row.capture_id,
+              station_id: row.station_id,
+              camera_ids: Array.isArray(row.camera_ids)
+                ? row.camera_ids.filter((c): c is string => typeof c === "string")
+                : [],
+            },
+          ];
+        });
+      }
     } catch {
       // Body không parse được — bỏ qua, giữ null. Không phá heartbeat.
     }
   }
 
-  return { ok: res.ok, status: res.status, driftSeconds, retentionDays };
+  return { ok: res.ok, status: res.status, driftSeconds, retentionDays, activeCaptures };
 }
 
 /**
