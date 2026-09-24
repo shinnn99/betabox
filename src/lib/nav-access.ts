@@ -29,6 +29,9 @@ export const NAV_ACCESS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["/dashboard/users", ["user.view"]],
   ["/dashboard/settings/warehouse-config", ["warehouse.update"]],
   ["/dashboard/audit", ["audit.view"]],
+  // Nhật ký cập nhật phiên bản: cùng nhóm Quản lý hệ thống nên cùng quyền
+  // với Nhật ký hệ thống — chủ sở hữu, admin, trưởng kho.
+  ["/dashboard/settings/changelog", ["audit.view"]],
 ];
 
 const BY_HREF = new Map(NAV_ACCESS.map(([h, a]) => [h, a]));

@@ -1071,3 +1071,13 @@ docs([Module]):     Cập nhật tài liệu
 - **Kết quả kiểm tra cuối:** web 549/549, agent 220/221 (bài trượt là khởi động thử MediaMTX vì cổng 8554 đang bị MediaMTX của agent chiếm). Trên web thật sau khi áp migration đầu và sửa chữ ký hàm: **20/20 vòng bật-tắt liên tiếp đạt**, cộng cả năm tình huống — hai tab, tab cuối, tắt thường khi còn người giữ, ép dừng khi người giữ treo, bàn chuyên hoàn sinh mã phiên mới.
 - **Sau khi áp cả hai migration (24/09/2026), kiểm lại trên web thật:** 30/30 vòng bật-tắt liên tiếp đạt, và cả sáu tình huống đạt — hai tab, tab cuối, tắt thường khi còn người giữ, ép dừng khi người giữ treo, **lưới an toàn 2 phút** (dựng kỳ hoàn mất nhịp 5 phút → tự đóng, hết người giữ), bàn chuyên hoàn sinh mã phiên mới. Phép thử lưới an toàn đã đưa vào `scripts/qa-mode-switch-loop.mjs` vì chính nó bắt được lỗi nhân đôi chữ ký hàm.
 - **Trạng thái:** Hoàn tất phía cloud. Phần máy kho tự đồng bộ nằm trong agent 0.11.0, chưa cài ở kho nào.
+
+### [UI-CHANGELOG] - Trang "Nhật ký cập nhật phiên bản" trong Quản lý hệ thống
+
+- **Mục tiêu:** Chủ dự án chốt 24/09/2026 — đưa nội dung chính của các lần cập nhật ra giao diện, phân biệt thay đổi lớn / nhỏ, trình bày theo mẫu ảnh chủ dự án gửi (dòng thời gian, thẻ phiên bản, thẻ con gắn nhãn Mới / Sửa lỗi).
+- **Luật phân loại (chốt của chủ dự án):** LỚN = đổi cách vận hành (một camera một máy quét → hai camera; thêm luồng hàng hoàn) hoặc máy kho nhảy số giữa (0.8 → 0.9). NHỎ = chỉ nhảy số cuối (0.8.1 → 0.8.2). `scaleFromVersion` suy từ số cuối; mục chỉ đổi phần web thì đặt tay.
+- **Dữ liệu viết tay, KHÔNG đọc từ `changelog/` hay `change.md`:** hai chỗ đó viết cho người làm phần mềm (tên file, tên hàm, mã migration), người vận hành kho đọc không hiểu và cũng không cần. `src/lib/changelog/releases.ts` giữ bản dành cho người dùng — 10 mục từ agent 0.8.9 tới 0.12.0 cộng các thay đổi chỉ trên web.
+- **Files:** `src/lib/changelog/releases.ts` (mới), `src/app/dashboard/settings/changelog/page.tsx` (mới), `src/lib/nav.ts` + `src/lib/nav-access.ts` (thêm mục, quyền `audit.view` — cùng quyền với Nhật ký hệ thống nên Viewer không thấy).
+- **Files test:** `tests/changelog-page.test.ts` (mới, 6 bài); cập nhật `tests/role-permissions.test.ts` (Viewer không thấy trang mới).
+- **Kết quả kiểm tra:** `pnpm test` 555/555, `tsc` đạt, `eslint` không lỗi. Trên web thật: admin và trưởng kho mở được trang và thấy mục menu; Viewer không thấy mục menu, mở thẳng đường dẫn thì giao diện chặn bằng màn "Bạn không có quyền xem trang này".
+- **Trạng thái:** Hoàn tất.

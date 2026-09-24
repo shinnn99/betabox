@@ -84,7 +84,12 @@ test("nhóm setup đúng phạm vi đã chốt: camera, gán vào bàn, thiết 
 });
 
 test("viewer: xem mọi trang trừ nhóm Quản lý hệ thống; không có quyền ghi nào", () => {
-  const MANAGE_SYSTEM = ["/dashboard/users", "/dashboard/settings/warehouse-config", "/dashboard/audit"];
+  const MANAGE_SYSTEM = [
+    "/dashboard/users",
+    "/dashboard/settings/warehouse-config",
+    "/dashboard/audit",
+    "/dashboard/settings/changelog",
+  ];
   assert.deepEqual(
     visible(VIEWER_SET).sort(),
     MENU_HREFS.filter((h) => !MANAGE_SYSTEM.includes(h)).sort(),
