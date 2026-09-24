@@ -1080,4 +1080,5 @@ docs([Module]):     Cập nhật tài liệu
 - **Files:** `src/lib/changelog/releases.ts` (mới), `src/app/dashboard/settings/changelog/page.tsx` (mới), `src/lib/nav.ts` + `src/lib/nav-access.ts` (thêm mục, quyền `audit.view` — cùng quyền với Nhật ký hệ thống nên Viewer không thấy).
 - **Files test:** `tests/changelog-page.test.ts` (mới, 6 bài); cập nhật `tests/role-permissions.test.ts` (Viewer không thấy trang mới).
 - **Kết quả kiểm tra:** `pnpm test` 555/555, `tsc` đạt, `eslint` không lỗi. Trên web thật: admin và trưởng kho mở được trang và thấy mục menu; Viewer không thấy mục menu, mở thẳng đường dẫn thì giao diện chặn bằng màn "Bạn không có quyền xem trang này".
+- **Không tự cập nhật, nhưng không thể quên:** nội dung là file viết tay nên mỗi lần cập nhật hệ thống phải thêm mục. Chốt chống quên nằm trong `tests/changelog-page.test.ts`: nâng số phiên bản máy kho ở `warehouse-agent/package.json` mà chưa có mục tương ứng thì test đỏ ngay, kèm câu chỉ đúng file cần sửa. Bộ cài đã phát hành trong `warehouse-agent/releases/` cũng phải có mục. Thử nghiệm: đổi tạm lên 0.13.0 → test đỏ đúng như mong đợi, trả lại 0.12.0 → xanh.
 - **Trạng thái:** Hoàn tất.

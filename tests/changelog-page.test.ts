@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import {
   RELEASES,
   badgeOf,
@@ -79,4 +79,32 @@ test("trang chỉ đọc — không có nút ghi nào", () => {
   assert.ok(!page.includes("apiFetch"), "trang này không gọi API ghi");
   assert.ok(!/method:\s*"(POST|PATCH|DELETE)"/.test(page));
   assert.ok(page.includes("Thay đổi lớn"), "có nhãn phân biệt bản lớn");
+});
+
+test("máy kho lên phiên bản mới thì nhật ký phải có mục tương ứng", () => {
+  // Chốt chống quên: nội dung trang là file viết tay, không tự sinh ra.
+  // Nếu ai đó nâng số phiên bản máy kho mà không viết mục cho người dùng,
+  // bài test này đỏ ngay tại chỗ thay vì phát hiện sau khi khách đã dùng.
+  const pkg = JSON.parse(readFileSync("warehouse-agent/package.json", "utf8")) as {
+    version: string;
+  };
+  const versions = RELEASES.map((r) => r.agentVersion).filter((v): v is string => v !== null);
+  assert.ok(
+    versions.includes(pkg.version),
+    `máy kho đang là ${pkg.version} nhưng Nhật ký cập nhật phiên bản chưa có mục nào cho bản này — ` +
+      `thêm vào src/lib/changelog/releases.ts (mới nhất ở trên).`,
+  );
+
+  // Bộ cài đã phát hành cũng phải có mục: file nằm trong repo là bằng chứng
+  // bản đó đã tới tay người dùng.
+  if (existsSync("warehouse-agent/releases")) {
+    for (const file of readdirSync("warehouse-agent/releases")) {
+      const m = /BetacomAgentSetup-v(\d+\.\d+\.\d+)\.exe$/.exec(file);
+      if (!m) continue;
+      assert.ok(
+        versions.includes(m[1]),
+        `đã phát hành bộ cài ${file} nhưng nhật ký chưa có mục cho bản ${m[1]}`,
+      );
+    }
+  }
 });
