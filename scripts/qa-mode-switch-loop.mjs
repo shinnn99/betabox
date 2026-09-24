@@ -255,7 +255,53 @@ async function main() {
       `EP DUNG khi nguoi giu treo -> ve dong hang (mode=${afterForce?.mode}, nguoi_giu=${(afterForce?.holders ?? []).length})`,
     );
 
-    // ---- Tình huống 3: bàn CHUYÊN hoàn (purpose='return') --------------
+    // ---- Tình huống 3: lưới an toàn 2 phút -----------------------------
+    // Giao diện mất nhịp (máy tính sập, mất mạng) thì kỳ hoàn phải tự đóng.
+    // Lưới này từng CHẾT mà không ai biết: hàm nhả phiên bị nhân đôi chữ ký
+    // nên lời gọi bên trong SQL trả "function ... is not unique".
+    await resetStation(station.id);
+    const staleAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { data: openNow } = await db
+      .from("station_mode_periods")
+      .select("id")
+      .eq("station_id", station.id)
+      .is("ended_at", null);
+    for (const p of openNow ?? []) {
+      await db
+        .from("station_mode_periods")
+        .update({ ended_at: new Date().toISOString(), ended_reason: "qa_reset" })
+        .eq("id", p.id);
+    }
+    const { data: stalePeriod } = await db
+      .from("station_mode_periods")
+      .insert({
+        organization_id: ORG,
+        station_id: station.id,
+        mode: "return",
+        started_by: "module",
+        started_at: staleAt,
+        last_activity_at: staleAt,
+        last_heartbeat_at: staleAt,
+        capture_state: "active",
+        holders: ["module:tab-mat-nhip:qa"],
+      })
+      .select("id")
+      .single();
+    const { error: expireErr } = await db.rpc("expire_return_captures", {
+      p_organization_id: ORG,
+      p_now: new Date().toISOString(),
+    });
+    const { data: expired } = await db
+      .from("station_mode_periods")
+      .select("ended_at, holders")
+      .eq("id", stalePeriod.id)
+      .single();
+    check(
+      !expireErr && expired?.ended_at !== null && (expired?.holders ?? []).length === 0,
+      `luoi an toan 2 phut: ky mat nhip tu dong (${expireErr ? "LOI " + expireErr.message : "da dong, het nguoi giu"})`,
+    );
+
+    // ---- Tình huống 4: bàn CHUYÊN hoàn (purpose='return') --------------
     // Bàn loại này từng kẹt vĩnh viễn: tắt phiên thì chế độ đích trùng chế
     // độ đang chạy nên kỳ không được đóng, mã phiên không đổi, và lần bật
     // sau máy kho thấy trùng mã phiên đã kết thúc nên im lặng bỏ qua.
