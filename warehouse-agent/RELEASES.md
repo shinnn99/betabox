@@ -4,6 +4,34 @@ Ghi từ 0.8.6 trở đi. Mỗi mục nêu: sửa gì, vì sao, và người đi
 
 ---
 
+## 0.11.0 — 2026-09-24
+
+**Đọc được mã QR nhỏ và mã vạch.**
+
+Nhãn TikTok in mã QR nhỏ hơn nhãn thường, và agent không đọc nổi. Lý do
+không nằm ở camera: agent tự bóp MỌI khung hình xuống 640x360 trước khi
+giải mã, nên camera 2K hay 4K cũng như nhau — mã 12mm chỉ còn ~12 pixel.
+
+- Agent dò độ phân giải thật của camera (ffprobe) rồi giải mã ở đúng cỡ
+  đó, chỉ thu nhỏ khi vượt trần `QR_FRAME_WIDTH`/`QR_FRAME_HEIGHT` (mặc
+  định 2560x1440). Đo trên máy phát triển: giải mã 1920x1080 mất 17ms,
+  2560x1440 mất 31ms mỗi khung — rẻ hơn nhiều so với cái được.
+- Đọc QR từ luồng GỐC thay vì luồng phụ. Đặt `QR_STREAM=sub` để quay lại
+  cách cũ nếu máy kho yếu; luồng phụ thường chỉ 640x480, mất chi tiết ngay
+  từ camera nên mã nhỏ vô phương.
+- Đọc thêm MÃ VẠCH: Code128, Code39, Code93, ITF, Codabar, DataMatrix.
+  Cùng một mã vận đơn in cả QR lẫn mã vạch thì quét trúng cái nào cũng
+  được. KHÔNG đọc EAN/UPC — đó là mã sản phẩm, đọc trúng là tạo đơn bằng
+  mã hàng hoá.
+- Luật chọn khi khung có nhiều mã (`src/qr/code-pick.ts`): có QR thì QR
+  thắng; không có QR thì lấy mã vạch to nhất, nhưng phải to hơn mã kế
+  tiếp 1,5 lần — hai mã to ngang nhau là dấu hiệu hai nhãn trong khung,
+  agent không đoán. Mã ngắn kiểu mã tuyến "HN01" bị loại từ đầu.
+
+Người đi cài cần biết: CPU máy kho tăng nhẹ (giải mã ảnh to hơn). Nếu máy
+yếu, đặt `QR_FRAME_WIDTH=1280`, `QR_FRAME_HEIGHT=720` hoặc `QR_STREAM=sub`
+trong `.env` rồi khởi động lại dịch vụ.
+
 ## 0.10.1 — 2026-09-21
 
 **Clip không còn kẹt "thất bại" khi mạng tải lên chậm.**

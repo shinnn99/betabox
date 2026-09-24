@@ -1026,3 +1026,20 @@ docs([Module]):     Cập nhật tài liệu
 - **Kết quả kiểm tra:** `pnpm test` 549/549, `tsc` đạt. Kiểm trên web thật (org test, tài khoản tạm đã xoá sạch): admin → 403, trưởng kho → 403, tài khoản đích vẫn còn nguyên; chủ sở hữu → 200, hồ sơ biến khỏi `user_profiles`, tài khoản đăng nhập cũng mất, `audit_logs` vẫn ghi `user.delete`; chủ sở hữu tự xoá mình → 400.
 - **Sau khi áp migration:** kiểm lại trên web thật — bảng quyền chỉ còn `owner` có `user.delete`; `user.create`/`user.update` vẫn đủ owner + admin + trưởng kho; `/api/session-permissions` của admin không còn `user.delete` (nút Xoá mờ đi); admin gọi thẳng API → 403; chủ sở hữu xoá → 200 và cả hồ sơ lẫn tài khoản đăng nhập biến mất.
 - **Trạng thái:** Hoàn tất.
+
+### [AGENT-0.11.0] - Đọc được mã QR nhỏ (nhãn TikTok) và đọc thêm mã vạch
+
+- **Triệu chứng:** camera đọc tốt QR nhãn thường, nhưng QR trên đơn TikTok nhỏ hơn thì chịu (chủ dự án báo 24/09/2026).
+- **Nguyên nhân:** không phải camera. `warehouse-agent/src/qr/qr-frame-source.ts` ép MỌI khung hình xuống 640x360 trước khi giải mã, lại ưu tiên đọc từ luồng phụ (thường 640x480). Camera 2K hay 4K cũng như nhau: một mã 12mm chỉ còn ~12 pixel, chưa tới nửa pixel cho mỗi ô vuông của mã.
+- **Sửa — độ phân giải:**
+  - Agent dò độ phân giải thật của luồng bằng ffprobe (`probeStreamSize`) rồi giải mã ở ĐÚNG cỡ đó; chỉ thu nhỏ khi vượt trần `QR_FRAME_WIDTH`/`QR_FRAME_HEIGHT` (mặc định 2560x1440) và không bao giờ phóng to. Dò hỏng thì rơi về 1280x720 chứ không đứng im.
+  - Đọc từ luồng GỐC thay vì luồng phụ; `QR_STREAM=sub` để quay lại cách cũ khi máy kho yếu.
+  - Đo chi phí trước khi chọn: giải mã 640x360 mất 8ms, 1920x1080 mất 17ms, 2560x1440 mất 31ms mỗi khung — rẻ hơn nhiều so với cái được, và cờ bận sẵn có tự bỏ khung khi giải mã không kịp.
+- **Sửa — đọc thêm mã vạch:** `qr-decoder.ts` mở Code128 / Code39 / Code93 / ITF / Codabar / DataMatrix. KHÔNG mở EAN/UPC (mã sản phẩm — đọc trúng là tạo đơn bằng mã hàng hoá).
+- **Luật chọn mã (`src/qr/code-pick.ts`, mới):** chủ dự án chốt "không cần ưu tiên QR hay barcode, bắt được cái nào nhận cái đó". Dựa vào ảnh nhãn J&T thật: mã vận đơn `854160978771` in lặp lại ở mã vạch ngang + QR + hai mã vạch dọc, còn mã phân loại chỉ một lần. Nên: mã vạch phải có dáng mã vận đơn mới được xét (loại mã tuyến kiểu "HN01"; QR không lọc để không tự chặn đường đang chạy) → nội dung xuất hiện nhiều lần thắng → hoà thì lấy mã to nhất → chỉ khi hai nội dung khác nhau mà bằng số lần và to xấp xỉ nhau mới coi là hai nhãn trong khung và không đoán.
+- **Files test:** `warehouse-agent/tests/qr-small-code.test.ts` (mới) và `warehouse-agent/tests/barcode-read.test.ts` (mới).
+- **Kết quả kiểm tra:** agent 206/207 — bài duy nhất trượt là `packaged MediaMTX accepts the generated relay config`, trượt vì cổng 8554 đang bị MediaMTX của agent đang chạy chiếm, không liên quan thay đổi này. `tsc` agent đạt, `pnpm test` phía web 549/549.
+  - Đo bằng ảnh dựng sẵn: mã QR cỡ nhãn TikTok (~50 pixel trong khung 2560x1440) đọc ra đúng mã; cũng mã đó sau khi bóp xuống 640x360 theo cách cũ thì KHÔNG đọc được. Mã Code128 thật đọc ra đúng chuỗi. ffprobe thật trả đúng 2560x1440 cho luồng dựng bằng ffmpeg.
+  - CHƯA thử được trên camera thật: cả 3 camera của kho test đều không kết nối được (gõ cửa cổng RTSP không ai trả lời).
+- **Phiên bản:** 0.11.0 — `warehouse-agent/package.json`, `installer/betacom-agent.iss`, `RELEASES.md`. Đã build `warehouse-agent/dist-exe/betacom-agent.exe` (68 MB, không vào git). CHƯA dựng được bộ cài `.exe`: máy này không còn Inno Setup.
+- **Trạng thái:** Chờ cập nhật agent tại kho rồi thử bằng nhãn thật.

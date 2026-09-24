@@ -417,6 +417,10 @@ async function main(): Promise<void> {
     frameRate: config.qrFrameRate,
     confirmFrames: config.qrConfirmFrames,
     absenceMs: config.qrAbsenceMs,
+    frameWidth: config.qrFrameWidth,
+    frameHeight: config.qrFrameHeight,
+    stream: config.qrStream,
+    ffprobeBin: config.ffprobePath,
     onScan: (scan) => handleCameraQrScan(scan),
     onWarning: () => console.warn("[qr-scan-service] multiple QR codes in frame"),
   });

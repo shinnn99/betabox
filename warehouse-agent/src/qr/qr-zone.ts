@@ -1,3 +1,5 @@
+import { pickScanCode, type CodeCandidate } from "./code-pick";
+
 export interface QrBox {
   x: number;
   y: number;
@@ -46,17 +48,14 @@ export class QrZone {
     private readonly absenceMs: number,
   ) {}
 
-  ingest(decoded: DecodedQr[], frameAt: Date): QrZoneResult {
+  ingest(decoded: CodeCandidate[], frameAt: Date): QrZoneResult {
     const frameMs = frameAt.getTime();
+    // Chọn đúng MỘT mã trong khung — luật chọn ở code-pick.ts.
+    const chosen = pickScanCode(decoded);
     const unique = new Map<string, DecodedQr>();
-    for (const qr of decoded) {
-      const text = qr.text.trim();
-      if (!text) continue;
-      const prior = unique.get(text);
-      if (!prior || area(qr.box) > area(prior.box)) unique.set(text, { ...qr, text });
-    }
+    if (chosen.picked) unique.set(chosen.picked.text, chosen.picked);
 
-    if (unique.size > 1) {
+    if (chosen.ambiguous) {
       this.candidate = null;
       return { warning: "multiple_qr" };
     }

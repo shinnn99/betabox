@@ -42,8 +42,10 @@ test("QR decoder reads a real generated QR grayscale frame", async () => {
 });
 
 test("frame source reads localhost relay at configured FPS", () => {
+  // Cỡ khung mặc định ở đây là cỡ DỰ PHÒNG (khi không dò được camera);
+  // đường chạy thật truyền cỡ thật vào — xem qr-small-code.test.ts.
   const args = buildQrFrameArgs("cam01sub", 10);
   assert.ok(args.includes("rtsp://127.0.0.1:8554/cam01sub"));
-  assert.ok(args.includes("fps=10,scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,format=gray"));
+  assert.ok(args.includes("fps=10,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=gray"));
   assert.throws(() => buildQrFrameArgs("../camera", 10), /Invalid QR relay path/);
 });

@@ -64,6 +64,23 @@ const EnvSchema = z.object({
   QR_CONFIRM_FRAMES: z.coerce.number().int().min(1).max(10).default(2),
   QR_ABSENCE_MS: z.coerce.number().int().min(500).max(10000).default(2000),
   /**
+   * TRẦN cỡ khung hình đưa vào bộ giải mã QR (từ 24/09/2026).
+   *
+   * Agent dò độ phân giải thật của camera rồi đọc ở ĐÚNG cỡ đó, chỉ thu
+   * nhỏ khi vượt trần này. Trước đây ép cứng 640x360 nên mã QR nhỏ (nhãn
+   * TikTok) mất hết chi tiết ngay từ agent, camera nét đến mấy cũng vô
+   * ích. Hạ trần xuống nếu máy kho yếu — đổi lại là mã nhỏ có thể không
+   * đọc được nữa.
+   */
+  QR_FRAME_WIDTH: z.coerce.number().int().min(320).max(3840).default(2560),
+  QR_FRAME_HEIGHT: z.coerce.number().int().min(180).max(2160).default(1440),
+  /**
+   * Đọc QR từ luồng nào của camera. `main` (mặc định) là luồng gốc, nét
+   * nhất — cần cho mã nhỏ. `sub` là luồng phụ, nhẹ CPU nhưng camera thường
+   * phát ở 640x480 hoặc thấp hơn, phóng to lên cũng không thêm chi tiết.
+   */
+  QR_STREAM: z.enum(["main", "sub"]).default("main"),
+  /**
    * Thư mục lưu segment recording. Mỗi camera có thư mục riêng
    * <RECORDING_DIR>/<camera_code>/<YYYY>/<MM>/<DD>/<code>_<YYYYMMDD>_<HHMMSS>.mp4
    */
@@ -189,6 +206,9 @@ export interface AgentConfig {
   qrFrameRate: number;
   qrConfirmFrames: number;
   qrAbsenceMs: number;
+  qrFrameWidth: number;
+  qrFrameHeight: number;
+  qrStream: "main" | "sub";
   recordingDir: string;
   diskGuardWarnHours: number;
   diskGuardActionHours: number;
@@ -242,6 +262,9 @@ export function loadConfig(): AgentConfig {
     qrFrameRate: env.QR_FRAME_RATE,
     qrConfirmFrames: env.QR_CONFIRM_FRAMES,
     qrAbsenceMs: env.QR_ABSENCE_MS,
+    qrFrameWidth: env.QR_FRAME_WIDTH,
+    qrFrameHeight: env.QR_FRAME_HEIGHT,
+    qrStream: env.QR_STREAM,
     recordingDir: env.RECORDING_DIR,
     diskGuardWarnHours: env.DISK_GUARD_WARN_HOURS,
     diskGuardActionHours: env.DISK_GUARD_ACTION_HOURS,
