@@ -41,9 +41,63 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Cổng chặn TRƯỚC khi chạm production (thêm 23/09/2026).
+  #
+  # Trước đó không có bước kiểm nào giữa `git push main` và `systemctl restart
+  # betabox`: code hỏng merge vào main là đi thẳng lên web khách. `pnpm build`
+  # dưới VPS có bắt lỗi biên dịch, nhưng bắt SAU khi đã pull đè lên repo
+  # production, còn `pnpm test` thì không ai chạy cả — nó là bước chỉ chạy khi
+  # có người nhớ, đúng hình dạng đã làm VPS kẹt 40 ngày và syscheck chết 27
+  # ngày. Job này biến "nhớ thì chạy" thành "không xanh thì không deploy".
+  kiem:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # File .exe trong warehouse-agent/releases nằm ở LFS. Job này chỉ
+          # cần mã nguồn TypeScript nên bỏ qua, khỏi tải hàng trăm MB.
+          lfs: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node 24 là bắt buộc, không phải tuỳ chọn: script test dùng
+          # --experimental-strip-types để chạy thẳng .ts, cờ này chưa có ở
+          # Node 20. Repo không khai engines/.nvmrc nên phải ghim tại đây.
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # 5 file test import thẳng `warehouse-agent/src/*.ts`, mà `dotenv` với
+      # `zod` chỉ khai trong warehouse-agent/package.json — không có ở gốc, và
+      # pnpm-workspace.yaml không khai `packages:` nên đây KHÔNG phải monorepo
+      # workspace: `pnpm install` ở gốc không đụng tới thư mục này.
+      #
+      # Máy dev không lộ ra lỗi vì đã có sẵn warehouse-agent/node_modules từ
+      # lần cài tay nào đó — local pass nhờ trạng thái tồn dư, không nhờ thứ gì
+      # được khai báo. Runner sạch thì 5 file kia chết lúc load module.
+      #
+      # `npm ci` chứ không `pnpm`: thư mục này dùng package-lock.json.
+      - name: Cài dependency cho warehouse-agent (test import vào đây)
+        run: npm ci --prefix warehouse-agent
+
+      - name: Kiểm kiểu (tsc)
+        run: npx tsc --noEmit
+
+      - name: Chạy test
+        run: pnpm test
+
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Đỏ ở `kiem` thì dừng tại đây — VPS không bị đụng tới.
+    needs: kiem
 
     steps:
       - name: Nạp SSH key
