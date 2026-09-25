@@ -5,8 +5,6 @@ import {
   BarChart3,
   UserCog,
   Warehouse,
-  ScrollText,
-  Sparkles,
   Activity,
   PackageOpen,
   FileVideo,
@@ -137,18 +135,10 @@ export const NAV_SECTIONS: NavSection[] = [
         href: "/dashboard/settings/warehouse-config",
         icon: Settings,
       },
-      {
-        id: "audit",
-        label: "Nhật ký hệ thống",
-        href: "/dashboard/audit",
-        icon: ScrollText,
-      },
-      {
-        id: "settings-changelog",
-        label: "Nhật ký cập nhật phiên bản",
-        href: "/dashboard/settings/changelog",
-        icon: Sparkles,
-      },
+      // "Nhật ký hệ thống" và "Nhật ký phiên bản" đã chuyển hẳn
+      // sang menu platform (chủ dự án chốt 25/09/2026) — xem
+      // `src/lib/platform-nav.ts`. Cố ý KHÔNG để lại ở đây: quyết định là
+      // chuyển đi, không phải nhân đôi.
     ],
   },
 ];

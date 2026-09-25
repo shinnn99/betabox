@@ -1,5 +1,5 @@
 /**
- * Kiểu dữ liệu của Nhật ký cập nhật phiên bản.
+ * Kiểu dữ liệu của Nhật ký phiên bản.
  *
  * Nội dung THẬT nằm ở phần "Phát hành cho người dùng" trong các file
  * `changelog/*.md`; `scripts/build-changelog.mjs` đọc ra `generated.json`

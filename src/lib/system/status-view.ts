@@ -35,6 +35,7 @@ export const CHECK_LABELS: Record<string, string> = {
   [CHECK_KEYS.cameraProbe]: "Camera",
   [CHECK_KEYS.recording]: "Ghi hình",
   [CHECK_KEYS.clipFailures]: "Clip đơn hàng",
+  [CHECK_KEYS.unmappedScanner]: "Quét không rõ bàn",
   [CHECK_KEYS.vps]: "Ổ đĩa + RAM VPS",
   [CHECK_KEYS.storage]: "Dung lượng Storage",
   [CHECK_KEYS.warehouseDisk]: "Ổ đĩa máy kho",
@@ -55,6 +56,8 @@ export const CHECK_MEANING: Record<string, string> = {
   [CHECK_KEYS.cameraProbe]: "Camera không phản hồi RTSP thì đơn quay qua camera đó không có clip.",
   [CHECK_KEYS.recording]: "Không có segment mới nghĩa là ffmpeg đã chết, dù agent và camera vẫn xanh.",
   [CHECK_KEYS.clipFailures]: "Mỗi clip lỗi là một đơn hàng không có bằng chứng khi khách hỏi.",
+  [CHECK_KEYS.unmappedScanner]:
+    "Quét được mã nhưng không biết của bàn nào: đơn không được đếm, không gắn ca, không có video bằng chứng.",
   [CHECK_KEYS.vps]: "Ổ đầy thì ffmpeg và build cùng chết; RAM cạn thì web đứng.",
   [CHECK_KEYS.storage]: "Bucket chạm hạn mức thì không upload được clip mới.",
   [CHECK_KEYS.warehouseDisk]: "Ổ máy kho đầy thì agent ngừng ghi, không có gì báo trước.",
@@ -72,6 +75,7 @@ const CHECK_SCOPE_LABEL: Record<string, string> = {
   [CHECK_KEYS.cameraProbe]: "Toàn bộ kho",
   [CHECK_KEYS.recording]: "Toàn bộ kho",
   [CHECK_KEYS.clipFailures]: "Toàn bộ kho",
+  [CHECK_KEYS.unmappedScanner]: "Toàn bộ kho",
 };
 
 /** Việc cần làm cho mục không gắn với kho. Mục gắn kho tự mang `action`. */
@@ -99,6 +103,7 @@ const EMPTY_SCOPE_ACTION: Record<string, string> = {
     "Kiểm danh sách camera: chưa khai camera nào, hoặc tất cả đang ở status khác active.",
   [CHECK_KEYS.recording]: "Kiểm cờ monitoring_enabled, hoặc cách đo đã vượt trần số kho.",
   [CHECK_KEYS.clipFailures]: "Kiểm cờ monitoring_enabled của tổ chức.",
+  [CHECK_KEYS.unmappedScanner]: "Kiểm cờ monitoring_enabled của tổ chức.",
 };
 
 /**

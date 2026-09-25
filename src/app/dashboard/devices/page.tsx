@@ -94,6 +94,68 @@ interface ScannerDevice {
 
 type Device = CameraDevice | ScannerDevice;
 
+// ============================================================================
+// Máy quét ảo — thiết bị KHÔNG tồn tại ngoài kho.
+//
+// Khi một bàn đặt nguồn đọc mã là CAMERA, agent báo mã quét được dưới tên
+// `qrcam_<mã camera>`. Cloud tra tên đó qua `resolve_scanner_at` để biết mã
+// thuộc bàn nào — hàm đó đòi thiết bị `status='active'` VÀ đang gán bàn.
+// Nên hệ thống dựng sẵn một bản ghi máy quét mang đúng tên ấy. Đó là cái móc
+// nối "camera đọc được mã" với "bàn nào", không phải thiết bị vật lý.
+//
+// Hệ quả người dùng thấy: lưu trữ nó xong mà bàn vẫn để nguồn là camera thì
+// bộ tự-sửa (`planVirtualScannerRepairs`) bật lại sau vài giây. Muốn nó đi
+// hẳn thì đổi nguồn đọc mã của bàn sang súng quét.
+//
+// Nhận diện bằng tiền tố vì đó chính là quy tắc đặt tên trong
+// `virtualScannerCode()` (src/lib/camera/qr-virtual-scanner.ts).
+// ============================================================================
+function isVirtualScanner(s: ScannerDevice): boolean {
+  return s.device_code.toLowerCase().startsWith("qrcam_");
+}
+
+function scannerArchiveTitle(s: ScannerDevice): string {
+  return isVirtualScanner(s) ? "Lưu trữ máy quét ảo" : "Lưu trữ máy quét";
+}
+
+/**
+ * Máy quét ảo của một bàn CÒN đọc mã bằng camera thì không lưu trữ được —
+ * `DELETE /api/station-devices/[id]` trả 409 `virtual_scanner_in_use`.
+ *
+ * Ẩn nút thay vì để người dùng bấm rồi hứng lỗi: nút hiện ra là một lời mời,
+ * mời xong lại từ chối thì người vận hành tưởng hệ thống hỏng. Chốt thật vẫn
+ * nằm ở API — đây chỉ là lớp hiển thị cho khớp.
+ *
+ * Không tra được bàn (chưa gán, hoặc danh sách bàn nạp hụt) thì KHÔNG ẩn:
+ * thà để API từ chối còn hơn giấu mất đường thao tác hợp lệ.
+ */
+function virtualScannerLocked(s: ScannerDevice, stations: Station[]): boolean {
+  if (!isVirtualScanner(s)) return false;
+  const stationId = s.current_station?.station_id;
+  if (!stationId) return false;
+  const station = stations.find((st) => st.id === stationId);
+  return station?.scan_source === "camera";
+}
+
+function scannerArchiveMessage(s: ScannerDevice): string {
+  if (isVirtualScanner(s)) {
+    const ban = s.current_station?.station_code
+      ? `bàn ${s.current_station.station_code}`
+      : "một bàn";
+    return (
+      `${s.device_code} không phải máy quét thật — đây là cách hệ thống ghi nhận ` +
+      `${ban} đang đọc mã bằng camera. Nếu bàn vẫn để nguồn đọc mã là camera thì ` +
+      `hệ thống sẽ từ chối và chỉ bạn sang đổi nguồn của bàn. Muốn bỏ hẳn, hãy ` +
+      `chuyển nguồn đọc mã của bàn sang súng quét — hệ thống sẽ tự gỡ máy quét ảo này.`
+    );
+  }
+  const ban = s.current_station?.station_code;
+  return ban
+    ? `Máy quét ${s.device_code} sẽ được chuyển vào lưu trữ và gỡ khỏi bàn ${ban}. ` +
+        `Bàn đó sẽ không nhận được mã quét từ máy này nữa. Bản ghi cũ vẫn giữ để truy vết.`
+    : `Máy quét ${s.device_code} sẽ được chuyển vào lưu trữ. Bản ghi cũ vẫn giữ để truy vết.`;
+}
+
 type TabKey = "all" | "camera" | "scanner" | "unassigned" | "error";
 
 const TAB_LABELS: Record<TabKey, string> = {
@@ -439,9 +501,9 @@ function DevicesPage() {
 
   const onDeleteScanner = async (s: ScannerDevice) => {
     const ok = await confirm({
-      title: "Xoá máy quét",
-      message: `Máy quét ${s.device_code} sẽ bị xoá.`,
-      confirmLabel: "Xoá",
+      title: scannerArchiveTitle(s),
+      message: scannerArchiveMessage(s),
+      confirmLabel: "Lưu trữ",
       variant: "danger",
     });
     if (!ok) return;
@@ -450,10 +512,10 @@ function DevicesPage() {
     });
     if (!res.ok) {
       const j = await res.json().catch(() => ({}));
-      toast.error(j.message ?? "Xoá thất bại.");
+      toast.error(j.message ?? "Lưu trữ thất bại.");
       return;
     }
-    toast.success(`Đã xoá ${s.device_code}`);
+    toast.success(`Đã lưu trữ ${s.device_code}`);
     void load();
   };
 
@@ -695,10 +757,14 @@ function DevicesPage() {
                               : setScannerDetailId(d.id)
                           }
                           onAssignStation={() => setAssignTarget(d)}
-                          onDelete={() => {
-                            if (d.kind === "scanner") onDeleteScanner(d);
-                            else onDeleteCamera(d);
-                          }}
+                          onDelete={
+                            d.kind === "scanner" && virtualScannerLocked(d, stations)
+                              ? undefined
+                              : () => {
+                                  if (d.kind === "scanner") onDeleteScanner(d);
+                                  else onDeleteCamera(d);
+                                }
+                          }
                         />
                       </td>
                     </tr>
@@ -1371,9 +1437,9 @@ function ScannerDetailDialog({
 
   const onDelete = async () => {
     const ok = await confirm({
-      title: "Xoá máy quét",
-      message: `Máy quét ${scanner.device_code} sẽ bị xoá.`,
-      confirmLabel: "Xoá",
+      title: scannerArchiveTitle(scanner),
+      message: scannerArchiveMessage(scanner),
+      confirmLabel: "Lưu trữ",
       variant: "danger",
     });
     if (!ok) return;
@@ -1382,10 +1448,10 @@ function ScannerDetailDialog({
     });
     if (!res.ok) {
       const j = await res.json().catch(() => ({}));
-      toast.error(j.message ?? "Xoá thất bại.");
+      toast.error(j.message ?? "Lưu trữ thất bại.");
       return;
     }
-    toast.success(`Đã xoá ${scanner.device_code}`);
+    toast.success(`Đã lưu trữ ${scanner.device_code}`);
     onDeleted();
   };
 
@@ -1610,14 +1676,23 @@ function ScannerDetailDialog({
 
         {/* --- Footer ----------------------------------------------------- */}
         <div className="border-t border-slate-100 pt-4 flex justify-between items-center">
-          <button
-            type="button"
-            onClick={onDelete}
-            disabled={saving}
-            className="h-9 px-3.5 rounded-xl border border-rose-300 text-rose-600 hover:bg-rose-50 text-sm font-medium inline-flex items-center gap-1.5 disabled:opacity-50"
-          >
-            <Trash2 className="h-4 w-4" /> Xóa máy quét
-          </button>
+          {virtualScannerLocked(scanner, stations) ? (
+            // Cùng lý do với menu ba chấm: không mời bấm cái mà API sẽ từ chối.
+            <p className="text-[11px] leading-snug text-slate-400 max-w-[20rem]">
+              Bàn đang đọc mã bằng camera nên máy quét ảo này phải giữ. Đổi nguồn
+              đọc mã của bàn sang súng quét thì hệ thống tự gỡ.
+            </p>
+          ) : (
+            <button
+              type="button"
+              onClick={onDelete}
+              disabled={saving}
+              className="h-9 px-3.5 rounded-xl border border-rose-300 text-rose-600 hover:bg-rose-50 text-sm font-medium inline-flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <Trash2 className="h-4 w-4" />{" "}
+              {isVirtualScanner(scanner) ? "Lưu trữ máy quét ảo" : "Lưu trữ máy quét"}
+            </button>
+          )}
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -1806,14 +1881,23 @@ function DeviceActionMenu({
             <Link2 className="h-3.5 w-3.5" />
             {device.current_station ? "Đổi bàn" : "Gán bàn"}
           </button>
-          {onDelete && (
+          {onDelete ? (
             <button
               onClick={() => run(guard(allow.remove, "xoá thiết bị", onDelete))}
               className={`w-full flex items-center gap-2 px-3 py-2 hover:bg-rose-50 text-rose-600${deniedClass(allow.remove)}`}
             >
               <Trash2 className="h-3.5 w-3.5" />
-              Xoá
+              {/* Máy quét chỉ được chuyển vào lưu trữ, camera mới xoá thật —
+                  nhãn phải nói đúng việc sắp xảy ra. */}
+              {device.kind === "scanner" ? "Lưu trữ" : "Xoá"}
             </button>
+          ) : (
+            // Nút bị rút thì phải nói vì sao. Menu cụt lủn không lời giải
+            // thích đọc thành "hệ thống lỗi", và người dùng đi tìm nhầm chỗ.
+            <p className="px-3 py-2 text-[11px] leading-snug text-slate-400 max-w-[15rem]">
+              Bàn đang đọc mã bằng camera nên máy quét ảo này phải giữ. Đổi nguồn
+              đọc mã của bàn sang súng quét thì hệ thống tự gỡ.
+            </p>
           )}
           </div>,
           document.body,

@@ -28,10 +28,10 @@ export const NAV_ACCESS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["/dashboard/reports", ["report.view"]],
   ["/dashboard/users", ["user.view"]],
   ["/dashboard/settings/warehouse-config", ["warehouse.update"]],
-  ["/dashboard/audit", ["audit.view"]],
-  // Nhật ký cập nhật phiên bản: cùng nhóm Quản lý hệ thống nên cùng quyền
-  // với Nhật ký hệ thống — chủ sở hữu, admin, trưởng kho.
-  ["/dashboard/settings/changelog", ["audit.view"]],
+  // "/dashboard/audit" và "/dashboard/settings/changelog" đã chuyển hẳn sang
+  // menu platform (chủ dự án chốt 25/09/2026). Gỡ khỏi bảng này là có chủ ý
+  // và có tác dụng kép: `canSeeHref` trả false cho href chưa khai, nên vừa
+  // mất mục menu vừa chặn người gõ thẳng đường dẫn.
 ];
 
 const BY_HREF = new Map(NAV_ACCESS.map(([h, a]) => [h, a]));

@@ -1059,6 +1059,41 @@ export class HasProofClipsError extends Error {
   }
 }
 
+/**
+ * Camera còn đơn TRONG HẠN chưa cắt clip.
+ *
+ * Vì sao cần lớp này khi đã có `HasProofClipsError`: khoá ngoại RESTRICT ở
+ * `order_proof_clips` chỉ đỡ những đơn ĐÃ có người bấm xem clip. Đơn chưa ai
+ * xem thì không có dòng clip nào, nên không gì chặn — mà đó mới là phần lớn.
+ *
+ * Xoá camera lúc đó kéo theo `camera_recording_files` bằng CASCADE. File .mp4
+ * trên ổ máy kho VẪN CÒN (bản ghi DB và file trên đĩa là hai thứ độc lập — xem
+ * `src/app/api/agent/retention-plan/route.ts`), nhưng không còn gì trỏ tới
+ * chúng: `resolveClipBounds` tra đúng bảng này để tìm đoạn video phủ thời điểm
+ * quét. Mất bản ghi = mất đường cắt clip, video thành mồ côi chiếm ổ.
+ *
+ * Đo trên dữ liệu thật 25/09/2026: camera `CQR01` có 0 clip nên RESTRICT không
+ * chặn, trong khi nó gánh 1.122 bản ghi file (21 GB) và 230 đơn còn trong hạn.
+ */
+export class HasRecentOrdersError extends Error {
+  code = "has_recent_orders" as const;
+  ordersCount: number;
+  filesCount: number;
+  retentionDays: number;
+  constructor(ordersCount: number, filesCount: number, retentionDays: number) {
+    super(
+      `Camera còn ${ordersCount.toLocaleString("vi-VN")} đơn trong hạn lưu trữ ` +
+        `(${retentionDays} ngày) có thể cần clip bằng chứng, dựa trên ` +
+        `${filesCount.toLocaleString("vi-VN")} đoạn video đã ghi. ` +
+        `Xoá camera sẽ xoá các đoạn video này khỏi hệ thống và không cắt được clip nữa. ` +
+        `Hãy chuyển camera sang trạng thái Ngừng thay vì xoá.`,
+    );
+    this.ordersCount = ordersCount;
+    this.filesCount = filesCount;
+    this.retentionDays = retentionDays;
+  }
+}
+
 export async function deleteCamera(
   organizationId: string,
   id: string,
@@ -1075,6 +1110,46 @@ export async function deleteCamera(
 
   if ((clipsCount ?? 0) > 0) {
     throw new HasProofClipsError(clipsCount ?? 0);
+  }
+
+  // Lưới thứ hai: đơn TRONG HẠN chưa ai cắt clip. RESTRICT ở trên không thấy
+  // chúng vì chưa có dòng clip nào. Xem `HasRecentOrdersError` để biết vì sao
+  // mất `camera_recording_files` là mất đường cắt clip.
+  const { data: org } = await admin
+    .from("organizations")
+    .select("retention_days")
+    .eq("id", organizationId)
+    .maybeSingle();
+  const retentionDays = Number(org?.retention_days);
+
+  // retention_days NULL/không hợp lệ → KHÔNG suy ra cửa sổ, nên không chặn
+  // theo đơn. Thà để lưới clip ở trên gánh còn hơn chặn bừa bằng số tự đặt.
+  if (Number.isFinite(retentionDays) && retentionDays > 0) {
+    const cutoffIso = new Date(
+      Date.now() - retentionDays * 24 * 60 * 60 * 1000,
+    ).toISOString();
+
+    const [{ count: ordersCount }, { count: filesCount }] = await Promise.all([
+      admin
+        .from("packing_events")
+        .select("id", { count: "exact", head: true })
+        .eq("organization_id", organizationId)
+        .gte("scanned_at", cutoffIso)
+        .or(`proof_camera_id.eq.${id},proof_qr_camera_id.eq.${id}`),
+      admin
+        .from("camera_recording_files")
+        .select("id", { count: "exact", head: true })
+        .eq("organization_id", organizationId)
+        .eq("camera_id", id),
+    ]);
+
+    if ((ordersCount ?? 0) > 0) {
+      throw new HasRecentOrdersError(
+        ordersCount ?? 0,
+        filesCount ?? 0,
+        retentionDays,
+      );
+    }
   }
 
   const { error, count } = await admin

@@ -10,6 +10,7 @@ import {
   CameraCodeLockedError,
   deleteCamera,
   HasProofClipsError,
+  HasRecentOrdersError,
   updateCameraWithAudit,
   validateCameraInput,
   type CameraInput,
@@ -143,6 +144,18 @@ export async function DELETE(req: Request, { params }: RouteContext) {
         {
           error: "has_proof_clips",
           clips_count: err.clipsCount,
+          message: err.message,
+        },
+        { status: 409 },
+      );
+    }
+    if (err instanceof HasRecentOrdersError) {
+      return NextResponse.json(
+        {
+          error: err.code,
+          orders_count: err.ordersCount,
+          files_count: err.filesCount,
+          retention_days: err.retentionDays,
           message: err.message,
         },
         { status: 409 },

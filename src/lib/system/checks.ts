@@ -141,6 +141,7 @@ export const CHECK_KEYS = {
   cameraProbe: "camera_probe",
   recording: "recording_freshness",
   clipFailures: "clip_failures",
+  unmappedScanner: "unmapped_scanner",
   vps: "vps_resources",
   storage: "storage_usage",
   warehouseDisk: "warehouse_disk",
@@ -256,6 +257,22 @@ export const CHECK_CONFIG = {
     warnCount: 1,
     critCount: 5,
     /** Trần số dòng kéo về. Chạm trần thì báo "≥ N", không đọc tiếp. */
+    fetchLimit: 200,
+  },
+
+  unmappedScanner: {
+    windowHours: 24,
+    /**
+     * MỘT lượt đã là warn: `unmapped_scanner` nghĩa là mã quét được nhưng
+     * không quy về bàn nào — đơn không được đếm, không gắn ca, không có video
+     * bằng chứng. Không có ca "lẻ vô hại" ở đây.
+     *
+     * Từ 3 trở lên thì không còn là thao tác nhầm mà là cấu hình đang hỏng:
+     * nhân viên quét lại nhiều lần vì không thấy phản hồi. Đúng dấu vết sự cố
+     * 16/09/2026 — 4 lượt liên tiếp của `qrcam_dahua_3`, 3 lượt cùng một mã.
+     */
+    warnCount: 1,
+    critCount: 3,
     fetchLimit: 200,
   },
 
@@ -1476,6 +1493,127 @@ export async function checkClipFailures(
 }
 
 // ============================================================================
+// 6b. Quét không quy được về bàn (unmapped_scanner)
+//
+// Vì sao đáng một mục riêng: đây là kiểu hỏng KHÔNG ai thấy. Agent có nhận
+// cảnh báo `unmapped_scanner` nhưng dashboard trước nay không hiện gì, nên
+// người ở kho chỉ thấy "quét xong không lên đơn" mà không biết vì sao.
+//
+// Cơ chế: `resolve_scanner_at` đòi thiết bị quét `status='active'` VÀ có phân
+// công đang mở. Thiếu một trong hai thì `process_waybill_scan` đặt trạng thái
+// 'unmapped_scanner' và ép NULL cả station_id, warehouse_id lẫn proof_camera_id
+// — đơn không được đếm, không gắn ca, không cắt được clip bằng chứng.
+//
+// Đã cắn thật: 16/09/2026, camera `dahua_3` chuyển bàn không qua đường chuẩn
+// làm máy quét ảo `qrcam_dahua_3` bị archive. 4 lượt quét mất trắng, chạy im
+// lặng hơn một ngày, chỉ một dòng log ở agent. Mục này để lần sau không im nữa.
+// ============================================================================
+
+interface UnmappedRow {
+  organization_id: string;
+  scanner_device_code: string | null;
+}
+
+export async function checkUnmappedScanner(
+  admin: Admin,
+  now: Date,
+  preloaded?: MonitoringScope,
+): Promise<SystemCheck> {
+  const key = CHECK_KEYS.unmappedScanner;
+  const scope = preloaded ?? (await loadMonitoringScope(admin));
+
+  if (scope.orgIds.length === 0) {
+    return {
+      key,
+      status: "unknown",
+      unknownKind: "structural",
+      value: "không có tổ chức nào theo dõi",
+      message: "Không tổ chức nào bật monitoring_enabled — không có lượt quét nào để kiểm.",
+      entities: [],
+    };
+  }
+
+  const windowHours = CHECK_CONFIG.unmappedScanner.windowHours;
+  const since = new Date(now.getTime() - windowHours * 3_600_000).toISOString();
+  const { data, error } = await admin
+    .from("packing_events")
+    .select("organization_id, scanner_device_code")
+    .eq("status", "unmapped_scanner")
+    .gte("scanned_at", since)
+    .in("organization_id", scope.orgIds)
+    .limit(CHECK_CONFIG.unmappedScanner.fetchLimit)
+    .abortSignal(queryTimeout());
+  if (error) throw new Error(error.message);
+
+  const rows = (data as UnmappedRow[] | null) ?? [];
+  const capped = rows.length >= CHECK_CONFIG.unmappedScanner.fetchLimit;
+
+  const byOrg = new Map<string, UnmappedRow[]>();
+  for (const r of rows) {
+    const list = byOrg.get(r.organization_id) ?? [];
+    list.push(r);
+    byOrg.set(r.organization_id, list);
+  }
+
+  const entities: CheckEntity[] = scope.orgIds.map((orgId) => {
+    const list = byOrg.get(orgId) ?? [];
+    const n = list.length;
+    if (n === 0) {
+      return orgEntity(orgId, "Quét không rõ bàn", "ok", `0 lượt trong ${windowHours} giờ.`, {
+        count: 0,
+      });
+    }
+    // Tên thiết bị là manh mối đắt nhất: `qrcam_*` nghĩa là máy quét ảo của
+    // camera bị archive hoặc rời bàn; tên khác là súng quét thật chưa gán bàn.
+    const codes = [...new Set(list.map((r) => r.scanner_device_code).filter(Boolean))];
+    const codeLabel = codes.length > 0 ? ` — thiết bị: ${codes.join(", ")}` : "";
+    const virtual = codes.some((c) => String(c).toLowerCase().startsWith("qrcam_"));
+    const detail = `${n} lượt quét không quy được về bàn trong ${windowHours} giờ${codeLabel}.`;
+    const status: CheckStatus =
+      n >= CHECK_CONFIG.unmappedScanner.critCount ? "crit" : "warn";
+    return orgEntity(orgId, "Quét không rõ bàn", status, detail, {
+      count: n,
+      action: virtual
+        ? "Thiết bị `qrcam_*` là máy quét ảo của camera đọc mã. Kiểm bàn còn đặt nguồn là camera không, và máy quét ảo còn active + gán bàn không. Mở trang Thiết bị kho một lần là hệ thống tự sửa."
+        : "Máy quét chưa được gán vào bàn nào tại thời điểm quét. Kiểm phân công thiết bị ở trang Thiết bị kho.",
+    });
+  });
+
+  const crit = entities.filter((e) => e.status === "crit");
+  const warn = entities.filter((e) => e.status === "warn");
+  const total = rows.length;
+  const totalLabel = capped ? `≥ ${total}` : `${total}`;
+
+  if (crit.length > 0) {
+    const names = crit.map((e) => scope.orgNameById.get(e.orgId) ?? e.orgId).join(", ");
+    return {
+      key,
+      status: "crit",
+      value: `${totalLabel} lượt / ${windowHours}h`,
+      message: `Kho có từ ${CHECK_CONFIG.unmappedScanner.critCount} lượt quét không quy được về bàn trong ${windowHours} giờ: ${names}. Các đơn này không được đếm và không có video bằng chứng — cấu hình thiết bị đang hỏng, không phải thao tác nhầm.`,
+      entities,
+    };
+  }
+  if (warn.length > 0) {
+    const names = warn.map((e) => scope.orgNameById.get(e.orgId) ?? e.orgId).join(", ");
+    return {
+      key,
+      status: "warn",
+      value: `${totalLabel} lượt / ${windowHours}h`,
+      message: `Có lượt quét không quy được về bàn trong ${windowHours} giờ ở kho: ${names}. Mỗi lượt là một đơn không được đếm và không có video bằng chứng.`,
+      entities,
+    };
+  }
+  return {
+    key,
+    status: "ok",
+    value: `0 lượt / ${windowHours}h`,
+    message: `Mọi lượt quét trong ${windowHours} giờ qua đều quy được về bàn.`,
+    entities,
+  };
+}
+
+// ============================================================================
 // 7. Disk + RAM của VPS
 // ============================================================================
 
@@ -1671,19 +1809,23 @@ export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemS
       return fn(admin);
     });
 
-  const [cron, cronOrphan, agent, camera, recording, clips, vps] = await Promise.all([
-    needAdmin(CHECK_KEYS.cronCleanup, (a) => checkCronCleanup(a, now)),
-    needAdmin(CHECK_KEYS.cronOrphanSegments, (a) => checkCronOrphanSegments(a, now)),
-    needAdmin(CHECK_KEYS.agentHeartbeat, (a) => checkAgentHeartbeat(a, now, scope ?? undefined)),
-    needAdmin(CHECK_KEYS.cameraProbe, (a) => checkCameraProbe(a, now, scope ?? undefined)),
-    needAdmin(CHECK_KEYS.recording, (a) =>
-      checkRecordingFreshness(a, now, scope ?? undefined),
-    ),
-    needAdmin(CHECK_KEYS.clipFailures, (a) => checkClipFailures(a, now, scope ?? undefined)),
-    safeCheck(CHECK_KEYS.vps, () =>
-      checkVpsResources({ now, os: deps.os, statfs: deps.statfs, path: deps.path }),
-    ),
-  ]);
+  const [cron, cronOrphan, agent, camera, recording, clips, unmapped, vps] =
+    await Promise.all([
+      needAdmin(CHECK_KEYS.cronCleanup, (a) => checkCronCleanup(a, now)),
+      needAdmin(CHECK_KEYS.cronOrphanSegments, (a) => checkCronOrphanSegments(a, now)),
+      needAdmin(CHECK_KEYS.agentHeartbeat, (a) => checkAgentHeartbeat(a, now, scope ?? undefined)),
+      needAdmin(CHECK_KEYS.cameraProbe, (a) => checkCameraProbe(a, now, scope ?? undefined)),
+      needAdmin(CHECK_KEYS.recording, (a) =>
+        checkRecordingFreshness(a, now, scope ?? undefined),
+      ),
+      needAdmin(CHECK_KEYS.clipFailures, (a) => checkClipFailures(a, now, scope ?? undefined)),
+      needAdmin(CHECK_KEYS.unmappedScanner, (a) =>
+        checkUnmappedScanner(a, now, scope ?? undefined),
+      ),
+      safeCheck(CHECK_KEYS.vps, () =>
+        checkVpsResources({ now, os: deps.os, statfs: deps.statfs, path: deps.path }),
+      ),
+    ]);
 
   return {
     checks: [
@@ -1694,6 +1836,7 @@ export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemS
       camera,
       recording,
       clips,
+      unmapped,
       vps,
       checkStorageUsage(),
       checkWarehouseDisk(),

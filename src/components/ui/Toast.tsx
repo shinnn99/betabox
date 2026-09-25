@@ -14,7 +14,13 @@ interface ToastItem {
 interface ToastApi {
   show: (message: string, variant?: ToastVariant) => void;
   success: (message: string) => void;
-  error: (message: string) => void;
+  /**
+   * Nhận `unknown` có chủ đích: chỗ gọi thường truyền thẳng `data.message ??
+   * data.error` từ response API, mà giá trị đó có thể là object (xem toText).
+   * Ép kiểu `string` ở đây chỉ làm TypeScript im lặng chứ không chặn được
+   * object lọt vào lúc chạy — nhận unknown rồi chuẩn hoá mới là chặn thật.
+   */
+  error: (message: unknown) => void;
   info: (message: string) => void;
 }
 
@@ -44,6 +50,35 @@ const VARIANT_STYLE: Record<
   },
 };
 
+// ============================================================================
+// toText — không bao giờ để toast hiện ô rỗng "{}".
+//
+// Cắn 2026-09-25 (trang Người dùng hệ thống): route trả `{ error: <AuthError> }`.
+// `message` của Error là NON-ENUMERABLE nên JSON.stringify làm rụng nó, body
+// tới client chỉ còn `{name, status, code}`. Client làm
+// `data.message ?? data.error` — `data.message` undefined, rơi sang `data.error`
+// vốn là OBJECT, mà `??` chấp nhận object → object lọt vào toast → React in "{}".
+// Người dùng thấy ô đỏ rỗng, lỗi thật (khoá ngoại chặn xoá) bị nuốt sạch.
+//
+// Chặn tại đây vì đây là CỬA CHUNG: mọi trang gọi toast đều đi qua, thay vì
+// vá `?? ` ở từng chỗ gọi rồi lần sau lại sót.
+// ============================================================================
+function toText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.message;
+  if (value && typeof value === "object") {
+    // Dạng lỗi API hay gặp: { message } hoặc { error } — moi chuỗi ra dùng.
+    const o = value as Record<string, unknown>;
+    if (typeof o.message === "string" && o.message) return o.message;
+    if (typeof o.error === "string" && o.error) return o.error;
+    // Còn lại: không đoán bừa, nhưng PHẢI nói được điều gì đó hữu ích.
+    console.error("[toast] nhận giá trị không phải chuỗi:", value);
+    return "Thao tác thất bại — xem Console để biết chi tiết.";
+  }
+  if (value === null || value === undefined) return "Thao tác thất bại.";
+  return String(value);
+}
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
 
@@ -52,9 +87,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const show = useCallback(
-    (message: string, variant: ToastVariant = "info") => {
+    (message: unknown, variant: ToastVariant = "info") => {
       const id = Date.now() + Math.random();
-      setItems((cur) => [...cur, { id, variant, message }]);
+      setItems((cur) => [...cur, { id, variant, message: toText(message) }]);
       setTimeout(() => remove(id), 4500);
     },
     [remove]

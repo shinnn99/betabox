@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import { Sparkles } from "lucide-react";
-import DashboardLayout from "@/components/layout/DashboardLayout";
 import {
   RELEASES,
   badgeOf,
@@ -12,12 +11,12 @@ import {
 } from "@/lib/changelog/releases";
 
 /**
- * Nhật ký cập nhật phiên bản.
+ * Dòng thời gian các lần cập nhật — phần thân dùng chung cho cả trang
+ * platform và (trước đây) trang kho.
  *
- * Dữ liệu nằm ở `src/lib/changelog/releases.ts` — cố tình viết tay thay vì
- * đọc từ `changelog/` hay `change.md`: hai chỗ đó viết cho người làm phần
- * mềm (tên file, tên hàm, mã migration), đọc ra đây thì người vận hành kho
- * không hiểu và cũng không cần.
+ * Tách ra khỏi trang vì nội dung KHÔNG phụ thuộc tổ chức: dữ liệu sinh từ
+ * thư mục `changelog/` lúc build, mọi nơi đọc cùng một bản. Chỉ khung layout
+ * bao ngoài là khác nhau.
  *
  * Phân loại lớn/nhỏ theo chốt của chủ dự án 24/09/2026: đổi cách vận hành
  * hoặc máy kho nhảy số giữa (0.8 → 0.9) là LỚN; chỉ nhảy số cuối
@@ -37,40 +36,41 @@ function formatDate(iso: string): string {
 
 type Filter = "all" | "lon";
 
-export default function ChangelogPage() {
+export default function ChangelogTimeline() {
   const [filter, setFilter] = useState<Filter>("all");
 
   const shown = useMemo(
     () => (filter === "all" ? RELEASES : RELEASES.filter((r) => scaleOf(r) === "lon")),
     [filter],
   );
-  const bigCount = useMemo(() => RELEASES.filter((r) => scaleOf(r) === "lon").length, []);
+  const bigCount = useMemo(
+    () => RELEASES.filter((r) => scaleOf(r) === "lon").length,
+    [],
+  );
 
   return (
-    <DashboardLayout
-      pageTitle="Nhật ký cập nhật phiên bản"
-      pageSubtitle="Những thay đổi của hệ thống và của máy trạm kho, viết theo việc bạn làm hằng ngày"
-    >
-      <div className="p-4 lg:p-6 space-y-5">
-        <div className="flex flex-wrap items-center gap-2">
-          <FilterButton active={filter === "all"} onClick={() => setFilter("all")}>
-            Tất cả ({RELEASES.length})
-          </FilterButton>
-          <FilterButton active={filter === "lon"} onClick={() => setFilter("lon")}>
-            Thay đổi lớn ({bigCount})
-          </FilterButton>
-          <p className="text-xs text-slate-500 ml-auto">
-            Thay đổi lớn = đổi cách vận hành, hoặc máy kho nhảy số giữa (0.8 → 0.9)
-          </p>
-        </div>
-
-        <ol className="relative border-l border-slate-200 ml-2 space-y-8">
-          {shown.map((release) => (
-            <ReleaseRow key={`${release.date}-${badgeOf(release)}-${release.title}`} release={release} />
-          ))}
-        </ol>
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <FilterButton active={filter === "all"} onClick={() => setFilter("all")}>
+          Tất cả ({RELEASES.length})
+        </FilterButton>
+        <FilterButton active={filter === "lon"} onClick={() => setFilter("lon")}>
+          Thay đổi lớn ({bigCount})
+        </FilterButton>
+        <p className="text-xs text-slate-500 ml-auto">
+          Thay đổi lớn = đổi cách vận hành, hoặc máy kho nhảy số giữa (0.8 → 0.9)
+        </p>
       </div>
-    </DashboardLayout>
+
+      <ol className="relative border-l border-slate-200 ml-2 space-y-8">
+        {shown.map((release) => (
+          <ReleaseRow
+            key={`${release.date}-${badgeOf(release)}-${release.title}`}
+            release={release}
+          />
+        ))}
+      </ol>
+    </div>
   );
 }
 

@@ -4,6 +4,8 @@ File `BetacomAgentSetup-vX.Y.Z.exe` ở đây lưu qua **Git LFS** (mỗi file ~
 vượt giới hạn 100 MB của GitHub). Clone repo cần có Git LFS mới tải được file
 thật; không có LFS thì chỉ nhận được file con trỏ vài trăm byte.
 
+Bản mới nhất: **`BetacomAgentSetup-v0.12.0.exe`** — dùng cho máy kho cài mới.
+
 - Tải: `git lfs pull --include "warehouse-agent/releases/*"`
 - Cài: chuột phải file `.exe` → Run as administrator. Hướng dẫn đầy đủ:
   [../CACH-CAI-KHACH.md](../CACH-CAI-KHACH.md).
