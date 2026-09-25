@@ -1138,3 +1138,17 @@ docs([Module]):     Cập nhật tài liệu
   - Nhóm 2 — camera đọc hụt còn một hai ký tự (`"7"`, `"8"`, `"9"`, `"5858"`, `"S"`, một mảnh GUID): **23 lượt**, kèm 1 clip bằng chứng và 6 đơn trong bảng `orders`.
   - Tổng: `packing_events` kho Đại Kim 3.944 → **3.902**; kiểm lại còn **0** lượt mang mã sai. Số đơn đóng hàng của các ngày dính nhóm 2 giảm tương ứng — đúng ý, vì chúng vốn không phải đơn.
 - **Trạng thái:** Đã hoàn thành (mã nguồn chờ deploy để giao diện hết lẫn luồng).
+
+### [QR-BO-LINK] - Agent bỏ qua QR đường link, chỉ nhận QR mã vận đơn
+
+- **Chủ dự án báo 25/09/2026:** "1 phiếu đơn có 2 QR, 1 QR link 1 QR mã vận đơn... khi hệ thống bắt được QR link thì sẽ bỏ qua, chỉ nhận QR mã vận đơn thôi".
+- **Vì sao bản chặn ở cloud ([QUET-NHAM-URL]) chưa đủ:** cloud chỉ từ chối SAU khi agent đã chọn và gửi mã. Agent chọn trúng link thì mã vận đơn in ngay cạnh **mất luôn** — nhân viên quét mà không ăn, chứ không phải chỉ "ghi nhầm".
+- **Nguyên nhân:** `pickScanCode` cố tình KHÔNG lọc QR (chỉ lọc mã vạch), ghi rõ trong ghi chú đầu file là để tránh tự chặn chính mình. Hệ quả có hai đường hỏng:
+  - camera bắt trúng link trước → gửi link lên;
+  - link và mã vận đơn ngang cỡ nhau trong cùng khung → rơi vào nhánh "hai nhãn cùng lúc", **không gửi gì cả**.
+- **Sửa** (`warehouse-agent/src/qr/code-pick.ts`): thêm `looksLikeLink()` và loại mọi mã là đường link trước khi chọn, áp cho cả QR lẫn mã vạch. Luật để CHẶT — chỉ bắt chuỗi có `://`, mở đầu `www.`, hoặc tên miền có đuôi phổ biến. Cố ý không dùng `looksLikeWaybill` cho QR: lọc rộng ở đây là chặn nhầm mã thật, cả kho không quét được đơn nào.
+- **Files test:** `warehouse-agent/tests/qr-link-skip.test.ts` (mới, 7 bài) — gồm cả bài chạy qua `QrZone` để chắc máy trạng thái nhả ra mã vận đơn chứ không kẹt ở cảnh báo.
+- **Phiên bản agent:** 0.12.0 → **0.12.1** (sửa lỗi, không đổi cách vận hành). Đã viết mục phát hành trong `changelog/2026-09-25.md` và chạy lại `pnpm build:changelog`.
+- **Kết quả kiểm tra:** agent `npm test` 228/228 + `tsc` sạch; cloud `pnpm test` 570/570 + `pnpm typecheck` sạch.
+- **Còn lại:** phải dựng `.exe` bản 0.12.1 và cài lên máy kho thì mới có tác dụng — bản 0.12.0 đang chạy vẫn nhận QR link.
+- **Trạng thái:** Đã hoàn thành phần mã nguồn; chờ dựng bản cài.

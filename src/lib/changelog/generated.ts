@@ -6,6 +6,37 @@ import type { Release } from "./types";
 
 export const GENERATED_RELEASES: Release[] = [
   {
+    "agentVersion": "0.12.1",
+    "date": "2026-09-25",
+    "title": "Bỏ qua mã QR đường link trên nhãn TikTok",
+    "summary": "Phiếu TikTok in hai mã QR cạnh nhau: một mã vận đơn và một mã link tới trang bán hàng. Camera bắt trúng cái nào trước thì gửi cái đó lên, nên có lúc hệ thống nhận cái link thay vì mã vận đơn.",
+    "items": [
+      {
+        "tag": "Sửa lỗi",
+        "title": "Chỉ nhận mã vận đơn, không nhận link",
+        "detail": "Máy kho nhận ra mã đường link và bỏ qua, lấy mã vận đơn in ngay cạnh. Trước đây hai mã ngang cỡ nhau trong cùng khung hình còn bị coi là \"hai nhãn cùng lúc\" và không quét được gì — nay hết."
+      }
+    ]
+  },
+  {
+    "agentVersion": null,
+    "date": "2026-09-25",
+    "title": "Nhật ký đóng hàng không còn lẫn kiện hoàn",
+    "summary": "Trang Giám sát đóng hàng liệt kê mọi lượt quét trong ngày, nên kiện hoàn hiện chung bảng với đơn đi dù hàng hoàn đã có trang theo dõi riêng.",
+    "items": [
+      {
+        "tag": "Sửa lỗi",
+        "title": "Mỗi luồng một bảng",
+        "detail": "Nhật ký đóng hàng chỉ còn đơn đi; kiện hoàn xem ở Giám sát hoàn hàng. Con số tổng cũng trừ phần hoàn ra để không đá nhau với danh sách bên dưới."
+      },
+      {
+        "tag": "Sửa lỗi",
+        "title": "Chuỗi không phải mã vận đơn thì không tạo đơn",
+        "detail": "Chuỗi quá ngắn, quá dài hoặc có ký tự lạ nay bị ghi là mã không hợp lệ, không tạo đơn và không kích hoạt lưới an toàn hàng hoàn. Các đơn rác đã lỡ sinh ra ở kho đã được dọn sạch."
+      }
+    ]
+  },
+  {
     "agentVersion": "0.12.0",
     "date": "2026-09-24",
     "title": "Đọc được mã QR nhỏ và cả mã vạch",

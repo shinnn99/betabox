@@ -12,6 +12,10 @@ import type { DecodedQr, QrBox } from "./qr-zone";
  * ngang, một QR, hai mã vạch dọc, tất cả cùng `854160978771`. Còn mã phân
  * loại / mã tuyến chỉ xuất hiện đúng một lần. Vậy:
  *
+ *   0. Đường link thì bỏ, bất kể QR hay mã vạch. Nhãn TikTok in hai mã QR
+ *      cạnh nhau — một mã vận đơn, một link tới trang shop — và camera bắt
+ *      trúng cái nào trước thì gửi cái đó (chủ dự án chốt 25/09/2026: "bắt
+ *      được QR link thì bỏ qua, chỉ nhận QR mã vận đơn").
  *   1. Mã vạch phải "trông giống mã vận đơn" mới được xét. Nhận nhầm mã
  *      tuyến kiểu "HN01" là tạo ra đơn KHÔNG có thật, và cái sai đó chỉ lộ
  *      ra lúc đối soát. QR thì không lọc: trước giờ agent chỉ đọc QR và
@@ -50,6 +54,37 @@ export function looksLikeWaybill(text: string): boolean {
   return digits >= 6;
 }
 
+/**
+ * Chuỗi này là một đường link?
+ *
+ * Nhãn TikTok in HAI mã QR cạnh nhau: mã vận đơn và một mã link tới trang
+ * shop (`https://m.tiktok.shop/s/ALIfL0VLNKnL`). Camera bắt trúng cái nào
+ * trước thì gửi cái đó lên, mã vận đơn ngay bên cạnh bị bỏ qua — sự cố
+ * kho Đại Kim 25/09/2026. Tệ hơn: hai mã ngang cơ trong cùng khung còn
+ * rơi vào nhánh "hai nhãn cùng lúc" và không gửi gì cả.
+ *
+ * Luật để CHẶT, chỉ bắt thứ chắc chắn là link: có `://`, mở đầu bằng
+ * `www.`, hoặc là tên miền có đuôi phổ biến. Cố tình KHÔNG dùng
+ * `looksLikeWaybill` cho QR — các sàn đặt mã rất khác nhau, lọc rộng ở
+ * đây là tự chặn chính mình (xem ghi chú đầu file).
+ */
+const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
+const HOST_HEAD = /^([a-z0-9-]+(?:\.[a-z0-9-]+)+)(?:[/?]|$)/i;
+/** Đuôi tên miền hay gặp trên nhãn của các sàn bán hàng. */
+const LINK_TLDS = new Set([
+  "com", "vn", "shop", "net", "org", "co", "io", "me",
+  "link", "app", "cn", "id", "ph", "my", "th", "sg",
+]);
+
+export function looksLikeLink(text: string): boolean {
+  const value = text.trim();
+  if (SCHEME.test(value)) return true;
+  if (/^www\./i.test(value)) return true;
+  const host = HOST_HEAD.exec(value)?.[1];
+  if (!host) return false;
+  return LINK_TLDS.has(host.slice(host.lastIndexOf(".") + 1).toLowerCase());
+}
+
 export interface CodeCandidate extends DecodedQr {
   /**
    * `qr` gồm cả QR và DataMatrix; `barcode` là mã vạch một chiều.
@@ -74,13 +109,20 @@ interface Seen {
   box: QrBox;
 }
 
+/** Mã này có đáng đem ra xét làm mã vận đơn không? */
+function worthConsidering(candidate: CodeCandidate, text: string): boolean {
+  // QR link trên nhãn TikTok: bỏ hẳn, để mã vận đơn in ngay cạnh được
+  // chọn, thay vì tranh nhau rồi hoá "hai nhãn trong khung".
+  if (looksLikeLink(text)) return false;
+  // Mã vạch phải có dáng mã vận đơn; QR nhận nguyên như trước.
+  return (candidate.kind ?? "qr") !== "barcode" || looksLikeWaybill(text);
+}
+
 export function pickScanCode(candidates: CodeCandidate[]): PickResult {
   const byText = new Map<string, Seen>();
   for (const candidate of candidates) {
     const text = candidate.text.trim();
-    if (!text) continue;
-    // Mã vạch phải có dáng mã vận đơn; QR nhận nguyên như trước.
-    if ((candidate.kind ?? "qr") === "barcode" && !looksLikeWaybill(text)) continue;
+    if (!text || !worthConsidering(candidate, text)) continue;
     const prior = byText.get(text);
     if (!prior) {
       byText.set(text, { text, count: 1, box: candidate.box });
