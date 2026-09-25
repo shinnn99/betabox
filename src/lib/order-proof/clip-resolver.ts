@@ -524,7 +524,19 @@ export async function resolveClipBounds(opts: {
     .eq("source", "agent")
     .lt("started_at", clipEndIso)
     .or(`ended_at.is.null,ended_at.gt."${clipStartIso}"`);
-  if (opts.agentId) filesQuery = filesQuery.eq("agent_id", opts.agentId);
+  // Bản ghi CŨ có thể để trống `agent_id` — cột này chỉ được agent gửi kèm
+  // từ 22/09/2026. Lọc bằng `=` thì NULL không bao giờ khớp, nên mọi đoạn
+  // video ghi trước mốc đó biến mất khỏi kết quả, và hàm này kết luận sai
+  // thành "quá hạn lưu trữ" (sự cố kho Đại Kim 25/09/2026: 5.724 bản ghi
+  // từ 08/09–21/09 thiếu mã máy kho ⇒ không clip nào trước 22/09 cắt lại
+  // được, dù file vẫn nằm trên ổ).
+  //
+  // Nhận cả NULL: kho nhiều máy thì bản ghi mồ côi có thể thuộc máy khác và
+  // lúc cắt sẽ báo thiếu file — nói thật được là thiếu file, vẫn hơn im lặng
+  // bỏ qua rồi đổ cho hạn lưu trữ.
+  if (opts.agentId) {
+    filesQuery = filesQuery.or(`agent_id.is.null,agent_id.eq.${opts.agentId}`);
+  }
   const { data: files, error } = await filesQuery.order("started_at", {
     ascending: true,
   });
@@ -562,21 +574,17 @@ export async function resolveClipBounds(opts: {
     const retentionDays = org?.retention_days ?? null;
 
     if (retentionDays !== null) {
-      // Có row nào cũ hơn retention cho camera này không? Nếu có → file
-      // trong khoảng cần cắt nhiều khả năng đã bị cleanup xóa (quá hạn).
-      // Nếu không có row nào cả → camera không ghi được lúc đó (bug khác).
-      const retentionCutoffIso = new Date(
-        Date.now() - retentionDays * 24 * 60 * 60 * 1000,
-      ).toISOString();
-      const { data: oldRows } = await admin
-        .from("camera_recording_files")
-        .select("id")
-        .eq("organization_id", opts.organizationId)
-        .eq("camera_id", cameraId)
-        .eq("source", "agent")
-        .lt("started_at", retentionCutoffIso)
-        .limit(1);
-      if ((oldRows?.length ?? 0) > 0) {
+      // CHÍNH ĐƠN NÀY có cũ hơn hạn lưu không? Chỉ khi đó mới được nói
+      // "quá hạn".
+      //
+      // Trước 25/09/2026 chỗ này hỏi một câu khác hẳn: "camera này có bản
+      // ghi nào cũ hơn hạn lưu không?" — camera nào ghi lâu rồi cũng có,
+      // nên MỌI lần không tìm thấy đoạn đều bị gán nhãn "quá hạn". Ở kho
+      // Đại Kim, đơn ngày 17/09 (mới 8 ngày, hạn 30 ngày) bị báo "quá hạn
+      // lưu trữ 30 ngày" trong khi nguyên nhân thật là bản ghi thiếu mã
+      // máy kho. Câu trả lời sai đó dẫn người đi tìm nhầm hướng cả buổi.
+      const retentionCutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+      if (clipEnd.getTime() < retentionCutoffMs) {
         return {
           ok: false,
           reason: "expired_retention",
@@ -598,7 +606,8 @@ export async function resolveClipBounds(opts: {
       ok: false,
       reason: "no_segments",
       message:
-        "Không có video tại khoảng thời gian đóng đơn. Camera có thể chưa ghi hình tại thời điểm này.",
+        "Không tìm thấy đoạn video nào cho khoảng thời gian đóng đơn này. " +
+        "Có thể camera chưa ghi lúc đó, hoặc đoạn video đã bị xoá / chuyển chỗ trên máy kho.",
       clipStart,
       clipEnd,
       preSeconds: timing.pre,

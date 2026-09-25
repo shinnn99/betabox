@@ -1104,3 +1104,20 @@ docs([Module]):     Cập nhật tài liệu
 - **Phát hiện đáng giá nhất của kế hoạch USB:** hàm dựng cấu hình relay đang ép mọi nguồn phải là URL `rtsp://`, gặp khác là ném lỗi. Thêm camera USB mà không sửa chỗ đó thì relay không khởi động lại được và **mất xem trực tiếp của TẤT CẢ camera trên máy kho đó**. Kế hoạch đặt đây là đợt 1, kèm yêu cầu test hai loại camera cùng lúc.
 - **Rủi ro lớn nhất chưa trả lời được:** agent chạy dưới dạng dịch vụ Windows (session 0), mà Windows thường chặn tiến trình không có phiên người dùng mở camera. Kế hoạch đặt đây là phép thử đầu tiên của đợt 0.
 - **Trạng thái:** Chờ chủ dự án đọc và trả lời các câu hỏi ở mục cuối mỗi kế hoạch.
+
+### [QUET-NHAM-URL] - Camera đọc trúng QR link TikTok, hệ thống nhận làm mã vận đơn
+
+- **Triệu chứng chủ dự án báo 25/09/2026:** nhật ký Giám sát đóng hàng hiện 18 dòng "Hàng hoàn" với mã là `HTTPS://M.TIKTOK.SHOP/S/ALIFL0VLNKNL`, trong khi không ai giơ mã vận đơn nào lúc đó.
+- **Nguyên nhân (đọc từ dữ liệu thật, không suy đoán):** nhãn TikTok in HAI mã QR — mã vận đơn (`TTVN…`) và một mã link tới trang shop. Camera bắt trúng cái link:
+  - 27/08 01:53 → `valid`, hệ thống **tạo một đơn đi** với mã là cả cái URL.
+  - 27/08 02:40 → `duplicated`.
+  - 25/09 (8 lần) → `return_suspect`: lưới an toàn thấy "mã đã gửi đi bị quét lại ở bàn đóng hàng" nên ghi thành **hàng hoàn**, lẫn vào nhật ký đóng hàng.
+  - Tức một lượt đọc nhầm hồi tháng 8 đẻ ra 8 kiện hoàn ma một tháng sau.
+- **Gốc rễ:** `process_waybill_scan` nhận BẤT KỲ chuỗi không rỗng nào làm mã vận đơn.
+- **Sửa:**
+  - `supabase/migrations/20260925100000_reject_non_waybill_scans.sql` (mới, ĐÃ ÁP): thêm `is_waybill_like(text)` — dài 8–40 ký tự, chỉ chữ/số/`-`/`_`/`.`, bắt đầu bằng chữ hoặc số. Luật để RỘNG, thà nhận nhầm còn hơn chặn nhầm đơn thật. Chuỗi rớt luật → `invalid_code`, không tạo đơn, không kích hoạt lưới an toàn. Điều kiện đặt TRƯỚC nhánh lưới an toàn.
+  - `supabase/migrations/20260925110000_fix_invalid_code_crash.sql` (mới, ĐÃ ÁP): **vá lỗi do chính bản trên làm lộ ra**. Nhánh `invalid_code` không gán `v_resolved`, trong khi câu INSERT cuối hàm luôn đọc `v_resolved.wh_id/st_id` → PL/pgSQL ném `record "v_resolved" is not assigned yet`, hàm vỡ và lượt quét **mất trắng**. Lỗi nằm sẵn từ lâu ở nhánh chuỗi rỗng nhưng chuỗi rỗng hiếm nên chưa ai gặp. Tôi đã đưa bản đầu cho chủ dự án chạy mà chưa thử đầu-cuối — sai quy trình, ghi lại để không lặp.
+- **Files test:** `tests/waybill-shape-guard.test.ts` (mới, 5 bài).
+- **Kết quả kiểm tra:** `pnpm test` 566/566. Trên database thật (kho TEST, dọn sạch sau khi thử): QR link TikTok → `invalid_code` không tạo đơn; chuỗi rỗng → `invalid_code`; mã quá ngắn → `invalid_code`; mã vận đơn thật đi nhánh bình thường; không lượt nào thành kiện hoàn.
+- **Còn lại:** dữ liệu rác đã sinh ra ở kho Đại Kim (1 đơn đi ma ngày 27/08 + 8 kiện hoàn ma ngày 25/09, đều mang mã là URL) vẫn đang tính vào báo cáo — chờ chủ dự án cho phép dọn.
+- **Trạng thái:** Hoàn tất phần chặn; chờ dọn dữ liệu rác.
