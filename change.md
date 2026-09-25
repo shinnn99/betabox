@@ -1153,3 +1153,20 @@ docs([Module]):     Cập nhật tài liệu
 - **Còn lại:** phải dựng `.exe` bản 0.12.1 và cài lên máy kho thì mới có tác dụng — bản 0.12.0 đang chạy vẫn nhận QR link.
 - **Trạng thái:** Đã hoàn thành phần mã nguồn; chờ dựng bản cài.
 - **Bản cài 0.12.1 (bổ sung 25/09/2026):** đã dựng `warehouse-agent/releases/betacom-agent-0.12.1.exe` (68.261.614 byte, lưu qua Git LFS), kèm `releases/THAY-FILE-CHAY-0.12.1.md` và mục 0.12.1 trong `RELEASES.md`. Kiểm bản dựng bằng cách soi định danh bên trong file chạy: có `looksLikeLink`, `LINK_TLDS`, `worthConsidering`, và vẫn còn `probeStreamSize`, `reconcile` của 0.12.0. Bản này KHÔNG thêm dòng log mới nào nên hướng dẫn chỉ cách kiểm bằng kích thước file (0.12.0 = 68.260.134 byte).
+
+### [MA-SAI-KHONG-LUU] - Mã sai không nhận và cũng không lưu vào database
+
+- **Chủ dự án báo 25/09/2026:** "những cái đơn mã sai tôi đã bảo không nhận cũng không lưu vào database mà" — nhật ký vẫn hiện dòng `Mã sai` mang `HTTPS://M.TIKTOK.SHOP/...` (14:14:58, 14:16:52) và dòng `Đang chờ xử lý` mang cùng chuỗi (10:27:33, 10:32:47).
+- **Vì sao bản chặn [QUET-NHAM-URL] chưa đủ:** nó nằm TRONG `process_waybill_scan`, tức là hệ thống đã ghi lượt quét thô (`warehouse_scan_raw_events`) rồi mới gắn nhãn `invalid_code` cho đơn. Hai dòng rác còn lại:
+  - lượt có đơn → hiện `Mã sai`;
+  - lượt chưa qua RPC (bàn tắt nguồn quét, hoặc RPC lỗi) → không có đơn nào, nhật ký hiện `Đang chờ xử lý` **mãi mãi**.
+- **Sửa — chặn ngay ở cửa vào, trước mọi câu ghi:**
+  - `src/lib/warehouse/waybill-shape.ts` (mới): bản sao TS của hàm `is_waybill_like` trên database, kèm `toWaybillCandidate` chuẩn hoá y như SQL (`upper(trim(raw_value))`).
+  - `src/app/api/warehouse/scans/route.ts`: chuỗi rớt luật → dừng trước câu `insert` vào `warehouse_scan_raw_events`, không ghi gì. Trả `ok: true` + `ignored: "not_waybill"` chứ KHÔNG trả lỗi — agent có hàng đợi gửi lại, trả lỗi là nó thử lại mãi một chuỗi vĩnh viễn không hợp lệ, hàng đợi tắc và lượt quét thật xếp sau bị chậm.
+  - `src/app/api/warehouse/manual-scan/route.ts`: cùng luật, nhưng trả 400 — người gõ tay phải được báo ngay chứ không im lặng nuốt mất.
+- **Đánh đổi đã biết, nói rõ để không ai tưởng là sót:** bỏ hẳn lượt quét là mất dấu vết camera đang đọc nhầm thứ gì. Bù bằng `console.warn` ở máy chủ (có org, mã máy quét, 80 ký tự đầu của chuỗi) — đủ để lần khi cần, không đụng vào số liệu kho.
+- **Ba tầng chặn sau bản này:** (1) máy kho bỏ QR link trước khi gửi (0.12.1); (2) cửa vào không ghi gì; (3) database vẫn giữ nhánh `invalid_code` làm chốt cuối cho agent đời cũ.
+- **Files test:** `tests/waybill-shape-guard.test.ts` viết lại — dùng chung module thay vì bản sao luật trong test, thêm 3 bài khoá vị trí chốt chặn phải đứng TRƯỚC câu ghi ở cả hai route và khoá đúng kiểu phản hồi của từng route.
+- **Dọn dữ liệu (ĐÃ XONG):** xoá 2 đơn `invalid_code` sinh hôm nay và **44 lượt quét thô** mã sai (21 lượt link TikTok + 23 lượt camera đọc hụt còn lại). Kiểm lại: 0 đơn mã sai, 0 lượt thô mã sai.
+- **Kết quả kiểm tra:** `pnpm test` 573/573, `pnpm typecheck` sạch.
+- **Trạng thái:** Đã hoàn thành; chờ deploy để có tác dụng trên kho.

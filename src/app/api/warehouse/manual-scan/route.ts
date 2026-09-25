@@ -2,6 +2,7 @@ import { NextResponse, after } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, isError } from "@/lib/supabase/guard";
 import { normalizeWaybillCode } from "@/lib/warehouse/normalize-code";
+import { isWaybillLike, toWaybillCandidate } from "@/lib/warehouse/waybill-shape";
 import { looksLikeControlCard } from "@/lib/station/control-cards";
 import {
   currentStationMode,
@@ -97,6 +98,19 @@ export async function POST(req: Request) {
   // For HID we currently only handle waybill scans. Staff QR via HID is
   // possible but rare; the dashboard staff page uses a different flow.
   const normalized = normalizeWaybillCode(rawValue);
+
+  // Cùng luật với đường agent: chuỗi không có dáng mã vận đơn thì không ghi
+  // gì vào database. Ở đây là người gõ tay trên trình duyệt nên trả lỗi
+  // luôn — báo ngay còn hơn im lặng nuốt mất rồi họ đứng chờ.
+  if (!isWaybillLike(toWaybillCandidate(rawValue))) {
+    return NextResponse.json(
+      {
+        error: "not_waybill",
+        message: "Chuỗi này không có dáng mã vận đơn — kiểm tra lại mã.",
+      },
+      { status: 400 },
+    );
+  }
 
   const admin = createAdminClient();
 

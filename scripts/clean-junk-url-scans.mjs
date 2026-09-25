@@ -109,7 +109,10 @@ async function main() {
   console.log(`\n=== MÃ CAMERA ĐỌC HỤT ===`);
   tomTat(nhomDocHut);
 
-  if (canXoa.length === 0) return;
+  if (canXoa.length === 0) {
+    await donLuotQuetTho(org.id);
+    return;
+  }
 
   const ids = canXoa.map((e) => e.id);
   const clips = [];
@@ -123,6 +126,7 @@ async function main() {
   console.log(`\nClip bằng chứng dính tới các lượt sẽ xoá: ${clips.length}`);
 
   if (!APPLY) {
+    await donLuotQuetTho(org.id);
     console.log(`\n(chỉ xem — chạy lại với --apply để xoá thật)`);
     return;
   }
@@ -159,12 +163,53 @@ async function main() {
   }
   console.log(`Đã xoá ${xoaOrder} đơn trong bảng orders.`);
 
-  const { count: conLai } = await db
-    .from("packing_events")
-    .select("id", { count: "exact", head: true })
-    .eq("organization_id", org.id)
-    .ilike("waybill_code", "HTTP%");
-  console.log(`Kiểm lại: còn ${conLai} lượt mang mã đường link.`);
+  await donLuotQuetTho(org.id);
+}
+
+/**
+ * Lượt quét thô (`warehouse_scan_raw_events`) là bản ghi TRƯỚC khi hệ
+ * thống phân loại. Xoá đơn mà để lại lượt thô thì nhật ký vẫn còn dòng —
+ * hiện là "Đang chờ xử lý", nhìn còn khó hiểu hơn "Mã sai".
+ *
+ * Chỉ đụng `scan_type = 'waybill'`: QR nhân viên và thẻ điều khiển có cấu
+ * trúc riêng, đem luật mã vận đơn ra đo là xoá nhầm sạch.
+ */
+async function donLuotQuetTho(orgId) {
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await db
+      .from("warehouse_scan_raw_events")
+      .select("id, raw_value, scan_type, scanned_at")
+      .eq("organization_id", orgId)
+      .eq("scan_type", "waybill")
+      .order("scanned_at")
+      .range(from, from + 999);
+    if (error) throw new Error(error.message);
+    rows.push(...(data ?? []));
+    if ((data ?? []).length < 1000) break;
+  }
+
+  const rac = rows.filter((r) => !coDangMaVanDon((r.raw_value ?? "").trim().toUpperCase()));
+  console.log(`
+Lượt quét THÔ mã sai: ${rac.length}/${rows.length}`);
+  const theoMa = new Map();
+  for (const r of rac) theoMa.set(r.raw_value, (theoMa.get(r.raw_value) ?? 0) + 1);
+  for (const [ma, n] of theoMa) console.log(`  "${String(ma).slice(0, 50)}" — ${n} lượt`);
+
+  if (rac.length === 0 || !APPLY) {
+    if (rac.length > 0) console.log(`  (chỉ xem)`);
+    return;
+  }
+
+  const ids = rac.map((r) => r.id);
+  for (let i = 0; i < ids.length; i += 50) {
+    const { error } = await db
+      .from("warehouse_scan_raw_events")
+      .delete()
+      .in("id", ids.slice(i, i + 50));
+    if (error) throw new Error(`Xoá lượt quét thô: ${error.message}`);
+  }
+  console.log(`Đã xoá ${ids.length} lượt quét thô.`);
 }
 
 void main();

@@ -1,17 +1,29 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { isWaybillLike, toWaybillCandidate } from "@/lib/warehouse/waybill-shape";
 
 /**
- * Chuỗi không có dáng mã vận đơn thì không được tạo đơn.
+ * Chuỗi không có dáng mã vận đơn thì KHÔNG được vào database.
  *
  * Sự cố kho Đại Kim 25/09/2026: nhãn TikTok in hai mã QR — mã vận đơn và
  * một mã link tới trang shop. Camera đọc trúng cái link
  * `https://m.tiktok.shop/s/ALIfL0VLNKnL`; hệ thống nhận bừa làm mã vận
  * đơn, tạo một "đơn đi" hồi 27/08. Một tháng sau, mỗi lần cái nhãn đó lọt
  * vào khung camera là lưới an toàn lại thấy "mã đã gửi đi bị quét lại" và
- * ghi thành HÀNG HOÀN — 8 kiện hoàn ma trong một buổi sáng, lẫn vào nhật
- * ký đóng hàng.
+ * ghi thành HÀNG HOÀN — 17 kiện hoàn ma, lẫn vào nhật ký đóng hàng.
+ *
+ * Chặn ở BA tầng, và test này giữ cả ba:
+ *   1. Cửa vào (route `scans` và `manual-scan`): chuỗi rớt luật thì dừng
+ *      ngay, không ghi cả lượt quét thô.
+ *   2. Database (`process_waybill_scan`): chốt chặn cuối cho agent đời cũ
+ *      hoặc đường nào lọt qua tầng 1.
+ *   3. Máy kho (`warehouse-agent/src/qr/code-pick.ts`): bỏ QR đường link
+ *      trước khi gửi, để mã vận đơn in ngay cạnh được chọn.
+ *
+ * Chủ dự án chốt 25/09/2026: "những cái đơn mã sai tôi đã bảo không nhận
+ * cũng không lưu vào database mà" — tầng 2 một mình là chưa đủ, vì nó ghi
+ * lượt quét rồi mới gắn nhãn `invalid_code`.
  */
 
 const SQL = readFileSync(
@@ -19,17 +31,15 @@ const SQL = readFileSync(
   "utf8",
 );
 
-/** Bản sao luật trong SQL, để kiểm được từng chuỗi cụ thể. */
-function isWaybillLike(value: string): boolean {
-  return value.length >= 8 && value.length <= 40 && /^[A-Z0-9][A-Z0-9._-]*$/.test(value);
-}
-
-test("luật trong SQL và luật kiểm ở đây phải khớp nhau", () => {
+test("luật trong SQL và luật trong mã nguồn phải khớp nhau", () => {
   assert.ok(SQL.includes("length(p_value) BETWEEN 8 AND 40"));
   assert.ok(SQL.includes("'^[A-Z0-9][A-Z0-9._-]*$'"));
   // Phải thay đúng chỗ quyết định trạng thái, không chỉ thêm hàm rồi bỏ đó.
   assert.ok(SQL.includes("if not public.is_waybill_like(v_waybill) then"));
   assert.ok(!SQL.includes("if v_waybill = '' then"), "bỏ hẳn luật cũ chỉ chặn chuỗi rỗng");
+  // Bản TS phải chuẩn hoá y như SQL: upper(trim(raw_value)).
+  assert.ok(SQL.includes("upper(trim(v_raw.raw_value))"));
+  assert.equal(toWaybillCandidate("  ttvn1111790805 "), "TTVN1111790805");
 });
 
 test("mã vận đơn thật của các sàn đều qua được", () => {
@@ -86,4 +96,42 @@ test("nhánh mã sai không được làm vỡ hàm xử lý lượt quét", () 
   const viTriChan = va.indexOf("if not public.is_waybill_like(v_waybill) then");
   assert.ok(viTriGan > 0 && viTriChan > 0);
   assert.ok(viTriGan < viTriChan, "phải gán TRƯỚC nhánh kiểm tra mã");
+});
+
+// ---------------------------------------------------------------------------
+// Tầng 1: cửa vào. Không ghi lượt quét thô nào.
+// ---------------------------------------------------------------------------
+
+test("route nhận lượt quét từ máy kho: chặn TRƯỚC khi ghi lượt quét thô", () => {
+  const route = readFileSync("src/app/api/warehouse/scans/route.ts", "utf8");
+  const viTriChan = route.indexOf("!isWaybillLike(toWaybillCandidate(parsed.raw_value))");
+  const viTriGhi = route.indexOf(`.from("warehouse_scan_raw_events")`);
+  assert.ok(viTriChan > 0, "phải có chốt chặn ở cửa vào");
+  assert.ok(viTriGhi > 0);
+  assert.ok(viTriChan < viTriGhi, "chặn phải đứng TRƯỚC câu ghi, không thì vẫn lưu");
+});
+
+test("route máy kho trả ok chứ không trả lỗi", () => {
+  // Agent có hàng đợi gửi lại. Trả lỗi là nó thử lại mãi một chuỗi vĩnh
+  // viễn không hợp lệ — hàng đợi tắc, lượt quét thật xếp sau bị chậm.
+  const route = readFileSync("src/app/api/warehouse/scans/route.ts", "utf8");
+  const doan = route.slice(
+    route.indexOf("!isWaybillLike(toWaybillCandidate(parsed.raw_value))"),
+    route.indexOf(`.from("warehouse_scan_raw_events")`),
+  );
+  assert.ok(doan.includes("ok: true"), "phải trả ok: true");
+  assert.ok(doan.includes(`ignored: "not_waybill"`));
+  assert.ok(!doan.includes("status: 4"), "không trả mã lỗi 4xx cho agent");
+});
+
+test("route gõ tay trên trình duyệt: chặn TRƯỚC khi ghi, và báo lỗi ra màn hình", () => {
+  const route = readFileSync("src/app/api/warehouse/manual-scan/route.ts", "utf8");
+  const viTriChan = route.indexOf("!isWaybillLike(toWaybillCandidate(rawValue))");
+  const viTriGhi = route.indexOf(`.from("warehouse_scan_raw_events")`);
+  assert.ok(viTriChan > 0, "phải có chốt chặn");
+  assert.ok(viTriGhi > 0);
+  assert.ok(viTriChan < viTriGhi, "chặn phải đứng TRƯỚC câu ghi");
+  // Người gõ tay thì phải được báo ngay, khác với agent.
+  const doan = route.slice(viTriChan, viTriGhi);
+  assert.ok(doan.includes("status: 400"), "người gõ tay phải nhận lỗi rõ ràng");
 });

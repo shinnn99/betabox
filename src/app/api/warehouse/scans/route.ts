@@ -12,6 +12,7 @@ import {
   type RecognizedStaff,
 } from "@/lib/warehouse/staff-qr";
 import { normalizeWaybillCode } from "@/lib/warehouse/normalize-code";
+import { isWaybillLike, toWaybillCandidate } from "@/lib/warehouse/waybill-shape";
 import { looksLikeControlCard } from "@/lib/station/control-cards";
 import {
   currentStationMode,
@@ -267,6 +268,39 @@ export async function POST(req: Request) {
   // alongside the raw. Staff QR carries its own structure; never rewrite it.
   const normalized =
     scanType === "waybill" ? normalizeWaybillCode(parsed.raw_value) : null;
+
+  // Chuỗi không có dáng mã vận đơn thì DỪNG Ở ĐÂY — không ghi lượt quét
+  // thô, không tạo đơn, không gì cả.
+  //
+  // Chủ dự án chốt 25/09/2026: "những cái đơn mã sai tôi đã bảo không nhận
+  // cũng không lưu vào database mà". Bản chặn trước đó nằm trong
+  // `process_waybill_scan`, tức là lượt quét vẫn được ghi rồi mới bị gắn
+  // nhãn `invalid_code` — nhật ký đóng hàng vẫn đầy dòng "Mã sai" mang
+  // đường link TikTok, và những lượt chưa kịp qua RPC còn hiện "Đang chờ
+  // xử lý" mãi mãi.
+  //
+  // Đánh đổi đã biết: mất dấu vết camera đang đọc nhầm thứ gì. Bù lại bằng
+  // dòng log ở máy chủ ngay dưới — đủ để lần khi cần, không đụng vào số
+  // liệu kho.
+  //
+  // Trả `ok: true` chứ không phải lỗi: agent có hàng đợi gửi lại, trả lỗi
+  // là nó thử lại mãi một chuỗi vĩnh viễn không hợp lệ.
+  if (scanType === "waybill" && !isWaybillLike(toWaybillCandidate(parsed.raw_value))) {
+    console.warn(
+      `[warehouse-scans] bỏ qua mã không đúng dáng mã vận đơn: org=${agent.organization_id} device=${parsed.scanner_device_code} value=${parsed.raw_value.slice(0, 80)}`,
+    );
+    return NextResponse.json({
+      ok: true,
+      ignored: "not_waybill",
+      duplicate: false,
+      event_id: null,
+      scan_type: scanType,
+      warning: {
+        code: "not_waybill",
+        message: "Chuỗi này không có dáng mã vận đơn — đã bỏ qua, không ghi lại.",
+      },
+    });
+  }
 
   // Phase 2 advisory check: resolve scanner -> station at scanned_at.
   // We never block ingestion on this and never write the resolved station
