@@ -387,7 +387,7 @@ export async function resolveClipBounds(opts: {
   const workEndedIso = packingEvent.work_ended_at;
 
   // 3) Compute window.
-  let clipStart = new Date(scannedAt.getTime() - timing.pre * 1000);
+  const clipStart = new Date(scannedAt.getTime() - timing.pre * 1000);
   let clipEnd: Date;
   let endReason: EndReason;
   let nextScan: NextScanInfo | null = null;
@@ -484,32 +484,6 @@ export async function resolveClipBounds(opts: {
       nextScan,
       sessionEnd,
     };
-  }
-
-  // 4b) Dịch cửa sổ theo ĐỘ TRỄ LUỒNG của chính camera này.
-  //
-  // Mốc quét là đồng hồ máy kho lúc giải mã xong khung hình QR, còn đoạn
-  // video đặt tên theo đồng hồ máy lúc ghi. Camera nào về chậm hơn thì
-  // đoạn của nó nằm MUỘN hơn trên trục đồng hồ máy so với lúc việc xảy ra
-  // thật — đọc đúng mốc quét sẽ ra cảnh của mấy trăm mili giây trước.
-  //
-  // Kho Đại Kim 25/09/2026: camera toàn cảnh chậm hơn camera QR 1 giây, nên
-  // clip toàn cảnh chiếu cảnh của 1 giây trước clip QR. Xem ghi chú đầy đủ
-  // ở migration 20260925120000.
-  //
-  // Dịch CẢ HAI đầu cùng một lượng nên độ dài clip không đổi — chỉ đổi chỗ
-  // lấy hình. Giá trị trả về là cửa sổ ĐÃ dịch, vì đó mới là khoảng thật
-  // trên trục thời gian của đoạn video: agent tính `-ss` từ `started_at`
-  // của đoạn, cũng là đồng hồ máy.
-  const { data: cameraRow } = await admin
-    .from("cameras")
-    .select("stream_latency_ms")
-    .eq("id", cameraId)
-    .maybeSingle<{ stream_latency_ms: number | null }>();
-  const latencyMs = Number(cameraRow?.stream_latency_ms ?? 0);
-  if (Number.isFinite(latencyMs) && latencyMs !== 0) {
-    clipStart = new Date(clipStart.getTime() + latencyMs);
-    clipEnd = new Date(clipEnd.getTime() + latencyMs);
   }
 
   // 5) Optional pre-query hook (e.g. sync segment files from disk so the

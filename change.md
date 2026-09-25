@@ -1392,18 +1392,23 @@ docs([Module]):     Cập nhật tài liệu
 - **Ngưỡng nghiệm thu:** độ lệch dưới 200 ms. Cách đo: điện thoại bấm giờ hiện mili giây đặt trước cả hai camera, chụp một ảnh màn hình hai luồng trực tiếp — đo lại sau MỖI bước.
 - **Trạng thái:** Tài liệu xong, chờ người ở kho thực hiện và điền bảng kết quả.
 
-### [CAMERA-DO-TRE] - Bù độ trễ luồng theo từng camera khi cắt clip
+### [CAMERA-DO-TRE] - Bù độ trễ luồng theo camera — ĐÃ VIẾT RỒI GỠ
 
-- **Chủ dự án chốt 25/09/2026:** "camera toàn cảnh đang chậm hơn camera qr 1s thôi" — không cần đọc giờ in trên khung hình, chỉ cần bù một con số.
-- **Vì sao 1 giây đó làm lệch clip:** mốc quét là đồng hồ máy kho lúc giải mã xong khung hình QR (`qr-frame-source.ts` gọi `onFrame(frame, new Date(), ...)`), còn đoạn video đặt tên theo đồng hồ máy lúc ghi (`-strftime`). Không chỗ nào biết giờ camera CHỤP được cảnh.
-- **Kết luận quan trọng nhất, dễ sửa nhầm:** **chỉ góc toàn cảnh lệch, góc QR đang ĐÚNG SẴN.** Mốc quét sinh ra từ chính camera QR nên độ trễ của nó tự triệt tiêu. Gọi T là lúc việc xảy ra thật: mốc quét = T + Lq; clip QR đọc tại T + Lq ra đúng cảnh T; clip toàn cảnh đọc tại T + Lq ra cảnh T − (Lo − Lq) = T − 1 giây.
-- **Sửa — CHỈ Ở CLOUD, không phải dựng lại agent:**
-  - `supabase/migrations/20260925120000_camera_stream_latency.sql` (mới, **CHƯA ÁP**): thêm `cameras.stream_latency_ms INTEGER NOT NULL DEFAULT 0`, CHECK trong khoảng ±5000ms. Mặc định 0 = "chưa hiệu chỉnh", đúng sự thật — đoán bừa một con số thì camera nào cũng lệch một ít mà không ai biết con số ở đâu ra. Quá ±5 giây thì không còn là độ trễ luồng mà là đồng hồ sai hoặc nghẽn mạng, phải sửa gốc.
-  - `src/lib/order-proof/clip-resolver.ts`: dịch **cả hai đầu** cửa sổ theo `stream_latency_ms` của camera — độ dài clip không đổi, chỉ đổi chỗ lấy hình. Đặt **sau** khi đã biết camera (không thì không biết dịch bao nhiêu) và **trước** khi tìm đoạn video (không thì chọn nhầm đoạn, clip thiếu hình đầu hoặc cuối).
-  - `scripts/set-camera-latency.mjs` (mới): đặt và xem giá trị. Báo lỗi rõ nếu chưa chạy migration — nuốt lỗi ở đây thì script in danh sách rỗng, người chạy tưởng kho không có camera nào.
-- **Vì sao cửa sổ trả về là cửa sổ ĐÃ dịch:** agent tính `-ss` từ `started_at` của đoạn, cũng là đồng hồ máy. Trả cửa sổ nghiệp vụ chưa dịch thì agent cắt nhầm chỗ.
-- **Files test:** `tests/camera-stream-latency.test.ts` (mới, 5 bài) — gồm một bài khoá riêng ghi chú "vì sao chỉ góc toàn cảnh lệch", vì người sau rất dễ tưởng phải bù cả hai camera.
-- **Kết quả kiểm tra:** `pnpm test` 582/582, `pnpm typecheck` sạch.
-- **Việc của chủ dự án:** chạy migration, rồi `node scripts/set-camera-latency.mjs CTC01 1000`.
-- **Lưu ý đã ghi vào `docs/camera-giam-do-tre-toan-canh.md` mục 7:** bù bằng con số chỉ đúng khi độ trễ CỐ ĐỊNH. Nếu gốc là nghẽn băng thông ở cổng 10 Mbps thì lúc đông trễ 1,5s lúc vắng trễ 0,4s — điền số nào cũng sai, mà sai khó thấy hơn bây giờ. Vẫn phải làm năm bước chỉnh camera trước.
-- **Trạng thái:** Mã nguồn xong; chờ chạy migration và đặt giá trị.
+- **Chủ dự án chốt 25/09/2026:** "camera toàn cảnh đang chậm hơn camera qr 1s thôi" → tôi làm phần bù độ trễ. Ngay sau đó: "thôi tạm thời xóa phần xử lý tốc độ khung hình đi, push lại lên nhánh 2-camera để bỏ đi nhé" → **đã gỡ sạch khỏi nhánh**.
+- **Đã gỡ những gì:** cột `cameras.stream_latency_ms` (migration `20260925120000`, **chưa từng chạy trên database** nên không để lại cột thừa), đoạn dịch cửa sổ trong `src/lib/order-proof/clip-resolver.ts`, `scripts/set-camera-latency.mjs`, `tests/camera-stream-latency.test.ts`.
+- **GIỮ LẠI phần phân tích, vì nó vẫn đúng và sẽ cần nếu làm lại:**
+  - **Vì sao 1 giây đó làm lệch clip:** mốc quét là đồng hồ máy kho lúc giải mã xong khung hình QR (`qr-frame-source.ts` gọi `onFrame(frame, new Date(), ...)`), còn đoạn video đặt tên theo đồng hồ máy lúc ghi (`-strftime`). Không chỗ nào biết giờ camera CHỤP được cảnh.
+  - **Chỉ góc toàn cảnh lệch, góc QR đang ĐÚNG SẴN.** Mốc quét sinh ra từ chính camera QR nên độ trễ của nó tự triệt tiêu. Gọi T là lúc việc xảy ra thật: mốc quét = T + Lq; clip QR đọc tại T + Lq ra đúng cảnh T; clip toàn cảnh đọc tại T + Lq ra cảnh T − (Lo − Lq) = T − 1 giây. **Người làm lại sau rất dễ tưởng phải bù cả hai camera — đừng.**
+  - **Chỗ sửa nằm hoàn toàn ở cloud**, không phải dựng lại agent: dịch cửa sổ trong `resolveClipBounds`, **sau** khi biết camera (không thì không biết dịch bao nhiêu) và **trước** khi tìm đoạn video (không thì chọn nhầm đoạn).
+  - **Bù bằng con số chỉ đúng khi độ trễ CỐ ĐỊNH.** Nghẽn băng thông thì lúc đông trễ 1,5s lúc vắng 0,4s — điền số nào cũng sai, mà sai khó thấy hơn không bù.
+- **Trạng thái:** Đã gỡ khỏi nhánh theo yêu cầu. Hướng xử lý còn lại nằm ở `docs/camera-giam-do-tre-toan-canh.md` (chỉnh camera) và `docs/chon-2-camera-tranh-lech-clip.md` (chọn camera cho lần sau).
+
+### [CHON-CAMERA] - Lưu ý chọn 2 camera để clip không bị lệch
+
+- **Chủ dự án yêu cầu 25/09/2026:** "viết cho tôi lưu ý khi chọn 2 camera đi để hạn chế nhất việc clip bị lệch".
+- **Tài liệu:** `docs/chon-2-camera-tranh-lech-clip.md` (mới). Viết cho người chọn hàng và đặt mua, không phải người đọc mã nguồn.
+- **Kết luận một câu:** mua **hai camera giống hệt nhau**; hai góc khác nhau thì chỉnh bằng **zoom**, không phải bằng hai model khác nhau.
+- **Điểm mấu chốt:** thứ quan trọng không phải độ trễ mà là **CHÊNH LỆCH** độ trễ giữa hai camera. Cả hai cùng chậm 400ms thì không sao; một con 200ms một con 1.200ms thì hỏng.
+- **Tiêu chí dễ bỏ qua nhất mà hậu quả tệ nhất — độ nhạy sáng:** camera nhạy kém trong kho hơi tối sẽ tự kéo dài phơi sáng còn camera kia thì không, và độ lệch **thay đổi theo ánh sáng trong ngày**. Loại lệch đó không bù được bằng một con số cố định. Đại Kim chênh ngay từ tờ thông số: 1/3" ở 0.005 Lux so với 1/2.8" ở 0.001 Lux.
+- **Ngưỡng nghiệm thu trước khi bắt vít:** dưới 200ms đạt, 200–500ms chấp nhận nhưng phải tìm nguyên nhân, **trên 500ms không nhận hàng**. Đo lại lần nữa vào lúc kho tối nhất trong ngày — con số đổi nhiều thì vấn đề là độ nhạy sáng, chữa bằng **thêm đèn** chứ không phải chỉnh camera.
+- **Trạng thái:** Hoàn tất.

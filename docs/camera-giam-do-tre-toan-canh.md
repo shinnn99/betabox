@@ -172,23 +172,18 @@ Sau đó mở trang Giám sát đóng hàng, xem trực tiếp cả hai camera c
 
 ---
 
-## 7. Còn lệch bao nhiêu thì bù bằng phần mềm
+## 7. Nếu làm hết mà vẫn còn lệch
 
-Hệ thống đã có chỗ nhận con số này (25/09/2026). Mỗi camera có một thông số **độ trễ luồng, tính bằng mili giây**; khi cắt clip, hệ thống tự dịch cửa sổ của camera đó đi đúng ngần ấy.
+Ghi lại con số cuối cùng trong bảng trên và báo lại.
 
-Đo xong, điền vào bằng lệnh này trên máy lập trình:
+**Hệ thống hiện KHÔNG tự bù độ lệch này.** Nó ghép hai góc bằng đồng hồ máy kho, camera nào về chậm hơn thì clip của camera đó chiếu cảnh sớm hơn đúng bấy nhiêu. Nên hết lệch hay không phụ thuộc hoàn toàn vào năm bước ở trên.
 
-```
-node scripts/set-camera-latency.mjs CTC01 1000
-```
+Hướng xử lý nếu năm bước không đủ, theo thứ tự nên cân nhắc:
 
-Chạy không kèm tham số thì chỉ xem giá trị hiện tại của mọi camera.
+1. **Đổi camera toàn cảnh sang cùng model với camera QR.** Hai model khác nhau thì gần như không bao giờ về được dưới 200ms — xem [chon-2-camera-tranh-lech-clip.md](chon-2-camera-tranh-lech-clip.md).
+2. **Bù bằng phần mềm** — thêm cho mỗi camera một thông số "độ trễ luồng (mili giây)", đo một lần rồi điền, hệ thống tự dịch cửa sổ cắt clip. Việc này cần sửa mã, chưa làm.
 
-**Chỉ đặt cho camera toàn cảnh.** Mốc quét sinh ra từ chính camera QR — nó giải mã xong khung hình nào thì lấy giờ lúc đó — nên độ trễ của camera QR **tự triệt tiêu**. Để camera QR ở 0.
-
-Sau khi đổi, tạo lại clip cho một đơn cũ rồi xem hai góc đã khớp chưa. Không cần khởi động lại gì: đây là phần chạy trên máy chủ, không phải máy kho.
-
-> **Vẫn phải làm năm bước trên trước.** Bù bằng con số chỉ đúng khi độ trễ **cố định**. Nếu gốc là nghẽn băng thông ở cổng 10 Mbps thì lúc đông hàng trễ 1,5 giây, lúc vắng trễ 0,4 giây — điền số nào cũng sai, mà lại sai một cách khó thấy hơn bây giờ.
+Lưu ý về cách 2: bù bằng con số **chỉ đúng khi độ trễ cố định**. Nếu gốc là nghẽn băng thông ở cổng 10 Mbps thì lúc đông hàng trễ 1,5 giây, lúc vắng trễ 0,4 giây — điền số nào cũng sai, mà lại sai một cách khó thấy hơn bây giờ. Đó là lý do năm bước ở trên phải làm trước, không phải làm sau.
 
 ---
 
