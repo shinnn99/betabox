@@ -10,7 +10,7 @@ import {
 import { collectReleases, parseReleaseSection } from "../src/lib/changelog/parse.ts";
 
 /**
- * Nhật ký cập nhật phiên bản (chủ dự án chốt 24/09/2026).
+ * Nhật ký phiên bản (chủ dự án chốt 24/09/2026, đổi tên 25/09/2026).
  *
  * Luật phân loại: đổi cách vận hành, hoặc máy kho nhảy số giữa (0.8 → 0.9)
  * là LỚN; chỉ nhảy số cuối (0.8.1 → 0.8.2) là NHỎ.
@@ -62,21 +62,33 @@ test("danh sách xếp mới nhất trước và không thiếu nội dung", () 
   }
 });
 
-test("trang nằm trong nhóm Quản lý hệ thống và đã khai quyền", () => {
+test("trang nằm ở menu platform, KHÔNG còn ở menu kho", () => {
+  // Chủ dự án chốt 25/09/2026: chuyển hẳn sang platform, không nhân đôi.
+  const platformNav = readFileSync("src/lib/platform-nav.ts", "utf8");
+  assert.ok(platformNav.includes('label: "Nhật ký phiên bản"'));
+  assert.ok(platformNav.includes('href: "/platform/changelog"'));
+
   const nav = readFileSync("src/lib/nav.ts", "utf8");
-  assert.ok(nav.includes('label: "Nhật ký cập nhật phiên bản"'));
-  assert.ok(nav.includes('href: "/dashboard/settings/changelog"'));
-  // Phải nằm SAU mục Nhật ký hệ thống, tức vẫn trong nhóm Quản lý hệ thống.
   assert.ok(
-    nav.indexOf('href: "/dashboard/audit"') < nav.indexOf('href: "/dashboard/settings/changelog"'),
+    !nav.includes("/dashboard/settings/changelog"),
+    "menu kho không được còn mục này",
   );
 
+  // Kiểm entry THẬT trong bảng, không kiểm chú thích — đường dẫn cũ được
+  // nhắc trong comment để giải thích vì sao nó không còn ở đây.
   const access = readFileSync("src/lib/nav-access.ts", "utf8");
-  assert.ok(access.includes('["/dashboard/settings/changelog", ["audit.view"]]'));
+  assert.ok(
+    !access.includes('["/dashboard/settings/changelog"'),
+    "gỡ khỏi nav-access để chặn cả đường gõ thẳng đường dẫn",
+  );
+  assert.ok(!access.includes('["/dashboard/audit"'));
 });
 
 test("trang chỉ đọc — không có nút ghi nào", () => {
-  const page = readFileSync("src/app/dashboard/settings/changelog/page.tsx", "utf8");
+  const page = readFileSync(
+    "src/components/changelog/ChangelogTimeline.tsx",
+    "utf8",
+  );
   assert.ok(!page.includes("apiFetch"), "trang này không gọi API ghi");
   assert.ok(!/method:\s*"(POST|PATCH|DELETE)"/.test(page));
   assert.ok(page.includes("Thay đổi lớn"), "có nhãn phân biệt bản lớn");
@@ -92,7 +104,7 @@ test("máy kho lên phiên bản mới thì nhật ký phải có mục tương 
   const versions = RELEASES.map((r) => r.agentVersion).filter((v): v is string => v !== null);
   assert.ok(
     versions.includes(pkg.version),
-    `máy kho đang là ${pkg.version} nhưng Nhật ký cập nhật phiên bản chưa có mục nào cho bản này — ` +
+    `máy kho đang là ${pkg.version} nhưng Nhật ký phiên bản chưa có mục nào cho bản này — ` +
       `thêm vào src/lib/changelog/releases.ts (mới nhất ở trên).`,
   );
 

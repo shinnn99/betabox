@@ -27,7 +27,7 @@ import { isWaybillLike, toWaybillCandidate } from "@/lib/warehouse/waybill-shape
  */
 
 const SQL = readFileSync(
-  "supabase/migrations/20260925100000_reject_non_waybill_scans.sql",
+  "supabase/migrations/20260925120000_reject_non_waybill_scans.sql",
   "utf8",
 );
 
@@ -85,7 +85,7 @@ test("nhánh mã sai không được làm vỡ hàm xử lý lượt quét", () 
   // đọc nó. Không gán trước là PL/pgSQL ném "record is not assigned yet",
   // hàm vỡ và lượt quét mất trắng — tệ hơn cả lỗi đang đi sửa.
   const va = readFileSync(
-    "supabase/migrations/20260925110000_fix_invalid_code_crash.sql",
+    "supabase/migrations/20260925130000_fix_invalid_code_crash.sql",
     "utf8",
   );
   assert.ok(

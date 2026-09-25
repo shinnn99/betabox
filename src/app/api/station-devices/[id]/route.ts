@@ -127,7 +127,7 @@ export async function DELETE(req: Request, { params }: RouteContext) {
   // cầm UUID device org khác có thể end assignment cross-tenant.
   const { data: existing, error: lookupErr } = await admin
     .from("station_devices")
-    .select("id")
+    .select("id, device_code, device_type")
     .eq("id", id)
     .eq("organization_id", ctx.organizationId)
     .maybeSingle();
@@ -140,6 +140,62 @@ export async function DELETE(req: Request, { params }: RouteContext) {
   if (!existing) {
     // Policy-consistent 404 — không leak "device tồn tại nhưng khác org".
     return NextResponse.json({ error: "not_found" }, { status: 404 });
+  }
+
+  // ==========================================================================
+  // Máy quét ảo `qrcam_*` gắn với bàn còn đặt nguồn đọc mã là CAMERA: chặn.
+  //
+  // Lưu trữ nó không "xoá" được gì — `planVirtualScannerRepairs` bật lại ngay
+  // khi có người mở trang. Nhưng bộ tự-sửa đó CHỈ chạy trong `listCameras()`,
+  // tức đường đọc dashboard. Không ai mở trang thì bản ghi nằm archived vô
+  // thời hạn, và trong khoảng đó `resolve_scanner_at` (đòi status='active')
+  // trả rỗng → `process_waybill_scan` đặt 'unmapped_scanner' → dòng
+  // packing_events bị ép NULL cả station_id, warehouse_id lẫn proof_camera_id:
+  // đơn không được đếm, không ca, không video bằng chứng.
+  //
+  // Đã cắn thật: 4 lượt quét ngày 16/09/2026 mang scanner_device_code
+  // 'qrcam_dahua_3' đều mất bàn, mất ca, không tạo đơn — nhân viên quét lại
+  // 3 lần cùng một mã vì không thấy phản hồi. Dashboard không báo gì.
+  //
+  // Nên chặn tại đây thay vì để người dùng bấm rồi hứng cửa sổ hỏng. Muốn bỏ
+  // hẳn máy quét ảo thì đổi nguồn đọc mã của bàn sang súng quét — lúc đó
+  // chính bộ tự-sửa sẽ gỡ nó bằng nhánh `detach`.
+  // ==========================================================================
+  if (
+    existing.device_type === "scanner" &&
+    String(existing.device_code ?? "").toLowerCase().startsWith("qrcam_")
+  ) {
+    const { data: activeAssign } = await admin
+      .from("station_device_assignments")
+      .select("station_id")
+      .eq("device_id", id)
+      .eq("organization_id", ctx.organizationId)
+      .is("unassigned_at", null)
+      .maybeSingle();
+
+    if (activeAssign?.station_id) {
+      const { data: station } = await admin
+        .from("packing_stations")
+        .select("code, scan_source")
+        .eq("id", activeAssign.station_id)
+        .eq("organization_id", ctx.organizationId)
+        .maybeSingle();
+
+      if (station?.scan_source === "camera") {
+        return NextResponse.json(
+          {
+            error: "virtual_scanner_in_use",
+            station_code: station.code ?? null,
+            message:
+              `${existing.device_code} không phải máy quét thật — đây là cách hệ thống ghi nhận ` +
+              `bàn ${station.code ?? "này"} đang đọc mã bằng camera. Lưu trữ nó sẽ làm mọi lần quét ` +
+              `ở bàn không lên đơn và không có video bằng chứng. Muốn bỏ, hãy chuyển nguồn đọc mã ` +
+              `của bàn sang súng quét — hệ thống sẽ tự gỡ máy quét ảo này.`,
+          },
+          { status: 409 },
+        );
+      }
+    }
   }
 
   // Close current assignment — cũng scope organization_id để defense-in-depth

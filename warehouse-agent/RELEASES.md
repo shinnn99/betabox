@@ -23,8 +23,12 @@ agent không gửi gì cả.
   nhưng đó là chặn SAU khi agent đã gửi — không cứu được lượt quét. Phải
   có cả hai.
 
-**Người đi cài cần biết:** chỉ đổi một file chạy, không thêm file, không
-đổi cấu hình. Xem [releases/THAY-FILE-CHAY-0.12.1.md](releases/THAY-FILE-CHAY-0.12.1.md).
+**Người đi cài cần biết:**
+
+- **Máy đã có agent:** chỉ đổi một file chạy, không thêm file, không đổi
+  cấu hình. Xem [releases/THAY-FILE-CHAY-0.12.1.md](releases/THAY-FILE-CHAY-0.12.1.md).
+- **Máy cài mới:** dùng bộ cài `releases/BetacomAgentSetup-v0.12.1.exe`
+  (dựng 25/09/2026, 155.146.322 byte).
 
 ---
 

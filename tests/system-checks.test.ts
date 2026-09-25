@@ -875,7 +875,7 @@ test("dung lượng Storage: unknown vì thiếu MẪU SỐ, không bịa số t
 // Toàn loạt
 // ═══════════════════════════════════════════════════════════════════════
 
-test("runSystemChecks: luôn trả đủ 10 mục, đúng thứ tự cố định", async () => {
+test("runSystemChecks: luôn trả đủ 11 mục, đúng thứ tự cố định", async () => {
   const { checks, scope } = await runSystemChecks({
     client: fakeDb(BOOM) as never,
     now: NOW,
@@ -894,6 +894,7 @@ test("runSystemChecks: luôn trả đủ 10 mục, đúng thứ tự cố địn
       CHECK_KEYS.cameraProbe,
       CHECK_KEYS.recording,
       CHECK_KEYS.clipFailures,
+      CHECK_KEYS.unmappedScanner,
       CHECK_KEYS.vps,
       CHECK_KEYS.storage,
       CHECK_KEYS.warehouseDisk,
@@ -947,4 +948,105 @@ test("nửa âm: gọi thẳng checkCronCleanup với nguồn hỏng thì NÉM �
 test("nửa âm: gọi thẳng checkAgentHeartbeat/checkCameraProbe với nguồn hỏng thì NÉM", async () => {
   await assert.rejects(() => checkAgentHeartbeat(fakeDb(BOOM) as never, NOW), /connection reset/);
   await assert.rejects(() => checkCameraProbe(fakeDb(BOOM) as never, NOW), /connection reset/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// 6b. Quét không quy được về bàn (unmapped_scanner)
+//
+// Kiểu hỏng KHÔNG ai thấy: agent có cảnh báo nhưng dashboard trước nay im.
+// Sự cố 16/09/2026 chạy hơn một ngày không ai biết — 4 lượt quét của
+// `qrcam_dahua_3` mất trắng vì máy quét ảo bị archive.
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * KHÔNG dùng `withScope` được: nó chiếm trọn bảng `packing_events` để trả
+ * "đơn cuối lúc nào", nên truy vấn của mục này không bao giờ tới nơi. Hai
+ * truy vấn cùng bảng, tách bằng dấu hiệu riêng: mục này lọc
+ * `.eq("status","unmapped_scanner")`, còn phạm vi thì không.
+ */
+function unmappedRows(
+  rows: Array<{ scanner_device_code: string | null }>,
+  opts: { boom?: boolean } = {},
+): Resolver {
+  return (table, ops) => {
+    if (table === "organizations") {
+      return { data: [{ id: ORG, name: "Kho A" }], error: null };
+    }
+    if (table === "warehouses") return { data: [], error: null };
+    if (table === "packing_events") {
+      if (hasEq(ops, "status", "unmapped_scanner")) {
+        if (opts.boom) return { data: null, error: { message: "connection reset" } };
+        return {
+          data: rows.map((r) => ({ organization_id: ORG, ...r })),
+          error: null,
+        };
+      }
+      // Truy vấn phạm vi: đơn cuối quét lúc NOW (kho đang làm việc).
+      return { data: [{ scanned_at: NOW.toISOString() }], error: null };
+    }
+    return { data: [], error: null };
+  };
+}
+
+test("unmapped: không lượt nào thì ok, và vẫn có ô cho kho", async () => {
+  const c = await runOne(CHECK_KEYS.unmappedScanner, unmappedRows([]));
+  assert.equal(c.status, "ok");
+  // Ô "0 lượt" phải hiện ra — ô trống bị đọc thành "chưa đo".
+  assert.equal(c.entities?.length, 1);
+  assert.equal(c.entities?.[0].count, 0);
+});
+
+test("unmapped: MỘT lượt đã là warn — không có ca lẻ vô hại", async () => {
+  const c = await runOne(
+    CHECK_KEYS.unmappedScanner,
+    unmappedRows([{ scanner_device_code: "MAY_QUET_01" }]),
+  );
+  assert.equal(c.status, "warn");
+  assert.match(c.message, /không được đếm|bằng chứng/);
+});
+
+test("unmapped: 3 lượt trở lên là crit — cấu hình hỏng, không phải nhầm tay", async () => {
+  const c = await runOne(
+    CHECK_KEYS.unmappedScanner,
+    unmappedRows([
+      { scanner_device_code: "qrcam_dahua_3" },
+      { scanner_device_code: "qrcam_dahua_3" },
+      { scanner_device_code: "qrcam_dahua_3" },
+    ]),
+  );
+  assert.equal(c.status, "crit");
+});
+
+test("unmapped: tái hiện sự cố 16/09 — nêu tên thiết bị và chỉ đúng đường máy quét ảo", async () => {
+  const c = await runOne(
+    CHECK_KEYS.unmappedScanner,
+    unmappedRows([
+      { scanner_device_code: "qrcam_dahua_3" },
+      { scanner_device_code: "qrcam_dahua_3" },
+      { scanner_device_code: "qrcam_dahua_3" },
+      { scanner_device_code: "qrcam_dahua_3" },
+    ]),
+  );
+  const e = c.entities?.[0];
+  assert.equal(e?.count, 4);
+  // Tên thiết bị là manh mối đắt nhất — không có nó thì phải mở DB mới biết.
+  assert.match(String(e?.detail), /qrcam_dahua_3/);
+  assert.match(String(e?.action), /máy quét ảo/);
+});
+
+test("unmapped: súng quét thật KHÔNG bị chỉ sang đường máy quét ảo", async () => {
+  const c = await runOne(
+    CHECK_KEYS.unmappedScanner,
+    unmappedRows([{ scanner_device_code: "MAY_QUET_01" }]),
+  );
+  const e = c.entities?.[0];
+  assert.doesNotMatch(String(e?.action), /máy quét ảo/);
+  assert.match(String(e?.action), /gán vào bàn|phân công/);
+});
+
+test("unmapped: nguồn hỏng thì unknown, KHÔNG ném — route cảnh báo phải sống", async () => {
+  const c = await runOne(CHECK_KEYS.unmappedScanner, unmappedRows([], { boom: true }));
+  assert.equal(c.status, "unknown");
+  // Xanh giả ở đây nguy hơn im lặng: "0 lượt" đọc thành "quét đang ổn".
+  assert.notEqual(c.status, "ok");
 });

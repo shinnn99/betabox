@@ -8,7 +8,7 @@ Mỗi file là một ngày làm việc. Nội dung tổng hợp từ lịch sử
 
 ## Cách viết mục hiện ra trên giao diện
 
-Trang **Quản lý hệ thống → Nhật ký cập nhật phiên bản** đọc TỰ ĐỘNG từ thư mục này. Nhưng chỉ đọc đúng một mục trong mỗi file — phần còn lại là nhật ký kỹ thuật, người vận hành kho đọc không hiểu và cũng không cần.
+Trang **Platform → Nhật ký phiên bản** đọc TỰ ĐỘNG từ thư mục này. Nhưng chỉ đọc đúng một mục trong mỗi file — phần còn lại là nhật ký kỹ thuật, người vận hành kho đọc không hiểu và cũng không cần.
 
 Muốn một thay đổi hiện ra ngoài giao diện thì thêm mục này vào file của ngày đó:
 

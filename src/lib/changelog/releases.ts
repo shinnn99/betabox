@@ -1,5 +1,5 @@
 /**
- * Nhật ký cập nhật phiên bản — dữ liệu cho giao diện.
+ * Nhật ký phiên bản — dữ liệu cho giao diện.
  *
  * KHÔNG viết nội dung ở đây. Nội dung nằm ở phần "Phát hành cho người
  * dùng" trong các file `changelog/*.md` (chủ dự án chốt 24/09/2026: cập

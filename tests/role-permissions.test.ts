@@ -84,11 +84,11 @@ test("nhóm setup đúng phạm vi đã chốt: camera, gán vào bàn, thiết 
 });
 
 test("viewer: xem mọi trang trừ nhóm Quản lý hệ thống; không có quyền ghi nào", () => {
+  // "/dashboard/audit" và "/dashboard/settings/changelog" đã chuyển sang
+  // menu platform (25/09/2026) nên không còn trong MENU_HREFS của kho.
   const MANAGE_SYSTEM = [
     "/dashboard/users",
     "/dashboard/settings/warehouse-config",
-    "/dashboard/audit",
-    "/dashboard/settings/changelog",
   ];
   assert.deepEqual(
     visible(VIEWER_SET).sort(),

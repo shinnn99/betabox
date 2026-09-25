@@ -1,7 +1,7 @@
 -- ============================================================================
 -- Vá lỗi hàm vỡ khi gặp mã không hợp lệ (kho Đại Kim, 25/09/2026)
 --
--- Sau khi áp 20260925100000 (chặn chuỗi không có dáng mã vận đơn), mọi
+-- Sau khi áp 20260925120000 (chặn chuỗi không có dáng mã vận đơn), mọi
 -- lượt quét rơi vào nhánh `invalid_code` đều làm hàm ném lỗi:
 --
 --   record "v_resolved" is not assigned yet

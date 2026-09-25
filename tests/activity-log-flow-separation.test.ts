@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
  *
  * Hai lỗi chồng lên nhau, và đây là test cho lỗi thứ hai:
  *   1. Camera đọc trúng mã QR link trên nhãn TikTok → chặn ở migration
- *      20260925100000 (xem waybill-shape-guard.test.ts).
+ *      20260925120000 (xem waybill-shape-guard.test.ts).
  *   2. Nhật ký đóng hàng liệt kê MỌI lượt quét trong ngày rồi mới phân
  *      loại, nên lượt quét của luồng hoàn hàng vẫn hiện ở đây — kể cả khi
  *      mã hoàn toàn hợp lệ. Luồng hoàn đã có bảng riêng

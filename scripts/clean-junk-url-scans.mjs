@@ -12,7 +12,7 @@
  *      "S") và một mảnh GUID. Nhóm này nằm trong luồng đóng hàng với trạng
  *      thái `valid`.
  *
- * Nguyên nhân đã chặn ở 20260925100000 + 20260925110000. Script này dọn
+ * Nguyên nhân đã chặn ở 20260925120000 + 20260925130000. Script này dọn
  * phần đã lỡ sinh ra, vì chúng đang tính vào báo cáo và vào số kiện hoàn.
  *
  * Diện xoá dùng đúng luật `is_waybill_like` đang chạy trên database, nên
