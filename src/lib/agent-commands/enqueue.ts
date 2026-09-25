@@ -272,6 +272,7 @@ export interface EnqueueCutClipFailure {
     | "no_segments"
     | "expired_retention"
     | "segment_still_open"
+    | "zero_length_window"
     | "internal"
     | "not_found";
   message: string;
@@ -560,6 +561,23 @@ export async function enqueueCutClip(
     .maybeSingle();
   if (peErr || !pe) {
     return { ok: false, reason: "not_found", message: peErr?.message ?? "packing_event not found" };
+  }
+
+  // Cua so 0 giay thi cat ra file rong. Gap o kien hoan nghi van: luoi an
+  // toan ghi `bat dau = ket thuc = gio quet` vi khong co phien lam viec nao
+  // de lay moc. Chan o day chu khong de agent nhan lenh roi bao loi kho
+  // hieu — va de duong goi thang API cung khong lot.
+  if (
+    pe.work_started_at &&
+    pe.work_ended_at &&
+    new Date(pe.work_ended_at).getTime() <= new Date(pe.work_started_at).getTime()
+  ) {
+    return {
+      ok: false,
+      reason: "zero_length_window",
+      message:
+        "Lượt quét này không có khoảng thời gian làm việc (0 giây) nên không có video để cắt.",
+    };
   }
 
   const overviewCameraId =

@@ -1170,3 +1170,17 @@ docs([Module]):     Cập nhật tài liệu
 - **Dọn dữ liệu (ĐÃ XONG):** xoá 2 đơn `invalid_code` sinh hôm nay và **44 lượt quét thô** mã sai (21 lượt link TikTok + 23 lượt camera đọc hụt còn lại). Kiểm lại: 0 đơn mã sai, 0 lượt thô mã sai.
 - **Kết quả kiểm tra:** `pnpm test` 573/573, `pnpm typecheck` sạch.
 - **Trạng thái:** Đã hoàn thành; chờ deploy để có tác dụng trên kho.
+
+### [0-GIAY-KHONG-HIEN] - Lượt quét 0 giây không hiện ở trang Bằng chứng, không cắt clip
+
+- **Chủ dự án báo 25/09/2026** (ảnh một dòng ngày 23/09): mã `TTVN1099351268`, "Không có ca", **0s**, "Chưa có", kèm nút Tạo clip — "mấy cái nào mà 0 giây thì đừng có cho vào".
+- **Khác hẳn [MA-SAI-KHONG-LUU]:** đây là **mã vận đơn THẬT**, không phải rác. Đọc dữ liệu trước khi sửa: cả kho Đại Kim chỉ có **2 dòng** 0 giây, cả hai đều `status = return_suspect`, `event_kind = return`, ngày 23/09.
+- **Nguyên nhân:** `return_suspect` là lưới an toàn — một mã đã gửi đi bị quét lại ở bàn đóng hàng. Không có phiên làm việc nào để lấy mốc nên `process_waybill_scan` ghi `work_started_at = work_ended_at = scanned_at`, thành cửa sổ 0 giây. Trang Bằng chứng hoàn hàng liệt kê `["valid", "return_suspect"]` nên chúng hiện ra, kèm nút Tạo clip cắt được đúng một file rỗng.
+- **KHÔNG xoá khỏi database** — khác với mấy đợt dọn trước. Mã là mã thật và việc "mã đã gửi đi bị quét lại" đúng là thứ cần biết; chúng vẫn nằm ở "Cần xử lý" và trong nhật ký, chỗ đó mới đúng việc của chúng. Chỉ bỏ khỏi trang Bằng chứng, nơi chúng không có gì để chứng minh.
+- **Sửa:**
+  - `src/lib/order-proof/service.ts`: thêm `q.or("work_duration_seconds.is.null,work_duration_seconds.gt.0")`. Dùng `or` chứ không `neq 0` — `neq` làm rơi luôn dòng `NULL`, tức là kiện hoàn ĐANG MỞ biến mất khỏi trang ngay khi vừa quét.
+  - `src/lib/agent-commands/enqueue.ts`: thêm mã lỗi `zero_length_window`, chặn ngay sau khi đọc lượt quét — trước khi dò camera và tìm đoạn video. Chặn ở đây thì đường gọi thẳng API cũng không lọt.
+  - `src/app/api/order-proof/[pe_id]/watch/route.ts`: câu báo cho người dùng đọc được, không phải mã lỗi thô.
+- **Files test:** `tests/zero-length-window.test.ts` (mới, 4 bài) — gồm một bài khoá riêng cái bẫy `neq` làm mất dòng `NULL`.
+- **Kết quả kiểm tra:** `pnpm test` 577/577, `pnpm typecheck` sạch.
+- **Trạng thái:** Đã hoàn thành; chờ deploy.

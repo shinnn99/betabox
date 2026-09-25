@@ -359,6 +359,15 @@ export async function listScans(
     q = q.in("status", ["valid", "duplicated"]);
   }
 
+  // Cửa sổ video dài 0 giây thì không có gì để xem và cắt clip cũng ra
+  // file rỗng. Gặp ở kiện hoàn nghi vấn (`return_suspect`): lưới an toàn
+  // ghi `bắt đầu = kết thúc = giờ quét` vì không có phiên làm việc nào để
+  // lấy mốc. Chúng vẫn hiện ở "Cần xử lý" và trong nhật ký — chỗ đó mới
+  // đúng việc của chúng.
+  //
+  // Giữ dòng chưa có số giây (`null`): đó là kiện đang mở, chưa đóng.
+  q = q.or("work_duration_seconds.is.null,work_duration_seconds.gt.0");
+
   if (filter.from) q = q.gte("scanned_at", filter.from.toISOString());
   if (filter.to) q = q.lte("scanned_at", filter.to.toISOString());
   if (filter.waybillCode && filter.waybillCode.trim()) {

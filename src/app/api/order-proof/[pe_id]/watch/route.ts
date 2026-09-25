@@ -367,9 +367,11 @@ export async function POST(req: Request, ctx: RouteContext) {
             ? "Đơn không gán camera bằng chứng."
             : cutResult.reason === "segment_still_open"
               ? "Segment cuối chưa đóng, thử lại sau vài giây."
-              : cutResult.reason === "not_found"
-                ? "Không tìm thấy đơn."
-                : `enqueue_cut_failed: ${cutResult.message ?? "unknown"}`;
+              : cutResult.reason === "zero_length_window"
+                ? "Lượt quét này không có khoảng thời gian làm việc (0 giây) nên không có video để cắt."
+                : cutResult.reason === "not_found"
+                  ? "Không tìm thấy đơn."
+                  : `enqueue_cut_failed: ${cutResult.message ?? "unknown"}`;
 
     // Insert row failed để reconcile tick sau thấy status=failed thay
     // vì "chưa có row" (loop). Camera_id null nếu no_camera.
