@@ -3,7 +3,6 @@ import type { createAdminClient } from "@/lib/supabase/admin";
 import { resolveVietnamDayScope } from "@/lib/warehouse/time-range";
 import {
   NO_SESSION_NOTE,
-  classifyReturnEvent,
   describeControlCard,
 } from "@/lib/warehouse/live/returns";
 
@@ -120,7 +119,7 @@ export async function buildLiveActivity(
   // `scanned_at` chứ không phải `received_at`: summary/issues/stations đều
   // bó ngày theo scanned_at, dùng cột khác ở đây là đẻ lại đúng cái mâu
   // thuẫn số liệu vừa đi sửa. Thứ tự hiển thị vẫn theo received_at.
-  const [rawsRes, countRes] = await Promise.all([
+  const [rawsRes, countRes, returnCountRes] = await Promise.all([
     admin
       .from("warehouse_scan_raw_events")
       .select(
@@ -137,6 +136,15 @@ export async function buildLiveActivity(
       .eq("organization_id", orgId)
       .gte("scanned_at", day.startIso)
       .lt("scanned_at", day.endIso),
+    // Trừ ra số lượt của luồng hoàn hàng, để con số tổng khớp với danh
+    // sách bên dưới thay vì đếm cả phần đã lọc đi.
+    admin
+      .from("packing_events")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", orgId)
+      .eq("event_kind", "return")
+      .gte("scanned_at", day.startIso)
+      .lt("scanned_at", day.endIso),
   ]);
 
   const { data: raws, error: rawErr } = rawsRes;
@@ -146,7 +154,10 @@ export async function buildLiveActivity(
     date: day.dateKey,
     invalid_date: day.invalidDate,
     limit,
-    total: countRes.count ?? (raws?.length ?? 0),
+    total: Math.max(
+      0,
+      (countRes.count ?? (raws?.length ?? 0)) - (returnCountRes.count ?? 0),
+    ),
   };
 
   const rawIds = (raws ?? []).map((r) => r.id);
@@ -242,7 +253,12 @@ export async function buildLiveActivity(
     }
   }
 
-  const activity: ActivityItem[] = (raws ?? []).map((r) => {
+  // Kiện hoàn có bảng theo dõi riêng (buildReturnActivity). Để lẫn ở đây
+  // là nhật ký đóng hàng hiện "Hàng hoàn" 0 giây xen giữa các đơn đi —
+  // đúng cái chủ kho Đại Kim nhìn thấy ngày 25/09/2026.
+  const activity: ActivityItem[] = (raws ?? [])
+    .filter((r) => packByRaw.get(r.id)?.event_kind !== "return")
+    .map((r) => {
     const isStaff = r.scan_type === "staff_qr";
     const sr = scanByRaw.get(r.id);
     const pe = packByRaw.get(r.id);
@@ -273,10 +289,7 @@ export async function buildLiveActivity(
       workEndedAt = pe.work_ended_at;
       workDuration = pe.work_duration_seconds;
       timingStatus = pe.timing_status;
-      if (pe.event_kind === "return" && pe.status !== "return_suspect") {
-        // Kiện hoàn dùng chung bộ chữ với đơn đi (xem classifyReturnEvent).
-        ({ kind, category, note } = classifyReturnEvent(pe));
-      } else if (pe.status === "valid") {
+      if (pe.status === "valid") {
         kind = "waybill_valid";
         category = "ok";
         note =

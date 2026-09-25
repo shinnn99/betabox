@@ -1121,3 +1121,20 @@ docs([Module]):     Cập nhật tài liệu
 - **Kết quả kiểm tra:** `pnpm test` 566/566. Trên database thật (kho TEST, dọn sạch sau khi thử): QR link TikTok → `invalid_code` không tạo đơn; chuỗi rỗng → `invalid_code`; mã quá ngắn → `invalid_code`; mã vận đơn thật đi nhánh bình thường; không lượt nào thành kiện hoàn.
 - **Còn lại:** dữ liệu rác đã sinh ra ở kho Đại Kim (1 đơn đi ma ngày 27/08 + 8 kiện hoàn ma ngày 25/09, đều mang mã là URL) vẫn đang tính vào báo cáo — chờ chủ dự án cho phép dọn.
 - **Trạng thái:** Hoàn tất phần chặn; chờ dọn dữ liệu rác.
+
+### [NHAT-KY-LAN-LUONG] - Nhật ký đóng hàng liệt kê cả kiện hoàn
+
+- **Chủ dự án báo 25/09/2026:** "trong đơn đóng hàng vẫn lẫn đơn hoàn hàng kia" — sau khi đã chặn QR link, nhật ký Giám sát đóng hàng vẫn hiện các dòng "Hàng hoàn" 0 giây.
+- **Nguyên nhân (lỗi thứ hai, độc lập với [QUET-NHAM-URL]):** `buildLiveActivity` đọc **mọi** lượt quét trong ngày từ `warehouse_scan_raw_events` rồi mới phân loại — không lọc `event_kind`. Nó còn có hẳn một nhánh gọi `classifyReturnEvent` để gắn nhãn kiện hoàn. Nghĩa là **kiện hoàn hợp lệ cũng lẫn vào**, không chỉ mấy dòng rác. Luồng hoàn đã có bảng riêng (`buildReturnActivity`) từ đợt 7, nên đây là đếm hai lần.
+- **Số liệu thật (kho Đại Kim, đọc 25/09/2026):** mã `HTTPS://M.TIKTOK.SHOP/S/ALIFL0VLNKNL` có **19 lượt** — 2 lượt `outbound` (1 `valid` 27/08 tạo đơn ma, 1 `duplicated`) và **17 lượt `return`** trạng thái `return_suspect`, tất cả đều `work_started_at = work_ended_at` nên hiện 0 giây.
+- **Sửa** (`src/lib/warehouse/live/activity.ts`):
+  - Lọc bỏ lượt quét có `event_kind = 'return'` trước khi dựng danh sách.
+  - Trừ số kiện hoàn khỏi con số tổng, nếu không danh sách và tổng đá nhau.
+  - Bỏ hẳn nhánh `classifyReturnEvent` giờ đã chết, để người đọc sau không tưởng nhật ký này còn hiện kiện hoàn.
+- **Files test:** `tests/activity-log-flow-separation.test.ts` (mới, 4 bài); sửa `tests/return-pages.test.ts` — bài cũ khẳng định đúng hành vi vừa bỏ.
+- **Kết quả kiểm tra:** `pnpm test` 570/570, `pnpm typecheck` sạch, eslint sạch.
+- **Dọn dữ liệu rác (ĐÃ XONG 25/09/2026):** chủ dự án chốt "xóa hẳn đi chứ để mã sai vậy" — xoá cả hai nhóm bằng `scripts/clean-junk-url-scans.mjs`, diện xoá dùng đúng luật `is_waybill_like` nên đơn thật không lọt vào.
+  - Nhóm 1 — mã đường link: **19 lượt** (2 đóng hàng, 17 hoàn hàng 0 giây).
+  - Nhóm 2 — camera đọc hụt còn một hai ký tự (`"7"`, `"8"`, `"9"`, `"5858"`, `"S"`, một mảnh GUID): **23 lượt**, kèm 1 clip bằng chứng và 6 đơn trong bảng `orders`.
+  - Tổng: `packing_events` kho Đại Kim 3.944 → **3.902**; kiểm lại còn **0** lượt mang mã sai. Số đơn đóng hàng của các ngày dính nhóm 2 giảm tương ứng — đúng ý, vì chúng vốn không phải đơn.
+- **Trạng thái:** Đã hoàn thành (mã nguồn chờ deploy để giao diện hết lẫn luồng).
