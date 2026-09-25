@@ -126,11 +126,12 @@ test("ước lượng dung lượng clip: route đóng hàng chỉ ước lượ
   assert.ok(newRoute.includes(`eventKind: "return"`));
 });
 
-test("nhật ký đóng hàng gắn nhãn kiện hoàn và thẻ điều khiển, không gọi là Hợp lệ", () => {
+// Trước 25/09/2026 nhật ký đóng hàng có nhánh gắn nhãn cho kiện hoàn: nó
+// liệt kê cả hai luồng rồi mới phân loại. Giờ kiện hoàn bị lọc hẳn khỏi
+// bảng này (xem activity-log-flow-separation.test.ts), nên chỉ còn thẻ
+// điều khiển cần nhánh riêng.
+test("nhật ký đóng hàng gắn nhãn thẻ điều khiển, không gọi là Hợp lệ", () => {
   const source = readFileSync("src/lib/warehouse/live/activity.ts", "utf8");
-  const returnBranch = source.indexOf(`pe.event_kind === "return" && pe.status !== "return_suspect"`);
-  const validBranch = source.indexOf(`} else if (pe.status === "valid") {`);
-  assert.ok(returnBranch > 0 && validBranch > returnBranch, "nhánh kiện hoàn phải đứng TRƯỚC nhánh Hợp lệ");
   assert.ok(source.includes(`r.scan_type === "control"`), "thẻ điều khiển phải có nhánh riêng");
 });
 

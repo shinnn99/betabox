@@ -4,6 +4,30 @@ Ghi từ 0.8.6 trở đi. Mỗi mục nêu: sửa gì, vì sao, và người đi
 
 ---
 
+## 0.12.1 — 2026-09-25
+
+**Bỏ qua mã QR đường link, chỉ nhận mã vận đơn.**
+
+Phiếu TikTok in HAI mã QR cạnh nhau: một mã vận đơn và một mã link tới
+trang bán hàng. Agent chọn trúng cái nào trước thì gửi cái đó lên, nên mã
+vận đơn in ngay cạnh mất luôn — nhân viên quét mà không ăn. Tệ hơn: hai
+mã ngang cỡ nhau trong cùng khung hình còn bị coi là "hai nhãn cùng lúc",
+agent không gửi gì cả.
+
+- Agent nhận ra chuỗi là đường link và bỏ hẳn trước khi chọn, áp cho cả QR
+  lẫn mã vạch. Luật để CHẶT — chỉ bắt chuỗi có `://`, mở đầu `www.`, hoặc
+  tên miền có đuôi phổ biến. Cố ý KHÔNG lọc rộng theo dáng mã vận đơn: các
+  sàn đặt mã rất khác nhau, lọc rộng là chặn nhầm mã thật và cả kho không
+  quét được đơn nào.
+- Phía hệ thống cũng đã chặn chuỗi không có dáng mã vận đơn từ 25/09,
+  nhưng đó là chặn SAU khi agent đã gửi — không cứu được lượt quét. Phải
+  có cả hai.
+
+**Người đi cài cần biết:** chỉ đổi một file chạy, không thêm file, không
+đổi cấu hình. Xem [releases/THAY-FILE-CHAY-0.12.1.md](releases/THAY-FILE-CHAY-0.12.1.md).
+
+---
+
 ## 0.12.0 — 2026-09-24
 
 **Đọc được mã QR nhỏ và mã vạch.**

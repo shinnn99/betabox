@@ -39,6 +39,18 @@ docs([Module]):     Cập nhật tài liệu
 
 <!-- Thêm các task mới ở ĐÂY (phía trên các task cũ hơn) -->
 
+### [MERGE-2CAM-MAIN] - Gộp nhánh `2-camera` vào `main`, gỡ trùng version migration
+
+- **Việc:** gộp `2-camera` (6 commit: chặn QR đường link + agent 0.12.1, chặn chuỗi không đúng dáng mã vận đơn, tách kiện hoàn khỏi nhật ký đóng hàng, hai kế hoạch Drive/USB) vào `main` (1 commit: chuyển nhật ký sang platform, chặn xoá nhầm camera và user). Hai nhánh đã rẽ thật nên là merge commit, không fast-forward.
+- **Xung đột `change.md` — gộp cả hai, không bỏ bên nào:** hai nhánh cùng thêm mục mới vào cuối file nên Git báo trùng vị trí, nhưng nội dung không loại trừ nhau. Giữ đủ **11 mục** (7 của `main`, 4 của `2-camera`). Đã đối chiếu danh sách tiêu đề mục với **cả hai** nhánh cha: không mục nào biến mất.
+- **Trùng version migration — sửa trước khi nó chặn `db push`:** hai nhánh cùng đặt tên `20260925100000` và `20260925110000` cho bốn migration khác nhau. Nếu để nguyên thì mọi `db push` sau này đều đứng.
+  - **Đã kiểm database thật trước khi chọn bên nào đổi tên:** `supabase_migrations.schema_migrations` đang ghi hai version đó dưới tên của cặp bên `main` (`user_delete_set_null_fks`, `revoke_sessions_on_disable`). Cặp bên `2-camera` **không có dòng nào** — dù hiệu lực của chúng ĐÃ sống trong database (đã soi `pg_get_functiondef`: `process_waybill_scan` và `process_return_scan` đều đã có nhánh `invalid_code`), tức là được áp tay qua SQL Editor nên không được track.
+  - Vì vậy đổi tên **cặp `2-camera`** (bên chưa được track) sang `20260925120000` và `20260925130000`. Đổi tên chỉ ảnh hưởng việc đánh dấu, không đụng schema — schema đã đúng sẵn.
+  - Sửa luôn hai chỗ tham chiếu đã thành sai sau khi đổi tên: chú thích đầu file `..._fix_invalid_code_crash.sql` (đang trỏ về version cũ) và hai dòng tên file trong mục `[QUET-NHAM-URL]`.
+- **Kết quả kiểm tra:** `pnpm test` và `pnpm typecheck` chạy sau khi gộp — xem số liệu ở phần dưới. Không còn dấu xung đột nào trong `change.md`.
+- **Còn lại:** hai cặp migration nay khác version nhưng cặp `2-camera` vẫn chưa có dòng trong `schema_migrations`; lần `db push` tới cần để mắt xem Supabase có đòi áp lại không (nội dung đều idempotent-an toàn vì chỉ `CREATE OR REPLACE FUNCTION`).
+- **Trạng thái:** Hoàn tất.
+
 ### [BUILD-INSTALLER-0.12.0] - Bộ cài 0.12.0 cho máy kho cài mới
 
 - **Mục tiêu:** Bản 0.12.0 trước đó chỉ phát hành file chạy trần (`betacom-agent-0.12.0.exe`, 65 MB) dùng để thay nhanh trên máy đã cài. Máy kho chưa từng có agent thì file trần không dùng được, mà bộ cài mới nhất còn đứng ở `v0.11.0` — tức thiếu toàn bộ sửa lỗi 0.12.0 (đọc QR nhỏ nhãn TikTok, đọc mã vạch, hết kẹt chế độ hoàn).
@@ -1112,6 +1124,70 @@ docs([Module]):     Cập nhật tài liệu
   - Backfill 10 bản phát hành (agent 0.8.9 → 0.12.0 và các thay đổi chỉ trên web) vào đúng file ngày tương ứng; thêm `changelog/2026-08-11.md` và `changelog/2026-09-22.md` cho hai bản trước đây chưa có file.
 - **Kết quả kiểm tra (sau khi đổi):** `pnpm test` 558/558, `tsc` đạt, `eslint` không lỗi. Trên web thật: trang đọc ra đủ 10 bản, có cả hai mốc đổi cách vận hành.
 - **Trạng thái:** Hoàn tất.
+
+### [PLAN-DRIVE-USB] - Hai kế hoạch mới: đẩy segment lên Google Drive, và kết nối camera USB
+
+- **Yêu cầu:** Chủ dự án 25/09/2026 — viết kế hoạch cho (1) đẩy segment lên drive thay vì lưu local, (2) cho kết nối cả camera USB vào hệ thống.
+- **Files:** `plans/active/DRIVE-day-segment-len-google-drive.md`, `plans/active/CAMERA-USB-ket-noi-webcam.md` (đều mới, chưa viết dòng mã nào).
+- **Chủ dự án chốt khi hỏi lại:** nơi lưu là **Google Drive**; mục tiêu là **an toàn khi máy kho hỏng** + **đỡ tốn ổ đĩa**, KHÔNG đặt mục tiêu xem lại từ xa hay kéo dài hạn lưu.
+- **Đo trước khi viết kế hoạch (số thật, không ước lượng):**
+  - Segment: 1.762 file trên `D:eta_cam_recordings`, tổng 29,3 GB → **17 MB/phút mỗi camera** (≈ 1 GB/giờ); camera nhẹ nhất 7,5–8 MB/phút.
+  - Đường lên kho: **198 KB/s** (đo 24/09 khi đẩy file 81 MB lên GitHub) ≈ 0,68 GB/giờ.
+  - **Kết luận chặn:** kho 4 camera × ca 10 giờ cần đẩy 40 GB/ngày, đường mạng chở tối đa 16,7 GB/ngày — thiếu 2,4 lần. Đẩy nguyên segment gốc là KHÔNG chạy được. Kế hoạch chuyển sang ba tầng: bản lưu trữ nén ~300 kbps cho giờ có ca (5,4 GB/ngày, ~31% đường lên), bản gốc chỉ cho đoạn quanh lượt quét có vấn đề, còn lại không đẩy.
+  - ffmpeg đi kèm agent **có** hỗ trợ `dshow` (đọc được USB); webcam của máy này chỉ xuất MJPEG/YUV tối đa 1280×720, **không có H.264** → máy kho bắt buộc phải mã hoá; đo thật: 720p30 x264 `veryfast` = **1.177 kbps** (≈ 0,53 GB/giờ).
+  - Thử đẩy webcam vào relay MediaMTX **không kết luận được**: relay chỉ chạy khi có camera hoạt động, cả 3 camera kho test đang mất kết nối nên lúc thử không có máy chủ RTSP nào nghe. Đã ghi vào kế hoạch là việc đầu tiên của đợt 1, không kết luận sai là cách làm hỏng.
+- **Phát hiện đáng giá nhất của kế hoạch USB:** hàm dựng cấu hình relay đang ép mọi nguồn phải là URL `rtsp://`, gặp khác là ném lỗi. Thêm camera USB mà không sửa chỗ đó thì relay không khởi động lại được và **mất xem trực tiếp của TẤT CẢ camera trên máy kho đó**. Kế hoạch đặt đây là đợt 1, kèm yêu cầu test hai loại camera cùng lúc.
+- **Rủi ro lớn nhất chưa trả lời được:** agent chạy dưới dạng dịch vụ Windows (session 0), mà Windows thường chặn tiến trình không có phiên người dùng mở camera. Kế hoạch đặt đây là phép thử đầu tiên của đợt 0.
+- **Trạng thái:** Chờ chủ dự án đọc và trả lời các câu hỏi ở mục cuối mỗi kế hoạch.
+
+### [QUET-NHAM-URL] - Camera đọc trúng QR link TikTok, hệ thống nhận làm mã vận đơn
+
+- **Triệu chứng chủ dự án báo 25/09/2026:** nhật ký Giám sát đóng hàng hiện 18 dòng "Hàng hoàn" với mã là `HTTPS://M.TIKTOK.SHOP/S/ALIFL0VLNKNL`, trong khi không ai giơ mã vận đơn nào lúc đó.
+- **Nguyên nhân (đọc từ dữ liệu thật, không suy đoán):** nhãn TikTok in HAI mã QR — mã vận đơn (`TTVN…`) và một mã link tới trang shop. Camera bắt trúng cái link:
+  - 27/08 01:53 → `valid`, hệ thống **tạo một đơn đi** với mã là cả cái URL.
+  - 27/08 02:40 → `duplicated`.
+  - 25/09 (8 lần) → `return_suspect`: lưới an toàn thấy "mã đã gửi đi bị quét lại ở bàn đóng hàng" nên ghi thành **hàng hoàn**, lẫn vào nhật ký đóng hàng.
+  - Tức một lượt đọc nhầm hồi tháng 8 đẻ ra 8 kiện hoàn ma một tháng sau.
+- **Gốc rễ:** `process_waybill_scan` nhận BẤT KỲ chuỗi không rỗng nào làm mã vận đơn.
+- **Sửa:**
+  - `supabase/migrations/20260925120000_reject_non_waybill_scans.sql` (mới, ĐÃ ÁP; đổi tên từ `20260925100000` lúc merge vào `main` 25/09/2026 vì trùng version với migration của nhánh kia — nội dung không đổi): thêm `is_waybill_like(text)` — dài 8–40 ký tự, chỉ chữ/số/`-`/`_`/`.`, bắt đầu bằng chữ hoặc số. Luật để RỘNG, thà nhận nhầm còn hơn chặn nhầm đơn thật. Chuỗi rớt luật → `invalid_code`, không tạo đơn, không kích hoạt lưới an toàn. Điều kiện đặt TRƯỚC nhánh lưới an toàn.
+  - `supabase/migrations/20260925130000_fix_invalid_code_crash.sql` (mới, ĐÃ ÁP; đổi tên từ `20260925110000` lúc merge vào `main` 25/09/2026, cùng lý do trùng version — nội dung không đổi): **vá lỗi do chính bản trên làm lộ ra**. Nhánh `invalid_code` không gán `v_resolved`, trong khi câu INSERT cuối hàm luôn đọc `v_resolved.wh_id/st_id` → PL/pgSQL ném `record "v_resolved" is not assigned yet`, hàm vỡ và lượt quét **mất trắng**. Lỗi nằm sẵn từ lâu ở nhánh chuỗi rỗng nhưng chuỗi rỗng hiếm nên chưa ai gặp. Tôi đã đưa bản đầu cho chủ dự án chạy mà chưa thử đầu-cuối — sai quy trình, ghi lại để không lặp.
+- **Files test:** `tests/waybill-shape-guard.test.ts` (mới, 5 bài).
+- **Kết quả kiểm tra:** `pnpm test` 566/566. Trên database thật (kho TEST, dọn sạch sau khi thử): QR link TikTok → `invalid_code` không tạo đơn; chuỗi rỗng → `invalid_code`; mã quá ngắn → `invalid_code`; mã vận đơn thật đi nhánh bình thường; không lượt nào thành kiện hoàn.
+- **Còn lại:** dữ liệu rác đã sinh ra ở kho Đại Kim (1 đơn đi ma ngày 27/08 + 8 kiện hoàn ma ngày 25/09, đều mang mã là URL) vẫn đang tính vào báo cáo — chờ chủ dự án cho phép dọn.
+- **Trạng thái:** Hoàn tất phần chặn; chờ dọn dữ liệu rác.
+
+### [NHAT-KY-LAN-LUONG] - Nhật ký đóng hàng liệt kê cả kiện hoàn
+
+- **Chủ dự án báo 25/09/2026:** "trong đơn đóng hàng vẫn lẫn đơn hoàn hàng kia" — sau khi đã chặn QR link, nhật ký Giám sát đóng hàng vẫn hiện các dòng "Hàng hoàn" 0 giây.
+- **Nguyên nhân (lỗi thứ hai, độc lập với [QUET-NHAM-URL]):** `buildLiveActivity` đọc **mọi** lượt quét trong ngày từ `warehouse_scan_raw_events` rồi mới phân loại — không lọc `event_kind`. Nó còn có hẳn một nhánh gọi `classifyReturnEvent` để gắn nhãn kiện hoàn. Nghĩa là **kiện hoàn hợp lệ cũng lẫn vào**, không chỉ mấy dòng rác. Luồng hoàn đã có bảng riêng (`buildReturnActivity`) từ đợt 7, nên đây là đếm hai lần.
+- **Số liệu thật (kho Đại Kim, đọc 25/09/2026):** mã `HTTPS://M.TIKTOK.SHOP/S/ALIFL0VLNKNL` có **19 lượt** — 2 lượt `outbound` (1 `valid` 27/08 tạo đơn ma, 1 `duplicated`) và **17 lượt `return`** trạng thái `return_suspect`, tất cả đều `work_started_at = work_ended_at` nên hiện 0 giây.
+- **Sửa** (`src/lib/warehouse/live/activity.ts`):
+  - Lọc bỏ lượt quét có `event_kind = 'return'` trước khi dựng danh sách.
+  - Trừ số kiện hoàn khỏi con số tổng, nếu không danh sách và tổng đá nhau.
+  - Bỏ hẳn nhánh `classifyReturnEvent` giờ đã chết, để người đọc sau không tưởng nhật ký này còn hiện kiện hoàn.
+- **Files test:** `tests/activity-log-flow-separation.test.ts` (mới, 4 bài); sửa `tests/return-pages.test.ts` — bài cũ khẳng định đúng hành vi vừa bỏ.
+- **Kết quả kiểm tra:** `pnpm test` 570/570, `pnpm typecheck` sạch, eslint sạch.
+- **Dọn dữ liệu rác (ĐÃ XONG 25/09/2026):** chủ dự án chốt "xóa hẳn đi chứ để mã sai vậy" — xoá cả hai nhóm bằng `scripts/clean-junk-url-scans.mjs`, diện xoá dùng đúng luật `is_waybill_like` nên đơn thật không lọt vào.
+  - Nhóm 1 — mã đường link: **19 lượt** (2 đóng hàng, 17 hoàn hàng 0 giây).
+  - Nhóm 2 — camera đọc hụt còn một hai ký tự (`"7"`, `"8"`, `"9"`, `"5858"`, `"S"`, một mảnh GUID): **23 lượt**, kèm 1 clip bằng chứng và 6 đơn trong bảng `orders`.
+  - Tổng: `packing_events` kho Đại Kim 3.944 → **3.902**; kiểm lại còn **0** lượt mang mã sai. Số đơn đóng hàng của các ngày dính nhóm 2 giảm tương ứng — đúng ý, vì chúng vốn không phải đơn.
+- **Trạng thái:** Đã hoàn thành (mã nguồn chờ deploy để giao diện hết lẫn luồng).
+
+### [QR-BO-LINK] - Agent bỏ qua QR đường link, chỉ nhận QR mã vận đơn
+
+- **Chủ dự án báo 25/09/2026:** "1 phiếu đơn có 2 QR, 1 QR link 1 QR mã vận đơn... khi hệ thống bắt được QR link thì sẽ bỏ qua, chỉ nhận QR mã vận đơn thôi".
+- **Vì sao bản chặn ở cloud ([QUET-NHAM-URL]) chưa đủ:** cloud chỉ từ chối SAU khi agent đã chọn và gửi mã. Agent chọn trúng link thì mã vận đơn in ngay cạnh **mất luôn** — nhân viên quét mà không ăn, chứ không phải chỉ "ghi nhầm".
+- **Nguyên nhân:** `pickScanCode` cố tình KHÔNG lọc QR (chỉ lọc mã vạch), ghi rõ trong ghi chú đầu file là để tránh tự chặn chính mình. Hệ quả có hai đường hỏng:
+  - camera bắt trúng link trước → gửi link lên;
+  - link và mã vận đơn ngang cỡ nhau trong cùng khung → rơi vào nhánh "hai nhãn cùng lúc", **không gửi gì cả**.
+- **Sửa** (`warehouse-agent/src/qr/code-pick.ts`): thêm `looksLikeLink()` và loại mọi mã là đường link trước khi chọn, áp cho cả QR lẫn mã vạch. Luật để CHẶT — chỉ bắt chuỗi có `://`, mở đầu `www.`, hoặc tên miền có đuôi phổ biến. Cố ý không dùng `looksLikeWaybill` cho QR: lọc rộng ở đây là chặn nhầm mã thật, cả kho không quét được đơn nào.
+- **Files test:** `warehouse-agent/tests/qr-link-skip.test.ts` (mới, 7 bài) — gồm cả bài chạy qua `QrZone` để chắc máy trạng thái nhả ra mã vận đơn chứ không kẹt ở cảnh báo.
+- **Phiên bản agent:** 0.12.0 → **0.12.1** (sửa lỗi, không đổi cách vận hành). Đã viết mục phát hành trong `changelog/2026-09-25.md` và chạy lại `pnpm build:changelog`.
+- **Kết quả kiểm tra:** agent `npm test` 228/228 + `tsc` sạch; cloud `pnpm test` 570/570 + `pnpm typecheck` sạch.
+- **Còn lại:** phải dựng `.exe` bản 0.12.1 và cài lên máy kho thì mới có tác dụng — bản 0.12.0 đang chạy vẫn nhận QR link.
+- **Trạng thái:** Đã hoàn thành phần mã nguồn; chờ dựng bản cài.
+- **Bản cài 0.12.1 (bổ sung 25/09/2026):** đã dựng `warehouse-agent/releases/betacom-agent-0.12.1.exe` (68.261.614 byte, lưu qua Git LFS), kèm `releases/THAY-FILE-CHAY-0.12.1.md` và mục 0.12.1 trong `RELEASES.md`. Kiểm bản dựng bằng cách soi định danh bên trong file chạy: có `looksLikeLink`, `LINK_TLDS`, `worthConsidering`, và vẫn còn `probeStreamSize`, `reconcile` của 0.12.0. Bản này KHÔNG thêm dòng log mới nào nên hướng dẫn chỉ cách kiểm bằng kích thước file (0.12.0 = 68.260.134 byte).
 
 ### [XOA-USER-FK] - Xoá người dùng hệ thống báo ô đỏ rỗng "{}"
 
