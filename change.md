@@ -1089,3 +1089,18 @@ docs([Module]):     Cập nhật tài liệu
   - Backfill 10 bản phát hành (agent 0.8.9 → 0.12.0 và các thay đổi chỉ trên web) vào đúng file ngày tương ứng; thêm `changelog/2026-08-11.md` và `changelog/2026-09-22.md` cho hai bản trước đây chưa có file.
 - **Kết quả kiểm tra (sau khi đổi):** `pnpm test` 558/558, `tsc` đạt, `eslint` không lỗi. Trên web thật: trang đọc ra đủ 10 bản, có cả hai mốc đổi cách vận hành.
 - **Trạng thái:** Hoàn tất.
+
+### [PLAN-DRIVE-USB] - Hai kế hoạch mới: đẩy segment lên Google Drive, và kết nối camera USB
+
+- **Yêu cầu:** Chủ dự án 25/09/2026 — viết kế hoạch cho (1) đẩy segment lên drive thay vì lưu local, (2) cho kết nối cả camera USB vào hệ thống.
+- **Files:** `plans/active/DRIVE-day-segment-len-google-drive.md`, `plans/active/CAMERA-USB-ket-noi-webcam.md` (đều mới, chưa viết dòng mã nào).
+- **Chủ dự án chốt khi hỏi lại:** nơi lưu là **Google Drive**; mục tiêu là **an toàn khi máy kho hỏng** + **đỡ tốn ổ đĩa**, KHÔNG đặt mục tiêu xem lại từ xa hay kéo dài hạn lưu.
+- **Đo trước khi viết kế hoạch (số thật, không ước lượng):**
+  - Segment: 1.762 file trên `D:eta_cam_recordings`, tổng 29,3 GB → **17 MB/phút mỗi camera** (≈ 1 GB/giờ); camera nhẹ nhất 7,5–8 MB/phút.
+  - Đường lên kho: **198 KB/s** (đo 24/09 khi đẩy file 81 MB lên GitHub) ≈ 0,68 GB/giờ.
+  - **Kết luận chặn:** kho 4 camera × ca 10 giờ cần đẩy 40 GB/ngày, đường mạng chở tối đa 16,7 GB/ngày — thiếu 2,4 lần. Đẩy nguyên segment gốc là KHÔNG chạy được. Kế hoạch chuyển sang ba tầng: bản lưu trữ nén ~300 kbps cho giờ có ca (5,4 GB/ngày, ~31% đường lên), bản gốc chỉ cho đoạn quanh lượt quét có vấn đề, còn lại không đẩy.
+  - ffmpeg đi kèm agent **có** hỗ trợ `dshow` (đọc được USB); webcam của máy này chỉ xuất MJPEG/YUV tối đa 1280×720, **không có H.264** → máy kho bắt buộc phải mã hoá; đo thật: 720p30 x264 `veryfast` = **1.177 kbps** (≈ 0,53 GB/giờ).
+  - Thử đẩy webcam vào relay MediaMTX **không kết luận được**: relay chỉ chạy khi có camera hoạt động, cả 3 camera kho test đang mất kết nối nên lúc thử không có máy chủ RTSP nào nghe. Đã ghi vào kế hoạch là việc đầu tiên của đợt 1, không kết luận sai là cách làm hỏng.
+- **Phát hiện đáng giá nhất của kế hoạch USB:** hàm dựng cấu hình relay đang ép mọi nguồn phải là URL `rtsp://`, gặp khác là ném lỗi. Thêm camera USB mà không sửa chỗ đó thì relay không khởi động lại được và **mất xem trực tiếp của TẤT CẢ camera trên máy kho đó**. Kế hoạch đặt đây là đợt 1, kèm yêu cầu test hai loại camera cùng lúc.
+- **Rủi ro lớn nhất chưa trả lời được:** agent chạy dưới dạng dịch vụ Windows (session 0), mà Windows thường chặn tiến trình không có phiên người dùng mở camera. Kế hoạch đặt đây là phép thử đầu tiên của đợt 0.
+- **Trạng thái:** Chờ chủ dự án đọc và trả lời các câu hỏi ở mục cuối mỗi kế hoạch.
