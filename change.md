@@ -1184,3 +1184,57 @@ docs([Module]):     Cập nhật tài liệu
 - **Files test:** `tests/zero-length-window.test.ts` (mới, 4 bài) — gồm một bài khoá riêng cái bẫy `neq` làm mất dòng `NULL`.
 - **Kết quả kiểm tra:** `pnpm test` 577/577, `pnpm typecheck` sạch.
 - **Trạng thái:** Đã hoàn thành; chờ deploy.
+
+### [PLATFORM-CAU-HINH] - Đề xuất quản lý cấu hình tập trung trên trang platform
+
+- **Chủ dự án yêu cầu 25/09/2026:** "đọc trang platform và tìm giải pháp để quản lý dễ hơn, chỉ đưa ra giải pháp không sửa code".
+- **Tài liệu:** `plans/active/PLATFORM-quan-ly-cau-hinh-tap-trung.md` (mới). Không đụng một dòng mã nào.
+- **Đã đọc:** 5 trang platform (`page.tsx`, `orgs/[id]`, `system`, `admins`, `audit`), các route API platform, và bộ giám sát `src/lib/system/checks.ts` + `status-view.ts`.
+- **Kết luận chính:** đường dây cấu hình từ giao diện xuống chỗ dùng là **thật, không hardcode** — `resolve_packing_timing` trên database lấy mặc định phủ bởi giá trị kho đã lưu, agent nhận `retention_days` qua heartbeat rồi ghi cache cho script dọn ổ đọc. Nhưng **platform không quản lý được cấu hình**: tab Cấu hình chỉ hiện 2 ô rồi đẩy người dùng đi đóng giả vào tổ chức.
+- **Ba số đo trên production (25/09), quyết định hình dạng đề xuất:**
+  - `return_retention_days` của **cả hai tổ chức đều NULL** → con số 7 ngày đang chạy là mặc định trong mã nguồn, không ai đặt.
+  - Kho Betacom Demo đặt `max_order_seconds = 600` nhưng tầng video và tự-dừng-đơn **kẹp về 180**, âm thầm — chỉ có `console.warn` ở máy chủ.
+  - Lệnh tạo tổ chức chỉ ghi `{name, slug}`, database **không có giá trị mặc định** cho hai cột hạn lưu → mỗi tổ chức mới ra đời ở trạng thái chưa cấu hình.
+- **Phát hiện đáng giá nhất:** cấu hình là **điểm mù duy nhất** của bộ giám sát — 10 phép kiểm tra hiện có đều về vận hành (agent, camera, ghi hình, cron, ổ đĩa), không phép nào hỏi "kho này cấu hình đủ chưa, giá trị đặt có thật sự được dùng không". Đề xuất bám vào khung `CHECK_CONFIG` + "Cần chú ý" đã có chứ không dựng khung mới.
+- **Sáu giải pháp, thứ tự đề xuất F → A → C → B → D → E:** mẫu cấu hình khi tạo tổ chức; nhóm kiểm tra "Cấu hình"; hiện hai cột *Đặt* và *Thực dùng*; bảng cấu hình toàn hệ thống; sửa thẳng trên platform; agent báo cấu hình qua heartbeat.
+- **Việc làm được ngay, không cần viết mã:** điền `return_retention_days` cho cả hai tổ chức.
+- **Chủ dự án chốt 4 câu hỏi (25/09/2026), tài liệu đã viết lại theo:**
+  1. Platform **được sửa** cấu hình → cần route platform riêng, audit theo danh tính admin nền tảng.
+  2. Mẫu cấu hình cho tổ chức mới: **"tôi muốn tự điều chỉnh theo nhu cầu được, không được fix cứng"** → bỏ phương án `DEFAULT` ở database và hằng số trong mã; mẫu lưu trong database, sửa trên platform, **chép lúc tạo** chứ không phủ lúc đọc (phủ lúc đọc thì sửa mẫu sẽ âm thầm đổi cấu hình của kho đang chạy).
+  3. Trần kỹ thuật đang hardcode: **cho đặt** → trần clip 180s/310s, sàn clip, đệm cuối đơn, độ dài đoạn ghi 60s, sàn ổ đĩa 7 ngày đều thành cấu hình. Tôi đã nêu lo ngại là mở đường cho cấu hình hỏng; chủ dự án chốt cho đặt nên kế hoạch làm theo, kèm mục lan can riêng (3.5) cho ba chỗ có hậu quả thật.
+  4. Mục agent: **gộp bản sau** → phần agent của việc (3) và việc báo cấu hình lên gộp chung một bản phát hành, làm phần "báo lên" TRƯỚC phần "nhận xuống" để còn nhìn được từ xa là máy kho đã nhận cấu hình mới chưa.
+- **Đổi so với bản đề xuất:** mẫu cấu hình tụt từ vị trí đầu xuống đợt 4 — vì phải sửa được nên không còn là việc rẻ nhất, cần chỗ lưu và trang sửa, dùng chung màn hình với đợt 3. Thứ tự chốt: kiểm tra cấu hình → phép giải Đặt/Thực dùng → bảng toàn hệ thống + sửa được → mẫu nền tảng → mở trần (cloud) → một bản agent.
+- **Trạng thái:** Kế hoạch đã chốt, chưa triển khai (chủ dự án dặn "viết ra plans thôi, không triển khai").
+
+### [CAMERA-TRE-1S] - Hướng dẫn chỉnh camera cho hết lệch 1 giây giữa hai góc
+
+- **Chủ dự án báo 25/09/2026:** camera toàn cảnh luôn chậm hơn camera QR khoảng 1 giây; hỏi cách xử lý với đúng hai model đang dùng. Sau đó chốt "2 camera đều chạy H.264" và yêu cầu viết ra file trong `docs/`.
+- **Tài liệu:** `docs/camera-giam-do-tre-toan-canh.md` (mới). Không sửa dòng mã nào.
+- **Vì sao không chỉ là khó nhìn:** agent đặt tên đoạn bằng `-strftime`, tức **giờ máy kho lúc ghi**, không phải giờ cảnh xảy ra; `clip-cutter.ts` tính mốc cắt từ `started_at` của đoạn đầu. Hai camera cắt **cùng một khoảng giờ**, nên camera trễ 1 giây thì clip của nó chiếu cảnh của 1 giây trước. **Không có chỗ nào trong hệ thống bù độ trễ theo camera** — đã tìm, không có.
+- **Đo thật từ `camera_recording_files` (4 ngày, kho Đại Kim), thay vì suy đoán:**
+  - `CTC01` (toàn cảnh, Hikvision 4MP): TB **5.88 Mbps**, giữa 5.84, p95 6.32, đỉnh 6.92 — **dải rất hẹp = CBR đang gò**. 4MP H.264 thường cần 6–8 Mbps, đặt CBR 6 Mbps là bộ mã hoá phải giữ khung lại; đây là trễ CỐ ĐỊNH, khớp với "luôn chậm 1 giây".
+  - `CQR01` (QR, Dahua 2MP): TB 2.73, giữa 2.09, p95 4.33, đỉnh 5.53 — dao động rộng = VBR, bình thường.
+  - 5.88 Mbps liên tục là **59% của một cổng 10 Mbps** → nếu cổng switch đang bật chế độ Extend (300m) thì đủ gây xếp hàng.
+- **Năm bước trong tài liệu:** kiểm tra tốc độ cổng switch → hạ toàn cảnh xuống 1080p/VBR 4 Mbps → khoảng I-frame = fps trên cả hai máy → Profile High sang Main → màn trập 1/50 + cân nhắc tắt WDR/AcuSense.
+- **Hai phát hiện đáng giá nhất:**
+  - **Khoảng I-frame đáng sửa kể cả khi hết trễ.** Agent ghi và cắt bằng `-c copy` nên **chỉ cắt được tại khung I**; GOP 2 giây làm điểm bắt đầu clip lệch tới 2 giây, và lệch khác nhau ở hai camera. Đây là sai số độc lập với độ trễ đường truyền.
+  - **Không được đổi sang H.265** để tiết kiệm băng thông: `recording.ts:581` gắn cờ `not_browser_safe` cho mọi codec khác H.264 → clip phải chuyển mã, đốt CPU máy kho. Cách giảm băng thông là hạ độ phân giải.
+- **Cảnh báo vận hành đã ghi vào tài liệu:** đổi độ phân giải/profile trong lúc đang ghi thì tiến trình ghi hiện tại không hiểu luồng mới, đoạn video ra có thể hỏng → phải `Restart-Service BetacomAgent` ngoài giờ làm việc và kiểm lại nhật ký không còn `corrupt decoded frame`.
+- **Ngưỡng nghiệm thu:** độ lệch dưới 200 ms. Cách đo: điện thoại bấm giờ hiện mili giây đặt trước cả hai camera, chụp một ảnh màn hình hai luồng trực tiếp — đo lại sau MỖI bước.
+- **Trạng thái:** Tài liệu xong, chờ người ở kho thực hiện và điền bảng kết quả.
+
+### [CAMERA-DO-TRE] - Bù độ trễ luồng theo từng camera khi cắt clip
+
+- **Chủ dự án chốt 25/09/2026:** "camera toàn cảnh đang chậm hơn camera qr 1s thôi" — không cần đọc giờ in trên khung hình, chỉ cần bù một con số.
+- **Vì sao 1 giây đó làm lệch clip:** mốc quét là đồng hồ máy kho lúc giải mã xong khung hình QR (`qr-frame-source.ts` gọi `onFrame(frame, new Date(), ...)`), còn đoạn video đặt tên theo đồng hồ máy lúc ghi (`-strftime`). Không chỗ nào biết giờ camera CHỤP được cảnh.
+- **Kết luận quan trọng nhất, dễ sửa nhầm:** **chỉ góc toàn cảnh lệch, góc QR đang ĐÚNG SẴN.** Mốc quét sinh ra từ chính camera QR nên độ trễ của nó tự triệt tiêu. Gọi T là lúc việc xảy ra thật: mốc quét = T + Lq; clip QR đọc tại T + Lq ra đúng cảnh T; clip toàn cảnh đọc tại T + Lq ra cảnh T − (Lo − Lq) = T − 1 giây.
+- **Sửa — CHỈ Ở CLOUD, không phải dựng lại agent:**
+  - `supabase/migrations/20260925120000_camera_stream_latency.sql` (mới, **CHƯA ÁP**): thêm `cameras.stream_latency_ms INTEGER NOT NULL DEFAULT 0`, CHECK trong khoảng ±5000ms. Mặc định 0 = "chưa hiệu chỉnh", đúng sự thật — đoán bừa một con số thì camera nào cũng lệch một ít mà không ai biết con số ở đâu ra. Quá ±5 giây thì không còn là độ trễ luồng mà là đồng hồ sai hoặc nghẽn mạng, phải sửa gốc.
+  - `src/lib/order-proof/clip-resolver.ts`: dịch **cả hai đầu** cửa sổ theo `stream_latency_ms` của camera — độ dài clip không đổi, chỉ đổi chỗ lấy hình. Đặt **sau** khi đã biết camera (không thì không biết dịch bao nhiêu) và **trước** khi tìm đoạn video (không thì chọn nhầm đoạn, clip thiếu hình đầu hoặc cuối).
+  - `scripts/set-camera-latency.mjs` (mới): đặt và xem giá trị. Báo lỗi rõ nếu chưa chạy migration — nuốt lỗi ở đây thì script in danh sách rỗng, người chạy tưởng kho không có camera nào.
+- **Vì sao cửa sổ trả về là cửa sổ ĐÃ dịch:** agent tính `-ss` từ `started_at` của đoạn, cũng là đồng hồ máy. Trả cửa sổ nghiệp vụ chưa dịch thì agent cắt nhầm chỗ.
+- **Files test:** `tests/camera-stream-latency.test.ts` (mới, 5 bài) — gồm một bài khoá riêng ghi chú "vì sao chỉ góc toàn cảnh lệch", vì người sau rất dễ tưởng phải bù cả hai camera.
+- **Kết quả kiểm tra:** `pnpm test` 582/582, `pnpm typecheck` sạch.
+- **Việc của chủ dự án:** chạy migration, rồi `node scripts/set-camera-latency.mjs CTC01 1000`.
+- **Lưu ý đã ghi vào `docs/camera-giam-do-tre-toan-canh.md` mục 7:** bù bằng con số chỉ đúng khi độ trễ CỐ ĐỊNH. Nếu gốc là nghẽn băng thông ở cổng 10 Mbps thì lúc đông trễ 1,5s lúc vắng trễ 0,4s — điền số nào cũng sai, mà sai khó thấy hơn bây giờ. Vẫn phải làm năm bước chỉnh camera trước.
+- **Trạng thái:** Mã nguồn xong; chờ chạy migration và đặt giá trị.
