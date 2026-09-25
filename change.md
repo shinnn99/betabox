@@ -39,6 +39,17 @@ docs([Module]):     Cập nhật tài liệu
 
 <!-- Thêm các task mới ở ĐÂY (phía trên các task cũ hơn) -->
 
+### [BUILD-INSTALLER-0.12.1] - Bộ cài 0.12.1 cho máy kho cài mới
+
+- **Mục tiêu:** bản 0.12.1 (bỏ qua QR đường link trên nhãn TikTok) trước đó mới chỉ có file chạy trần để thay nhanh trên máy đã cài. Máy kho cài mới thì bộ cài mới nhất vẫn đứng ở `v0.12.0`, tức thiếu đúng bản sửa lỗi vừa làm. Mục `[QR-BO-LINK]` cũng đang ghi "còn lại: phải dựng .exe bản 0.12.1".
+- **Files tạo/sửa:** `warehouse-agent/releases/BetacomAgentSetup-v0.12.1.exe` (mới), `warehouse-agent/installer/betacom-agent.iss` (`AppVersion` 0.12.0 → 0.12.1), `warehouse-agent/releases/README.md`, `warehouse-agent/RELEASES.md`, `change.md`. Không sửa mã nguồn agent.
+- **Bẫy suýt cắn — `dist-exe` là bản CŨ:** trước khi đóng gói đã kiểm định danh trong `dist-exe/betacom-agent.exe` và thấy **thiếu** `looksLikeLink`/`LINK_TLDS` (định danh riêng của 0.12.1), timestamp còn là 24/09 — tức file chạy trong thư mục build là bản **0.12.0** sót lại từ lần trước. Đóng gói ngay lúc đó sẽ ra bộ cài **mang nhãn 0.12.1 nhưng ruột 0.12.0**, và vì nhãn đúng nên gần như không ai phát hiện cho tới khi kho lại quét trúng QR link. Đã chạy `npm run build:exe` dựng lại trước, rồi mới compile.
+- **Chi tiết thay đổi:** `AppVersion` là biến duy nhất trong `.iss`, dùng cho cả `OutputBaseFilename`, nên sửa một chỗ là đủ. Chạy `npm test` (228/228) → `npm run build:exe` → `ISCC.exe installer/betacom-agent.iss` → chép từ `dist-installer/` sang `releases/`.
+- **Kết quả kiểm tra:** kiểm đủ 9 file nguồn khai trong `.iss` trước khi đóng gói — đều có thật, các `.exe` đều header `MZ`. File chạy dựng lại có đủ định danh mới (`looksLikeLink`, `LINK_TLDS`, `worthConsidering`) và vẫn giữ phần 0.12.0 (`probeStreamSize`, `reconcile` 7 lần). Compile thành công 283,5 s, ra file 155.146.322 byte, khớp cỡ bộ cài 0.12.0 (155.156.477). SHA256 `6feecd77d5a44505` giữ nguyên sau khi chép sang `releases/`.
+- **Về cách xác minh ruột bộ cài:** `grep` chuỗi `0.12.1` trong file bộ cài trả 0 — nhưng đã đối chứng `grep "0.12.0"` trên bộ cài 0.12.0 cũng trả 0, tức nội dung bị nén LZMA2 nên **grep không phải công cụ đo đúng** ở đây, không phải dấu hiệu đóng gói sai. Bằng chứng thay bằng: log ISCC ghi rõ nó nén `dist-exe/betacom-agent.exe`, và file đó đã xác minh riêng là bản 0.12.1. Có thử giải nén bằng `/EXTRACT` nhưng Inno không có cờ đó (mở GUI rồi treo) — đã dừng, không dùng làm bằng chứng.
+- **Còn lại:** chưa chạy thử cài lên máy Windows sạch. Bộ cài dùng lại nguyên kịch bản `.iss` của 0.12.0 đã cài thật được, lần này chỉ đổi số phiên bản và file chạy bên trong.
+- **Trạng thái:** Hoàn tất.
+
 ### [MERGE-2CAM-MAIN] - Gộp nhánh `2-camera` vào `main`, gỡ trùng version migration
 
 - **Việc:** gộp `2-camera` (6 commit: chặn QR đường link + agent 0.12.1, chặn chuỗi không đúng dáng mã vận đơn, tách kiện hoàn khỏi nhật ký đóng hàng, hai kế hoạch Drive/USB) vào `main` (1 commit: chuyển nhật ký sang platform, chặn xoá nhầm camera và user). Hai nhánh đã rẽ thật nên là merge commit, không fast-forward.
@@ -1185,8 +1196,8 @@ docs([Module]):     Cập nhật tài liệu
 - **Files test:** `warehouse-agent/tests/qr-link-skip.test.ts` (mới, 7 bài) — gồm cả bài chạy qua `QrZone` để chắc máy trạng thái nhả ra mã vận đơn chứ không kẹt ở cảnh báo.
 - **Phiên bản agent:** 0.12.0 → **0.12.1** (sửa lỗi, không đổi cách vận hành). Đã viết mục phát hành trong `changelog/2026-09-25.md` và chạy lại `pnpm build:changelog`.
 - **Kết quả kiểm tra:** agent `npm test` 228/228 + `tsc` sạch; cloud `pnpm test` 570/570 + `pnpm typecheck` sạch.
-- **Còn lại:** phải dựng `.exe` bản 0.12.1 và cài lên máy kho thì mới có tác dụng — bản 0.12.0 đang chạy vẫn nhận QR link.
-- **Trạng thái:** Đã hoàn thành phần mã nguồn; chờ dựng bản cài.
+- **Còn lại:** phải cài lên máy kho thì mới có tác dụng — bản 0.12.0 đang chạy vẫn nhận QR link. (File chạy trần đã dựng, xem dòng dưới; bộ cài cho máy cài mới đã dựng ở mục `[BUILD-INSTALLER-0.12.1]`.)
+- **Trạng thái:** Hoàn tất phần mã nguồn và cả hai bản dựng; chờ cài lên máy kho.
 - **Bản cài 0.12.1 (bổ sung 25/09/2026):** đã dựng `warehouse-agent/releases/betacom-agent-0.12.1.exe` (68.261.614 byte, lưu qua Git LFS), kèm `releases/THAY-FILE-CHAY-0.12.1.md` và mục 0.12.1 trong `RELEASES.md`. Kiểm bản dựng bằng cách soi định danh bên trong file chạy: có `looksLikeLink`, `LINK_TLDS`, `worthConsidering`, và vẫn còn `probeStreamSize`, `reconcile` của 0.12.0. Bản này KHÔNG thêm dòng log mới nào nên hướng dẫn chỉ cách kiểm bằng kích thước file (0.12.0 = 68.260.134 byte).
 
 ### [XOA-USER-FK] - Xoá người dùng hệ thống báo ô đỏ rỗng "{}"
