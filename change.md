@@ -1152,3 +1152,4 @@ docs([Module]):     Cập nhật tài liệu
 - **Kết quả kiểm tra:** agent `npm test` 228/228 + `tsc` sạch; cloud `pnpm test` 570/570 + `pnpm typecheck` sạch.
 - **Còn lại:** phải dựng `.exe` bản 0.12.1 và cài lên máy kho thì mới có tác dụng — bản 0.12.0 đang chạy vẫn nhận QR link.
 - **Trạng thái:** Đã hoàn thành phần mã nguồn; chờ dựng bản cài.
+- **Bản cài 0.12.1 (bổ sung 25/09/2026):** đã dựng `warehouse-agent/releases/betacom-agent-0.12.1.exe` (68.261.614 byte, lưu qua Git LFS), kèm `releases/THAY-FILE-CHAY-0.12.1.md` và mục 0.12.1 trong `RELEASES.md`. Kiểm bản dựng bằng cách soi định danh bên trong file chạy: có `looksLikeLink`, `LINK_TLDS`, `worthConsidering`, và vẫn còn `probeStreamSize`, `reconcile` của 0.12.0. Bản này KHÔNG thêm dòng log mới nào nên hướng dẫn chỉ cách kiểm bằng kích thước file (0.12.0 = 68.260.134 byte).
