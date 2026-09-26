@@ -24,6 +24,8 @@ import {
   XCircle,
 } from "lucide-react";
 import PlatformLayout from "@/components/platform/PlatformLayout";
+import { ago, formatVn } from "@/lib/format/time-vn";
+import IncidentLedgerPanel, { type LedgerView } from "@/components/platform/IncidentLedgerPanel";
 
 /**
  * Trang tình trạng hạ tầng.
@@ -108,6 +110,8 @@ interface StatusResponse {
   infra: InfraTile[];
   unavailable: SystemCheck[];
   last_background_run: string | null;
+  /** Sổ sự cố — do con tự kiểm nền ghi. Thiếu khi máy chủ là bản cũ. */
+  incidents?: LedgerView;
 }
 
 const LABELS: Record<string, string> = {
@@ -189,25 +193,7 @@ const TONE: Record<
   },
 };
 
-function formatVn(iso: string | null): string {
-  if (!iso) return "chưa có";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "chưa có";
-  return d.toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour12: false });
-}
 
-/** "3 phút trước" — cho biết mốc còn tươi hay đã cũ mà không phải trừ tay. */
-function ago(iso: string | null, now: number): string {
-  if (!iso) return "";
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return "";
-  const mins = Math.floor((now - t) / 60_000);
-  if (mins < 1) return "vừa xong";
-  if (mins < 60) return `${mins} phút trước`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} giờ trước`;
-  return `${Math.floor(hours / 24)} ngày trước`;
-}
 
 function percent(value: number | null, total: number | null): string | null {
   // Không đo được thì KHÔNG có phần trăm. Bản trước hiện "0%" màu xanh cho
@@ -510,6 +496,14 @@ export default function SystemStatusPage() {
                 </ul>
               )}
             </section>
+
+            {/* ── Sổ sự cố ──────────────────────────────────────────── */}
+            <IncidentLedgerPanel
+              ledger={data.incidents}
+              lastBackgroundRun={data.last_background_run}
+              now={now}
+              checkLabels={LABELS}
+            />
 
             {/* ── Kho đang vận hành ─────────────────────────────────── */}
             <section className="rounded-2xl border border-slate-200 bg-white">

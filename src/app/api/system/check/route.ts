@@ -5,6 +5,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { runSystemChecks, worstStatus } from "@/lib/system/checks";
 import { SYSTEM_JOB_SYSTEM_CHECK, sendSystemAlert } from "@/lib/system/alert";
 import { errorMessage, recordSystemJob } from "@/lib/system/job-log";
+import { buildIssues } from "@/lib/system/status-view";
+import { syncIncidents, type IncidentSyncSummary } from "@/lib/system/incidents";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,9 +41,10 @@ export async function POST(request: NextRequest) {
     console.error("[system-check] không tạo được admin client:", errorMessage(err));
   }
 
-  // Chỉ lấy `checks`: đường cảnh báo cố ý KHÔNG đọc phần chi tiết theo kho
-  // mà runSystemChecks trả kèm — nó chỉ phục vụ trang hiển thị.
-  const { checks } = await runSystemChecks({ client: admin ?? undefined, now });
+  // Đường cảnh báo Lark cố ý KHÔNG đọc phần chi tiết theo kho (`scope`,
+  // entities) — tin Lark chỉ ăn status/value/message. Sổ sự cố thì CẦN chi
+  // tiết theo kho để gom theo shop, nên lấy thêm `scope` cho riêng nó.
+  const { checks, scope } = await runSystemChecks({ client: admin ?? undefined, now });
   const worst = worstStatus(checks);
 
   const base = process.env.NEXT_PUBLIC_APP_URL ?? null;
@@ -69,6 +72,26 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Sổ sự cố (kế hoạch VAN-HANH-NHIEU-KHO, đợt 3). Ghi SAU khi gửi Lark:
+  // sổ chậm hay hỏng (chưa chạy migration, mạng chập) thì tin cảnh báo vẫn
+  // đã đi rồi. Ghi đúng danh sách "Cần chú ý" mà trang Tình trạng hiện.
+  let incidents: IncidentSyncSummary | null = null;
+  if (admin) {
+    try {
+      incidents = await syncIncidents(admin, { checks, issues: buildIssues(checks, scope), now });
+    } catch (err) {
+      // syncIncidents đã hứa không ném; bọc thêm vì lý do y như sendSystemAlert.
+      incidents = {
+        opened: 0,
+        bumped: 0,
+        resolvedOk: 0,
+        resolvedOutOfScope: 0,
+        kept: 0,
+        errors: [errorMessage(err)],
+      };
+    }
+  }
+
   // Dòng sổ này phục vụ HAI việc: mốc "syscheck còn sống", và trí nhớ
   // chống spam của lần chạy sau (detail.alerted).
   await recordSystemJob(
@@ -88,6 +111,7 @@ export async function POST(request: NextRequest) {
         recovered: alert.recovered,
         sent: alert.sent,
         error: alert.error,
+        incidents,
       },
     },
     { client: admin ?? undefined },
@@ -99,5 +123,6 @@ export async function POST(request: NextRequest) {
     worst,
     checks,
     alert: { sent: alert.sent, alerted: alert.alerted, error: alert.error },
+    incidents,
   });
 }

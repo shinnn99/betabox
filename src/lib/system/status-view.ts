@@ -140,6 +140,14 @@ export interface SystemIssue {
   symptom: string;
   action: string;
   href: string | null;
+  /**
+   * Tổ chức sở hữu — `null` cho mục cấp hệ thống (cron, VPS). Thêm ngày
+   * 26/09/2026 cho sổ sự cố: gom sự cố theo shop mà không phải bóc chuỗi
+   * `id` hay `href` ra.
+   */
+  orgId: string | null;
+  /** Id đối tượng (agent, camera, tổ chức) — `null` khi mục không gắn đối tượng. */
+  entityId: string | null;
 }
 
 const ISSUE_ORDER: Record<SystemIssue["status"], number> = { crit: 0, warn: 1, unknown: 2 };
@@ -169,6 +177,8 @@ export function buildIssues(
           symptom: e.detail,
           action: e.action ?? INCIDENT_ACTION,
           href: `/platform/orgs/${e.orgId}`,
+          orgId: e.orgId,
+          entityId: e.id,
         });
       }
       continue;
@@ -186,6 +196,8 @@ export function buildIssues(
         symptom: check.message,
         action: CHECK_ACTION[check.key] ?? INCIDENT_ACTION,
         href: null,
+        orgId: null,
+        entityId: null,
       });
       continue;
     }
@@ -208,6 +220,8 @@ export function buildIssues(
           ? INCIDENT_ACTION
           : (EMPTY_SCOPE_ACTION[check.key] ?? INCIDENT_ACTION),
       href: null,
+      orgId: null,
+      entityId: null,
     });
   }
 

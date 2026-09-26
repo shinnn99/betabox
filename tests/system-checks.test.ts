@@ -679,6 +679,28 @@ test("ghi hình: chưa có segment và kho CŨNG chưa đóng gói → unknown",
   assert.notEqual(c.status, "crit");
 });
 
+test("ghi hình: đoạn ĐANG GHI DỞ (ended_at trống) không được che đoạn vừa đóng", async () => {
+  // Sự cố 26/09/2026: PostgreSQL sắp GIẢM DẦN thì ô trống lên ĐẦU, và đoạn
+  // đang ghi dở luôn có ended_at trống. Mục kiểm lấy dòng đầu nên đúng lúc
+  // camera đang ghi bình thường nó thấy trống và báo crit "Chưa có segment
+  // nào" — ở mọi kho, đúng giờ làm việc. Đo ở Đại Kim: nó lấy phải một đoạn
+  // dahua_01 từ 19/09 không bao giờ được đóng, trong khi đoạn thật gần nhất
+  // kết thúc lúc 09:52 cùng ngày.
+  //
+  // Bộ giả mô phỏng ĐÚNG cách PostgreSQL xếp: DESC mà không nói gì thì
+  // NULLS FIRST. Bản mã cũ (thiếu `nullsFirst: false`) đỏ ở bài này.
+  const resolve = withScope((table, ops) => {
+    if (table !== "camera_recording_files") return { data: [], error: null };
+    const order = ops.find((o) => o.method === "order" && o.args[0] === "ended_at");
+    const opts = (order?.args[1] ?? {}) as { ascending?: boolean; nullsFirst?: boolean };
+    const nullsFirst = opts.nullsFirst ?? opts.ascending === false;
+    const rows = [{ ended_at: null }, { ended_at: minutesAgo(1) }];
+    return { data: nullsFirst ? rows : [...rows].reverse(), error: null };
+  });
+  const c = await runOne(CHECK_KEYS.recording, resolve);
+  assert.equal(c.status, "ok", "camera đang ghi bình thường mà bị báo " + c.status);
+});
+
 test("ghi hình: kho đã nghỉ (đơn cuối trùng segment cuối) → ok, không cảnh báo", async () => {
   // Không có segment lúc 3 giờ sáng là bình thường, không phải sự cố — và
   // hệ biết điều đó vì kho cũng không quét đơn nào sau segment cuối.

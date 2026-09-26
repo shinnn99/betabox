@@ -4,7 +4,7 @@
 **Kế hoạch:** `plans/active/VAN-HANH-NHIEU-KHO.md`
 **Chủ dự án yêu cầu:** *"tự kiểm thử những gì đã làm xem có đúng yêu cầu ban đầu đề ra không, phải pass hết các loại kiểm thử rồi mới chuyển sang làm đợt tiếp theo"*
 
-**Kết luận:** mười lớp kiểm thử — **chín lớp đạt trọn**, một lớp đạt về nội dung nhưng còn một bài đỏ do môi trường (lớp 6). **Hai việc còn mở** nằm ở phía vận hành, ghi ở cuối.
+**Kết luận:** mười lớp kiểm thử — **cả mười lớp đạt**. Lớp 6 ban đầu đỏ một bài do đụng cổng với dịch vụ agent trên máy lập trình; chủ dự án dừng dịch vụ và chạy lại: **228/228**. Còn **một việc mở** ở phía vận hành, ghi ở cuối.
 
 ---
 
@@ -17,7 +17,7 @@
 | 3 | `pnpm test` | ✅ **652/652** | |
 | 4 | Lint toàn repo | ✅ **0 lỗi, 0 cảnh báo trên dòng mới viết** | 16 lỗi + 4 cảnh báo còn lại đều **có từ trước** — xác nhận bằng `git diff` + `git blame` từng dòng, không đoán |
 | 5 | `npm run build` + 4 script canh trước build | ✅ thoát mã 0 | changelog, URL ký, route ghi truyền `Request`, client ghi qua `apiFetch` đều qua. Chạy **hai lần** — lần hai sau khi tách thành phần |
-| 6 | Agent: `tsc` + test | ⚠ `tsc` ✅, test **227/228** | Bài đỏ đụng cổng 8554 với dịch vụ BetacomAgent cài trên máy lập trình — **không phải do mã** (đợt 1–2 không đụng agent). Chạy lại đúng phép thử đó trên cổng trống: MediaMTX chấp nhận cấu hình, **0 dòng lỗi**. Xem việc mở 1 |
+| 6 | Agent: `tsc` + test | ✅ `tsc` sạch, test **228/228** | Lần đầu 227/228: bài smoke MediaMTX đụng cổng 8554 với dịch vụ BetacomAgent cài trên máy lập trình — **không phải do mã** (đợt 1–2 không đụng agent). Tôi chạy lại đúng phép thử trên cổng trống: đạt, 0 dòng lỗi. Chủ dự án dừng dịch vụ (cmd quyền quản trị), chạy `npm test`: **228/228**, rồi bật lại dịch vụ |
 | 7 | Chạy thật trên database production | ✅ | Xem mục dưới |
 | 8 | Gọi HTTP thật vào API platform | ✅ **11/11** | Xem mục dưới |
 | 9 | Dựng giao diện tab Cấu hình với dữ liệu thật | ✅ **12/12** | Xem mục dưới |
@@ -80,20 +80,13 @@ Tách tab Cấu hình ra `src/components/platform/ConfigParamsPanel.tsx` — Nex
 
 ---
 
-## Hai việc còn mở — phía vận hành, không phải mã
+## Việc còn mở — phía vận hành, không phải mã
 
-### 1. Bài test agent đỏ vì đụng cổng
+### ~~1. Bài test agent đỏ vì đụng cổng~~ — ĐÃ XONG
 
-Cổng 8554 đang bị MediaMTX của dịch vụ **BetacomAgent cài trên máy lập trình** giữ (tiến trình cha `betacom-agent.exe`). Bài test dựng thêm một MediaMTX lên đúng cổng đó. PowerShell của tôi không có quyền quản trị nên không dừng được dịch vụ.
+Chủ dự án chạy trong cmd quyền quản trị: `net stop BetacomAgent` → `npm test` → **228/228** → `net start BetacomAgent`. Lưu ý cho lần sau: `Stop-Service` là lệnh PowerShell, cmd không hiểu — trong cmd dùng `net stop` / `net start`.
 
-Muốn bài chính thức xanh hẳn — PowerShell **quyền quản trị**, trên máy lập trình:
-
-```powershell
-Stop-Service BetacomAgent
-cd D:\beatbox\betabox\warehouse-agent
-npm test
-Start-Service BetacomAgent
-```
+**Bài test này sẽ đỏ trên MỌI máy lập trình có cài agent**, vì dịch vụ luôn giữ cổng 8554. CI không dính (chạy Ubuntu, bài chỉ chạy trên Windows). Có thể sửa bài cho dời cổng sang cổng trống như phép thử tôi đã chạy — chưa làm, vì đụng vào bài test để cho nó xanh thì phải có chủ dự án đồng ý.
 
 ### 2. Con tự kiểm nền vẫn chết — cảnh báo cấu hình không được gửi đi
 

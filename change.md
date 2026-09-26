@@ -1549,3 +1549,36 @@ docs([Module]):     Cập nhật tài liệu
 - **Bài test agent đỏ — do môi trường, đã chứng minh:** cổng 8554 bị MediaMTX của dịch vụ BetacomAgent cài trên máy lập trình giữ (tiến trình cha `betacom-agent.exe`). Chạy lại đúng phép thử trên cổng trống: MediaMTX đóng gói chấp nhận cấu hình, 0 dòng lỗi. Bài chính thức xanh hẳn cần dừng dịch vụ (quyền quản trị) — lệnh trong biên bản.
 - **Việc còn mở quan trọng hơn:** con tự kiểm nền **vẫn chết 44 ngày** → mục Cấu hình phát hiện đúng, hiện đúng trên trang khi có người mở, nhưng **không có tin Lark nào được gửi**. Yêu cầu "thông báo" mới đạt nửa cho tới khi chủ dự án làm Phần 1 của kế hoạch (cài timer).
 - **Trạng thái:** Đợt 1 + 2 đạt nghiệm thu về mã. Chờ hai việc vận hành ở cuối biên bản.
+
+### [GIAM-SAT-DOT-3] - Sổ sự cố `warehouse_incidents` + sửa mục Ghi hình báo crit giả
+
+- **Thuộc:** `plans/active/VAN-HANH-NHIEU-KHO.md` đợt 3. Trước khi làm: cập nhật biên bản nghiệm thu đợt 1–2 — lớp 6 đạt **228/228** (chủ dự án dừng dịch vụ agent trên máy lập trình bằng `net stop` trong cmd quyền quản trị rồi chạy lại).
+- **PHÁT HIỆN TRƯỚC KHI XÂY SỔ — mục "Ghi hình" báo crit giả ở mọi kho, đúng giờ làm việc:**
+  - Xem danh sách "Cần chú ý" thật (sổ sẽ ghi đúng danh sách này): có mục **crit** *"Chưa có segment nào, trong khi kho đã đóng gói đơn"* cho Đại Kim — trong khi sáng nay đo được 800 đoạn mỗi camera trong 4 ngày.
+  - Gốc: `checkRecordingFreshness` lấy đoạn gần nhất bằng `ORDER BY ended_at DESC LIMIT 1`. PostgreSQL sắp **giảm dần thì ô trống lên đầu**, và đoạn **đang ghi dở** luôn có `ended_at` trống. Đo thật: bản đang viết lấy phải một đoạn `dahua_01` **từ 19/09 không bao giờ được đóng**; đặt ô trống xuống cuối thì ra đoạn kết thúc **09:52 cùng ngày**.
+  - Hậu quả nếu cài timer mà chưa sửa: báo động giả mức crit mỗi 6 giờ cho mọi kho đang làm việc — đúng cách nhanh nhất để người trực tắt thông báo. Chưa ai nhận tin nào chỉ vì con tự kiểm nền đã chết 44 ngày.
+  - Sửa: `.order("ended_at", { ascending: false, nullsFirst: false })`. Soi luôn năm chỗ sắp giảm dần-lấy-dòng-đầu còn lại: sắp theo `ran_at` (NOT NULL theo schema) và `scanned_at` (0 dòng trống trên production) — không dính.
+  - Bài test mô phỏng **đúng cách PostgreSQL xếp** (DESC mà không nói gì thì NULLS FIRST). **Chứng minh bài test bắt được lỗi:** tạm gỡ bản sửa → đỏ; trả lại → xanh.
+  - Liên quan: job "dọn segment mồ côi" sinh ra chính để đóng những đoạn bị bỏ rơi như đoạn 19/09 kia — nó **chưa chạy lần nào** vì timer chưa cài (Phần 1).
+- **Thiết kế sổ — ba luật, mỗi luật chặn một kiểu hỏng đã biết:**
+  1. **Chỉ `crit`/`warn` thành sự cố.** Đo 26/09: một lượt chạy 12 mục song song có mục Cấu hình mất nguồn vì mạng chập một nhịp; sáu lượt sau đều sạch. Ghi cả "chưa đo được" là sổ đầy dòng mở-rồi-đóng vô nghĩa.
+  2. **Chỉ đóng khi có bằng chứng dương** (`decideResolution`): đối tượng `ok` → `auto_ok`; biến mất khỏi danh sách trong khi mục kiểm vẫn chạy → `out_of_scope` (không phải "đã khỏi"); mục kiểm mất nguồn, kho vào giờ nghỉ (`skipped`) → **giữ nguyên**. Đóng lúc kho nghỉ là camera hỏng 17h bị "đóng" 18h rồi mở dòng MỚI sáng mai — mất mốc bắt đầu thật.
+  3. **Gom theo `issue_key`** — sự cố kéo dài là MỘT dòng, `occurrence_count` tăng mỗi lượt, `peak_severity` giữ mức nặng nhất từng thấy.
+  - `issue_key` = **đúng `SystemIssue.id`** của danh sách "Cần chú ý" (`buildIssues`) — sổ không tự định nghĩa lại cái gì là sự cố; trang và sổ không bao giờ nói hai câu khác nhau. Thêm `orgId`, `entityId` vào `SystemIssue` để sổ không phải bóc chuỗi.
+- **Files:**
+  - `supabase/migrations/20260926100000_warehouse_incidents.sql` (mới, **CHƯA ÁP**): bảng + index **một-dòng-đang-mở mỗi `issue_key`** (open và acknowledged) + ràng buộc nhất quán trạng thái/giờ đóng + RLS bật **không policy nào** (chỉ service role — mặc định theo đề xuất quyết định #2 "chỉ Betacom thấy").
+  - `src/lib/system/incidents.ts` (mới): `incidentCandidates`, `decideResolution` (hàm thuần), `syncIncidents` (ghi theo lô 10, không bao giờ ném; chưa có bảng thì **không ghi mù**), `readOpenIncidents` (chưa có bảng → nói thẳng "cần chạy migration", **không hiện "0 sự cố"**).
+  - `src/app/api/system/check/route.ts`: gọi `syncIncidents` **SAU** khi gửi Lark — sổ chậm hay hỏng thì tin cảnh báo vẫn đã đi. Tóm tắt sổ vào `system_jobs.detail.incidents`. **Đường gửi Lark giữ nguyên** (chống lặp 6 giờ không đổi).
+  - `src/app/api/system/status/route.ts`: **chỉ đọc** sổ — trang mà ghi thì mỗi người mở trang đẻ một lượt ghi.
+  - `src/components/platform/IncidentLedgerPanel.tsx` (mới): ô "Sổ sự cố" chỉ-đọc trên `/platform/system`, ngay dưới "Cần chú ý". Nút Ghi nhận / Đã xử lý thuộc đợt 4.
+  - `src/lib/format/time-vn.ts` (mới): tách `formatVn` / `ago` khỏi trang để ô mới hiện giờ y hệt phần còn lại của trang, không chép lại.
+  - `src/lib/system/checks.ts`: tách `collectConfigProblems` (độ phức tạp 27 > 15 theo SonarLint) thành ba hàm nhỏ theo tầng — hành vi giữ nguyên, bộ test chứng minh.
+- **Kiểm thử:**
+  - `tests/incidents-ledger.test.ts` (mới, 19 bài) + 1 bài hồi quy nullsFirst trong `system-checks.test.ts`. `pnpm test` **672/672**.
+  - **Migration thử trên bản sao local** theo quy trình dự án (Docker `supabase-db`, transaction + ROLLBACK): **13/13 phép thử hành vi** — chặn hai dòng đang mở cho cùng sự cố (kể cả khi đã ghi nhận), đóng rồi mở lại được dòng mới giữ lịch sử, chặn trạng thái vô lý (6 ca), sự cố cấp hệ thống cũng chặn trùng, xoá tổ chức thì sự cố đi theo, **`authenticated` và `anon` không thấy dòng nào**, chạy migration lần hai không lỗi. Sau ROLLBACK bản sao sạch.
+  - `tsc` + `typecheck:tests` sạch; lint 0 lỗi / 0 cảnh báo trên dòng mới; `build` + 4 script canh đạt; canh số phiên bản migration: 102 file, 0 trùng.
+  - Dựng ô Sổ sự cố ở **bốn trạng thái** (chưa có bảng / sổ rỗng khi nền chưa chạy / sổ rỗng khi khoẻ / có sự cố — lấy từ danh sách thật của production): **17/17**.
+  - Gọi thẳng route trạng thái trên production (giả lập xác thực): trả đúng "cần chạy migration", giữ đủ trường cũ, không còn crit giả của mục Ghi hình.
+- **Việc của chủ dự án:** chạy migration `20260926100000_warehouse_incidents.sql` trên SQL Editor.
+- **Sau migration tôi sẽ kiểm tiếp:** chạy vòng đồng bộ thật trên production với 3 sự cố thật hiện có (cron dọn segment mồ côi, camera `dahua_01` cũ vẫn để hoạt động, clip lỗi) → mở → lượt hai gom → ô trên trang hiện đúng.
+- **Trạng thái:** Mã xong, chờ chạy migration.

@@ -1414,69 +1414,82 @@ export function collectConfigProblems(input: {
   cfg: typeof CHECK_CONFIG.config;
 }): ConfigProblem[] {
   const { org, warehouses, agents, cfg } = input;
-  const problems: ConfigProblem[] = [];
+  return [
+    // Kho đầu tiên làm chỗ dự phòng cho hạn lưu hàng hoàn — đúng như route
+    // retention-plan chọn.
+    ...(org ? orgConfigProblems(org, warehouses[0]?.packing_timing_config ?? null) : []),
+    ...warehouses.flatMap(clampedParamProblems),
+    ...agents.flatMap((a) => clockDriftProblems(a, cfg)),
+  ];
+}
 
-  // (1) Cấp tổ chức. Kho đầu tiên làm chỗ dự phòng cho hạn lưu hàng hoàn —
-  // đúng như route retention-plan.
-  if (org) {
-    for (const p of resolveOrgParams(org, warehouses[0]?.packing_timing_config ?? null)) {
-      if (p.source === "set") continue;
-      if (p.key === "retention_days") {
-        problems.push({
-          // crit chứ không warn: hạn lưu trống thì agent không ghi cache và
-          // script dọn ổ máy kho fail-loud rồi KHÔNG chạy. Ổ đầy dần tới lúc
-          // hỏng ghi hình — mất bằng chứng thật, không phải phiền phức.
-          status: "crit",
-          detail: `${p.label}: ${p.reason}`,
-          action: "Vào Cấu hình kho → mục Thời gian lưu video, điền số ngày.",
-        });
-      } else if (p.key === "return_retention_days") {
-        problems.push({
-          status: "warn",
-          detail: `${p.label}: ${p.reason}`,
-          action: "Vào Cấu hình kho → ô Số ngày giữ video hàng hoàn, điền số ngày.",
-        });
-      }
-    }
-  }
+/**
+ * Hai việc cần làm cho hai ô hạn lưu cấp tổ chức. Chỉ hai ô này là "bắt
+ * buộc" — thông số kho dùng mặc định là thiết kế, không phải thiếu sót.
+ */
+const ORG_PARAM_RULES: Record<string, { status: CheckStatus; action: string }> = {
+  // crit chứ không warn: hạn lưu trống thì agent không ghi cache và script
+  // dọn ổ máy kho fail-loud rồi KHÔNG chạy. Ổ đầy dần tới lúc hỏng ghi
+  // hình — mất bằng chứng thật, không phải phiền phức.
+  retention_days: {
+    status: "crit",
+    action: "Vào Cấu hình kho → mục Thời gian lưu video, điền số ngày.",
+  },
+  return_retention_days: {
+    status: "warn",
+    action: "Vào Cấu hình kho → ô Số ngày giữ video hàng hoàn, điền số ngày.",
+  },
+};
 
-  // (2) Cấp kho: chỉ báo thông số BỊ KẸP — đặt một đằng, chạy một nẻo, và
-  // không ai được báo. Bản đợt 1 chỉ soi `max_order_seconds`; giờ mọi thông
-  // số trong phép giải đều được soi mà không phải viết thêm luật.
-  for (const w of warehouses) {
-    for (const p of resolveWarehouseParams(w)) {
-      if (p.source !== "clamped") continue;
-      problems.push({
-        status: "warn",
-        detail:
-          `Kho ${w.code}: ${p.label.toLowerCase()} đặt ${p.set}${p.unit === "giây" ? "s" : " ngày"} ` +
-          `nhưng hệ thống dùng ${p.effective}${p.unit === "giây" ? "s" : " ngày"}. ${p.reason}`,
-        action:
-          CLAMPED_ACTION[p.key]?.(p) ??
-          `Sửa ${p.label.toLowerCase()} của kho ${w.code} về trong khoảng cho phép, ` +
-            `hoặc chấp nhận con số đang đặt không có tác dụng.`,
-      });
-    }
-  }
+/** (1) Cấp tổ chức: ô hạn lưu để trống hoặc sai. */
+function orgConfigProblems(org: ConfigOrgRow, fallbackWarehouseCfg: unknown): ConfigProblem[] {
+  return resolveOrgParams(org, fallbackWarehouseCfg).flatMap((p) => {
+    const rule = ORG_PARAM_RULES[p.key];
+    if (!rule || p.source === "set") return [];
+    return [{ status: rule.status, detail: `${p.label}: ${p.reason}`, action: rule.action }];
+  });
+}
 
-  // (3) Lệch giờ máy kho — không phải cấu hình, nhưng cùng tính chất im lặng.
-  //
-  // Bản đợt 1 còn một luật "hạn lưu thấp hơn sàn 7 ngày của bộ giữ ổ đĩa".
-  // ĐÃ GỠ: ràng buộc CHECK trên database chặn `retention_days` ngoài 7–365
-  // từ migration 20260722120000, nên luật đó không bao giờ chạy được — mã
-  // chết đánh lừa người đọc sau. Khi sàn ổ đĩa thành cấu hình đặt được
-  // (đợt 6), mâu thuẫn này mới có thật; thêm lại lúc đó.
-  for (const a of agents) {
-    const drift = Number(a.time_drift_seconds);
-    if (!Number.isFinite(drift) || drift < cfg.driftWarnSeconds) continue;
-    problems.push({
+/**
+ * (2) Cấp kho: chỉ báo thông số BỊ KẸP — đặt một đằng, chạy một nẻo, và
+ * không ai được báo. Bản đợt 1 chỉ soi `max_order_seconds`; giờ mọi thông
+ * số trong phép giải đều được soi mà không phải viết thêm luật.
+ */
+function clampedParamProblems(w: ConfigWarehouseRow): ConfigProblem[] {
+  const unit = (p: EffectiveParam) => (p.unit === "giây" ? "s" : " ngày");
+  return resolveWarehouseParams(w)
+    .filter((p) => p.source === "clamped")
+    .map((p) => ({
+      status: "warn" as const,
+      detail:
+        `Kho ${w.code}: ${p.label.toLowerCase()} đặt ${p.set}${unit(p)} ` +
+        `nhưng hệ thống dùng ${p.effective}${unit(p)}. ${p.reason}`,
+      action:
+        CLAMPED_ACTION[p.key]?.(p) ??
+        `Sửa ${p.label.toLowerCase()} của kho ${w.code} về trong khoảng cho phép, ` +
+          `hoặc chấp nhận con số đang đặt không có tác dụng.`,
+    }));
+}
+
+/**
+ * (3) Lệch giờ máy kho — không phải cấu hình, nhưng cùng tính chất im lặng.
+ *
+ * Bản đợt 1 còn một luật "hạn lưu thấp hơn sàn 7 ngày của bộ giữ ổ đĩa".
+ * ĐÃ GỠ: ràng buộc CHECK trên database chặn `retention_days` ngoài 7–365 từ
+ * migration 20260722120000, nên luật đó không bao giờ chạy được — mã chết
+ * đánh lừa người đọc sau. Khi sàn ổ đĩa thành cấu hình đặt được (đợt 6),
+ * mâu thuẫn này mới có thật; thêm lại lúc đó.
+ */
+function clockDriftProblems(a: ConfigAgentRow, cfg: typeof CHECK_CONFIG.config): ConfigProblem[] {
+  const drift = Number(a.time_drift_seconds);
+  if (!Number.isFinite(drift) || drift < cfg.driftWarnSeconds) return [];
+  return [
+    {
       status: drift >= cfg.driftCritSeconds ? "crit" : "warn",
       detail: `Máy kho ${a.code} lệch giờ ${drift}s so với máy chủ — mọi clip của kho này lệch bấy nhiêu.`,
       action: "Bật đồng bộ giờ (NTP) trên máy kho, rồi khởi động lại dịch vụ BetacomAgent.",
-    });
-  }
-
-  return problems;
+    },
+  ];
 }
 
 /**
@@ -1538,11 +1551,18 @@ export async function checkRecordingFreshness(
 
   const rows = await Promise.all(
     scope.orgIds.map(async (orgId) => {
+      // `nullsFirst: false` là bắt buộc, không phải tuỳ chọn. PostgreSQL sắp
+      // GIẢM DẦN thì ô trống lên ĐẦU — và đoạn đang ghi dở luôn có
+      // `ended_at` trống. Thiếu cờ này thì đúng lúc camera đang ghi bình
+      // thường, mục kiểm lấy phải đoạn đang ghi, thấy trống, và báo crit
+      // "Chưa có segment nào". Đo 26/09/2026 ở kho Đại Kim: nó lấy phải một
+      // đoạn dahua_01 từ 19/09 không bao giờ được đóng, trong khi đoạn thật
+      // gần nhất kết thúc lúc 09:52 cùng ngày.
       const { data, error } = await admin
         .from("camera_recording_files")
         .select("ended_at")
         .eq("organization_id", orgId)
-        .order("ended_at", { ascending: false })
+        .order("ended_at", { ascending: false, nullsFirst: false })
         .limit(1)
         .abortSignal(queryTimeout());
       if (error) throw new Error(error.message);

@@ -11,6 +11,7 @@ import {
 } from "@/lib/system/status-view";
 import { SYSTEM_JOB_SYSTEM_CHECK } from "@/lib/system/alert";
 import { errorMessage } from "@/lib/system/job-log";
+import { readOpenIncidents, type IncidentLedgerView } from "@/lib/system/incidents";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -78,6 +79,15 @@ export async function GET() {
 
   const issues = buildIssues(checks, scope);
 
+  // Sổ sự cố (đợt 3): trang CHỈ ĐỌC. Chỉ route tự kiểm nền được ghi — trang
+  // mà ghi thì mỗi người mở trang đẻ ra một lượt ghi, lại chạy đua nhau.
+  let ledger: IncidentLedgerView = { available: false, reason: "Không tạo được kết nối Supabase." };
+  try {
+    ledger = await readOpenIncidents(createAdminClient());
+  } catch (err) {
+    ledger = { available: false, reason: errorMessage(err) };
+  }
+
   // Các tầng trang đọc, xếp theo thứ tự câu hỏi của người trực:
   //   hero        → "có phải làm gì không", sáu con số
   //   issues      → "đang hỏng cái gì, ở đâu, làm gì" (rỗng = không có việc)
@@ -102,5 +112,6 @@ export async function GET() {
     }),
     unavailable: unavailableChecks(checks),
     last_background_run: lastBackgroundRun,
+    incidents: ledger,
   });
 }
