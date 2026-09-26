@@ -1,10 +1,16 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getClipMaxSeconds } from "@/lib/config/template-store";
+import { CAPABILITY, hasCapability, parseSelfReport } from "@/lib/warehouse/self-report";
 import {
+  MAX_RETURN_CLIP_DURATION_SECONDS,
   computeFinalizedClipWindow,
 } from "@/lib/order-proof/clip-window";
-import { evaluateOpenSegments } from "@/lib/order-proof/open-segment-verdict";
+import {
+  OPEN_SEGMENT_CLOSE_GRACE_SECONDS,
+  SEGMENT_SECONDS_ESTIMATE,
+  evaluateOpenSegments,
+} from "@/lib/order-proof/open-segment-verdict";
 import {
   FALLBACK_BEFORE_NEXT,
   FALLBACK_DEFAULT_POST,
@@ -396,10 +402,19 @@ export async function resolveClipBounds(opts: {
   }
 
   // Cap chung cuối cùng — áp cho MỌI nhánh (belt-and-suspenders, phòng
-  // bug thoát khi tầng cap trên tính sai). Trần trùng với nghiệp vụ
-  // `max_order_seconds` mặc định 10 phút.
-  // Cap the complete output file, including pre-roll, at exactly 3 minutes.
-  const maxClipEndMs = clipStart.getTime() + clipMaxSeconds * 1000;
+  // bug thoát khi tầng cap trên tính sai). Trần = `clip_max_seconds` của mẫu
+  // nền tảng (mặc định 180s, tính cả pre-roll).
+  //
+  // Kiện hoàn: trần riêng 310s CHỈ khi agent sẽ cắt clip này tự khai khả năng
+  // hạ bitrate cho clip dài (đợt 7, VAN-HANH-NHIEU-KHO, phần 3.6). Agent cũ
+  // nhận cửa sổ 310s sẽ ghép ra ~117 MiB rồi từ chối tải lên — clip cụt
+  // thành không có clip. Nhờ đi theo khả năng tự khai, thứ tự "agent trước,
+  // cloud sau" tự đúng, không phụ thuộc ai nhớ bật cờ.
+  const capSeconds =
+    packingEvent.event_kind === "return"
+      ? await returnClipCapSeconds(admin, opts.cameraIdOverride ?? packingEvent.proof_camera_id, clipMaxSeconds)
+      : clipMaxSeconds;
+  const maxClipEndMs = clipStart.getTime() + capSeconds * 1000;
   if (clipEnd.getTime() > maxClipEndMs) {
     clipEnd = new Date(maxClipEndMs);
     endReason = "capped_at_max_duration";
@@ -584,6 +599,13 @@ export async function resolveClipBounds(opts: {
         openVerdict.staleOpen.map((f) => f.started_at).join(", "),
     );
   }
+  if (openVerdict.lateReported.length > 0) {
+    console.warn(
+      `[clip-resolver] camera=${cameraId} dùng ${openVerdict.lateReported.length} segment báo đóng tới muộn ` +
+        `(ended_at NULL nhưng bắt đầu quá ${OPEN_SEGMENT_CLOSE_GRACE_SECONDS}s trước) — ước giờ đóng: ` +
+        openVerdict.lateReported.map((f) => f.started_at).join(", "),
+    );
+  }
   if (openVerdict.blocking) {
     return {
       ok: false,
@@ -603,9 +625,9 @@ export async function resolveClipBounds(opts: {
     };
   }
 
-  // 8) Filter out any still-open segments (defense in depth — at this
-  // point they shouldn't be needed since their started_at > clipEnd).
-  const usableFiles = overlap.filter((f) => f.ended_at !== null);
+  // 8) Segment đã đóng + segment báo đóng tới muộn (ước giờ đóng); bỏ row
+  // mồ côi và row bắt đầu sau clipEnd.
+  const usableFiles = withEstimatedEnds(overlap, openVerdict.lateReported);
   if (usableFiles.length === 0) {
     return {
       ok: false,
@@ -636,4 +658,61 @@ export async function resolveClipBounds(opts: {
     nextScan,
     files: usableFiles,
   };
+}
+
+/**
+ * Trần clip kiện hoàn: 310s nếu agent cắt clip này tự khai
+ * `adaptive_clip_bitrate`, còn lại giữ trần chung. THẬN TRỌNG ở mọi nhánh
+ * không chắc: không có camera, camera không gắn agent, không đọc được bản tự
+ * khai (kể cả chưa chạy migration 20260926130000) → trần chung.
+ */
+export async function returnClipCapSeconds(
+  admin: ReturnType<typeof createAdminClient>,
+  cameraId: string | null | undefined,
+  fallbackSeconds: number,
+): Promise<number> {
+  if (!cameraId) return fallbackSeconds;
+  try {
+    const { data: cam } = await admin.from("cameras").select("agent_id").eq("id", cameraId).maybeSingle();
+    const agentId = (cam as { agent_id?: string | null } | null)?.agent_id;
+    if (!agentId) return fallbackSeconds;
+    const { data: agent, error } = await admin
+      .from("warehouse_agents")
+      .select("self_report")
+      .eq("id", agentId)
+      .maybeSingle();
+    if (error) return fallbackSeconds;
+    const report = parseSelfReport((agent as { self_report?: unknown } | null)?.self_report);
+    return hasCapability(report, CAPABILITY.adaptiveClipBitrate)
+      ? Math.max(fallbackSeconds, MAX_RETURN_CLIP_DURATION_SECONDS)
+      : fallbackSeconds;
+  } catch {
+    return fallbackSeconds;
+  }
+}
+
+/**
+ * Gắn giờ đóng ƯỚC LƯỢNG cho segment báo đóng tới muộn: giờ bắt đầu của
+ * segment kế tiếp cùng camera nếu có, không thì bắt đầu + độ dài (hoặc
+ * `SEGMENT_SECONDS_ESTIMATE`). File trên ổ vẫn là file thật — agent cắt theo
+ * nội dung file, giờ đóng ở đây chỉ để xếp và phủ cửa sổ. Hàm thuần.
+ */
+export function withEstimatedEnds(files: SegmentFile[], lateReported: Array<{ started_at: string }>): SegmentFile[] {
+  const late = new Set(lateReported.map((f) => f.started_at));
+  const sorted = [...files].sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at));
+  const out: SegmentFile[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const f = sorted[i];
+    if (f.ended_at !== null) {
+      out.push(f);
+      continue;
+    }
+    if (!late.has(f.started_at)) continue;
+    const next = sorted[i + 1];
+    const lengthMs = (f.duration_seconds && f.duration_seconds > 0 ? f.duration_seconds : SEGMENT_SECONDS_ESTIMATE) * 1000;
+    const byLength = Date.parse(f.started_at) + lengthMs;
+    const endMs = next ? Math.min(byLength, Date.parse(next.started_at)) : byLength;
+    out.push({ ...f, ended_at: new Date(endMs).toISOString() });
+  }
+  return out;
 }

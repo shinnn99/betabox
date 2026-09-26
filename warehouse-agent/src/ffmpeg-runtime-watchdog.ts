@@ -118,6 +118,15 @@ export class FfmpegRuntimeWatchdog {
     return Date.now() - this.lastTickCompletedMs;
   }
 
+  /**
+   * 0.13.0: đoạn video đã đóng gần nhất của camera này lúc nào (mtime) —
+   * cho bản tự khai. null = watchdog chưa thấy đoạn nào đóng.
+   */
+  lastClosedSegmentAt(cameraId: string): Date | null {
+    const ms = this.stateByCameraId.get(cameraId)?.lastGoodMtimeMs ?? 0;
+    return ms > 0 ? new Date(ms) : null;
+  }
+
   private staleThresholdMsFor(segmentSeconds: number): number {
     return segmentSeconds * this.staleMultiplier * 1000 + this.staleBufferMs;
   }

@@ -4,12 +4,16 @@ import { computeFinalizedClipWindow } from "@/lib/order-proof/clip-window";
 import { getClipMaxSeconds } from "@/lib/config/template-store";
 import { FALLBACK_DEFAULT_POST, FALLBACK_PRE, readTimingConfig } from "@/lib/order-proof/timing-config";
 import {
+  applyRefitToFit,
+  estimateCompositeProofSize,
   estimateProofSize,
   percentile95BytesPerSecond,
   resolveProofSizeThresholds,
   type ProofSizeEstimate,
   type SegmentForEstimate,
 } from "@/lib/order-proof/proof-size-estimate";
+import { loadFleetRows } from "@/lib/warehouse/fleet";
+import { CAPABILITY, hasCapability, parseSelfReport } from "@/lib/warehouse/self-report";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
@@ -89,7 +93,7 @@ export async function buildProofSizeRisks(params: {
   const { data: events, error: evErr } = await admin
     .from("packing_events")
     .select(
-      "id, raw_event_id, waybill_code, scanned_at, work_ended_at, work_duration_seconds, timing_status, proof_camera_id, warehouse_id",
+      "id, raw_event_id, waybill_code, scanned_at, work_ended_at, work_duration_seconds, timing_status, proof_camera_id, proof_qr_camera_id, warehouse_id",
     )
     .eq("organization_id", orgId)
     // Mỗi màn hình giám sát chỉ ước lượng ĐÚNG luồng của nó. Trước đây
@@ -169,8 +173,19 @@ export async function buildProofSizeRisks(params: {
     return { event: e, window };
   });
 
-  // 5) Sàng: chỉ đơn đủ dài để CÓ THỂ chạm ngưỡng mới query segment.
+  // 4b) Đường cắt THẬT của từng đơn (26/09/2026 — báo nhầm ~130 MiB ở Đại
+  // Kim): bàn HAI GÓC thì agent ghép + nén lại, dung lượng theo bitrate nén;
+  // chỉ bàn một góc mới chép thẳng theo dung lượng camera. Và agent nào nén
+  // lại được cho vừa (≥ 0.13.0) thì clip một góc vượt ngưỡng không còn bị từ
+  // chối — con số thật là dung lượng sau khi nén lại.
+  const isComposite = (e: (typeof events)[number]) =>
+    !!e.proof_qr_camera_id && e.proof_qr_camera_id !== e.proof_camera_id;
+  const refitCameras = await camerasWithRefit(admin, orgId, cameraIds);
+
+  // 5) Sàng: chỉ đơn đủ dài để CÓ THỂ chạm ngưỡng mới query segment. Bàn hai
+  // góc không cần segment — dung lượng không phụ thuộc camera.
   const screened = withWindow.filter(({ event, window }) => {
+    if (isComposite(event)) return false;
     const p95 = event.proof_camera_id
       ? p95ByCamera.get(event.proof_camera_id as string)
       : undefined;
@@ -207,13 +222,18 @@ export async function buildProofSizeRisks(params: {
   // 7) Ước lượng.
   const risks: RiskRow[] = withWindow.map(({ event, window }) => {
     const cameraId = event.proof_camera_id as string | null;
-    const estimate = estimateProofSize({
-      window,
-      segments: segmentsByEvent.get(event.id as string) ?? [],
-      fallbackBytesPerSecond: cameraId ? p95ByCamera.get(cameraId) ?? null : null,
-      guardBytes,
-      warnBytes,
-    });
+    let estimate = isComposite(event)
+      ? estimateCompositeProofSize({ window, guardBytes, warnBytes })
+      : estimateProofSize({
+          window,
+          segments: segmentsByEvent.get(event.id as string) ?? [],
+          fallbackBytesPerSecond: cameraId ? p95ByCamera.get(cameraId) ?? null : null,
+          guardBytes,
+          warnBytes,
+        });
+    if (!isComposite(event) && cameraId && refitCameras.has(cameraId)) {
+      estimate = applyRefitToFit(estimate, warnBytes);
+    }
     return {
       packing_event_id: event.id as string,
       raw_event_id: (event.raw_event_id as string | null) ?? null,
@@ -224,4 +244,31 @@ export async function buildProofSizeRisks(params: {
   });
 
   return { risks, upload_guard_bytes: guardBytes, warn_bytes: warnBytes };
+}
+
+/**
+ * Camera nào thuộc agent tự khai `adaptive_clip_bitrate` (nén lại được cho
+ * vừa ngưỡng). Không đọc được (chưa chạy migration 20260926130000, lỗi) →
+ * tập rỗng: giữ ước lượng chép thẳng — thận trọng.
+ */
+async function camerasWithRefit(admin: Admin, orgId: string, cameraIds: string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (cameraIds.length === 0) return out;
+  try {
+    const [{ data: cams }, fleet] = await Promise.all([
+      admin.from("cameras").select("id, agent_id").eq("organization_id", orgId).in("id", cameraIds),
+      loadFleetRows(admin, { orgIds: [orgId] }),
+    ]);
+    const capable = new Set(
+      fleet.rows
+        .filter((r) => hasCapability(parseSelfReport(r.self_report), CAPABILITY.adaptiveClipBitrate))
+        .map((r) => r.id),
+    );
+    for (const c of (cams as Array<{ id: string; agent_id: string | null }> | null) ?? []) {
+      if (c.agent_id && capable.has(c.agent_id)) out.add(c.id);
+    }
+  } catch {
+    // Không đọc được → thận trọng, không cộng khả năng nào.
+  }
+  return out;
 }

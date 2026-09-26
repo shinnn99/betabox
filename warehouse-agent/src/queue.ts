@@ -7,11 +7,22 @@ import {
   quarantineCorruptQueue,
   SerializedWriter,
 } from "./atomic-file";
+import { AsyncMutex } from "./queue-lock";
 
 export interface QueuedScan {
   enqueued_at: string;
   attempt: number;
   payload: ScanPayload;
+}
+
+/**
+ * Khoá so trùng ổn định của một lượt quét trong hàng đợi. KHÔNG dùng
+ * `agent_event_id` một mình: dòng cũ thiếu id được `readAll` gán id NGẪU
+ * NHIÊN mỗi lần đọc, nên hai lần đọc cho hai id khác nhau.
+ */
+export function scanQueueKey(item: QueuedScan): string {
+  const p = item.payload;
+  return `${p.scanner_device_code}|${p.scanned_at}|${p.raw_value}`;
 }
 
 /**
@@ -33,6 +44,8 @@ export interface QueuedScan {
  */
 export class ScanQueue {
   private readonly writer: SerializedWriter<QueuedScan[]>;
+  /** 0.13.0: thêm và bớt không được chen nhau — xem queue-lock.ts. */
+  private readonly mutex = new AsyncMutex();
 
   constructor(private readonly filePath: string) {
     this.writer = new SerializedWriter(50, async (items) => {
@@ -45,13 +58,30 @@ export class ScanQueue {
   }
 
   async append(scan: ScanPayload): Promise<void> {
-    await fs.mkdir(dirname(this.filePath), { recursive: true });
-    const line: QueuedScan = {
-      enqueued_at: new Date().toISOString(),
-      attempt: 0,
-      payload: scan,
-    };
-    await fs.appendFile(this.filePath, JSON.stringify(line) + "\n", "utf8");
+    await this.mutex.run(async () => {
+      await fs.mkdir(dirname(this.filePath), { recursive: true });
+      const line: QueuedScan = {
+        enqueued_at: new Date().toISOString(),
+        attempt: 0,
+        payload: scan,
+      };
+      await fs.appendFile(this.filePath, JSON.stringify(line) + "\n", "utf8");
+    });
+  }
+
+  /**
+   * 0.13.0: bỏ những dòng đã gửi xong (hoặc bị từ chối vĩnh viễn). Đọc lại
+   * file MỚI NHẤT trong khoá — dòng vừa được thêm trong lúc đang gửi vẫn còn
+   * nguyên. Thay cho `rewrite(remaining)` (ghi đè bằng bản chụp cũ).
+   */
+  async removeWhere(drop: (item: QueuedScan) => boolean): Promise<void> {
+    await this.mutex.run(async () => {
+      const current = await this.readAll();
+      const keep = current.filter((item) => !drop(item));
+      if (keep.length === current.length) return;
+      const body = keep.length === 0 ? "" : keep.map((i) => JSON.stringify(i)).join("\n") + "\n";
+      await atomicWriteFile(this.filePath, body);
+    });
   }
 
   async readAll(): Promise<QueuedScan[]> {
@@ -89,6 +119,21 @@ export class ScanQueue {
       return items;
     }
     return items;
+  }
+
+  /**
+   * 0.13.0: số lượt quét đang chờ gửi — cho bản tự khai. Chỉ đếm dòng, không
+   * parse, không quarantine: đường đếm không được có tác dụng phụ. File
+   * thường rỗng hoặc vài dòng.
+   */
+  async count(): Promise<number> {
+    try {
+      const raw = await fs.readFile(this.filePath, "utf8");
+      return raw.split("\n").filter((l) => l.trim().length > 0).length;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw err;
+    }
   }
 
   async rewrite(items: QueuedScan[]): Promise<void> {

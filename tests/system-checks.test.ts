@@ -875,11 +875,10 @@ test("vps: ca nguồn hỏng — statfs ném → unknown, KHÔNG ném ra ngoài"
 // 8-9. Hai mục chưa có nguồn
 // ═══════════════════════════════════════════════════════════════════════
 
-test("disk kho: unknown và nói rõ agent chưa gửi dữ liệu này", () => {
-  const c = checkWarehouseDisk();
+test("disk kho: không có kết nối → unknown dạng cấu trúc (đo thật từ bản tự khai: tests/agent-self-report.test.ts)", async () => {
+  const c = await checkWarehouseDisk();
   assert.equal(c.status, "unknown");
-  assert.match(c.message, /Chưa có nguồn dữ liệu/);
-  assert.match(c.message, /heartbeat/);
+  assert.equal(c.unknownKind, "structural");
 });
 
 test("dung lượng Storage: unknown vì thiếu MẪU SỐ, không bịa số tuyệt đối", () => {
@@ -897,7 +896,7 @@ test("dung lượng Storage: unknown vì thiếu MẪU SỐ, không bịa số t
 // Toàn loạt
 // ═══════════════════════════════════════════════════════════════════════
 
-test("runSystemChecks: luôn trả đủ 13 mục, đúng thứ tự cố định", async () => {
+test("runSystemChecks: luôn trả đủ 14 mục, đúng thứ tự cố định", async () => {
   const { checks, scope } = await runSystemChecks({
     client: fakeDb(BOOM) as never,
     now: NOW,
@@ -921,6 +920,7 @@ test("runSystemChecks: luôn trả đủ 13 mục, đúng thứ tự cố địn
       CHECK_KEYS.vps,
       CHECK_KEYS.storage,
       CHECK_KEYS.warehouseDisk,
+      CHECK_KEYS.agentFleet,
       CHECK_KEYS.config,
     ],
   );

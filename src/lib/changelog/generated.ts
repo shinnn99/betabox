@@ -6,6 +6,87 @@ import type { Release } from "./types";
 
 export const GENERATED_RELEASES: Release[] = [
   {
+    "agentVersion": "0.13.0",
+    "date": "2026-09-26",
+    "title": "Máy kho tự báo tình trạng, clip kiện hoàn quay đủ 5 phút",
+    "summary": "Trước đây muốn biết máy kho đang chạy bản nào, ổ còn bao nhiêu, camera nào đang ghi thì phải có người tới kho kiểm tay. Clip kiện hoàn 5 phút thì chỉ quay được 3 phút đầu, vì clip dài hơn vượt giới hạn tải lên.",
+    "items": [
+      {
+        "tag": "Mới",
+        "title": "Máy kho tự báo tình trạng mỗi 30 giây",
+        "detail": "Phiên bản, camera nào đang ghi, ổ đĩa còn mấy ngày, bao nhiêu lượt quét đang chờ gửi. Hệ thống tự cảnh báo khi ổ sắp đầy hoặc máy chạy bản cũ — không cần ai tới kho kiểm."
+      },
+      {
+        "tag": "Sửa lỗi",
+        "title": "Clip kiện hoàn quay đủ thời gian mở hàng",
+        "detail": "Clip dài tự giảm dung lượng cho vừa giới hạn tải lên, nên kiện hoàn 5 phút có video đủ 5 phút thay vì bị cắt ở phút thứ 3. Clip đơn đi giữ nguyên chất lượng như cũ."
+      },
+      {
+        "tag": "Cải tiến",
+        "title": "Nhật ký máy kho gọn hơn",
+        "detail": "Cùng một cảnh báo lặp lại nhiều lần được gom thành một dòng, nên lỗi thật không còn bị chôn giữa hàng nghìn dòng nhiễu."
+      },
+      {
+        "tag": "Sửa lỗi",
+        "title": "Không còn mất lượt quét khi mạng chậm",
+        "detail": "Lượt quét và báo cáo video chờ gửi lại có thể bị mất nếu có lượt mới xếp hàng đúng lúc máy kho đang gửi lại. Nay không còn mất."
+      },
+      {
+        "tag": "Sửa lỗi",
+        "title": "Xem video không còn làm chậm lượt quét",
+        "detail": "Máy kho chỉ cắt và tải lên một video một lúc, nên việc xem video không còn chiếm hết mạng khiến lượt quét lên chậm 1–3 phút."
+      }
+    ]
+  },
+  {
+    "agentVersion": null,
+    "date": "2026-09-26",
+    "title": "Thời gian đóng đơn không còn bị âm khi lượt quét tới chậm",
+    "summary": "Sáng 26/09 ở kho Đại Kim, lượt quét tới hệ thống chậm và lộn thứ tự, làm vài đơn có thời gian đóng âm (−25 giây, −44 giây) và video đơn này trùm lên đơn khác.",
+    "items": [
+      {
+        "tag": "Sửa lỗi",
+        "title": "Xếp lượt quét theo đúng giờ quét",
+        "detail": "Lượt quét tới muộn được đặt vào đúng chỗ theo giờ quét: đơn trước kết thúc đúng lúc quét mã này, không còn thời gian âm, video mỗi đơn không còn chồng lên đơn khác. Các đơn đã ghi sai sáng 26/09 sửa lại được bằng một lần chạy công cụ sửa dữ liệu."
+      },
+      {
+        "tag": "Sửa lỗi",
+        "title": "Video đơn vừa đóng không còn báo \"Segment cuối chưa đóng\"",
+        "detail": "Mở video ngay khi đơn vừa đóng, trang chờ đoạn video cuối đóng rồi tự cắt — không còn báo lỗi và bắt bấm \"Thử lại\". Các đơn đã báo lỗi này tự cắt lại khi mở ra xem."
+      },
+      {
+        "tag": "Sửa lỗi",
+        "title": "Cảnh báo dung lượng video đúng với bàn hai camera",
+        "detail": "Bàn hai camera được ghép và nén lại nên video chỉ khoảng 70 MB cho 3 phút; cảnh báo \"có nguy cơ vượt giới hạn ~130 MiB\" ở gần như mọi đơn là báo nhầm và đã hết."
+      },
+      {
+        "tag": "Sửa lỗi",
+        "title": "Camera đã tháo không còn báo lỗi",
+        "detail": "Camera không gắn vào bàn nào mà mất kết nối không còn bị tính là sự cố. Trang Thiết bị hiện \"Không kết nối được\" thay cho \"cập nhật mấy chục giây trước\", kèm nhắc lưu trữ camera nếu đã tháo hẳn."
+      }
+    ],
+    "scale": "lon"
+  },
+  {
+    "agentVersion": null,
+    "date": "2026-09-26",
+    "title": "Quét bằng súng ở bàn đặt camera: nói đúng lý do",
+    "summary": "Bàn đặt nguồn quét là camera mà có người quét bằng súng, lượt quét đó không tạo đơn. Nhật ký trước đây ghi nhầm là \"Mã sai\" hoặc \"Đang chờ xử lý\" mãi mãi.",
+    "items": [
+      {
+        "tag": "Sửa lỗi",
+        "title": "Nhật ký ghi \"Nguồn quét tắt\"",
+        "detail": "Dòng nhật ký nói rõ nguồn nào đang tắt ở bàn — súng hay camera — và lượt quét đó không tạo đơn, để biết phải đổi cấu hình bàn hay đổi cách quét."
+      },
+      {
+        "tag": "Sửa lỗi",
+        "title": "Quét lại mã đã có đơn: báo trùng, không lưu",
+        "detail": "Quét lại một mã đã thành đơn bằng nguồn đang tắt ở bàn giờ được báo là mã trùng và không lưu lại. Các dòng \"Mã sai / Đang chờ xử lý\" cũ thực ra là quét lại được ghi đúng là \"Trùng\"."
+      }
+    ],
+    "scale": "lon"
+  },
+  {
     "agentVersion": "0.12.1",
     "date": "2026-09-25",
     "title": "Bỏ qua mã QR đường link trên nhãn TikTok",

@@ -45,6 +45,22 @@
  */
 export const OPEN_SEGMENT_MAX_AGE_SECONDS = 600;
 
+/**
+ * Row open mà đã bắt đầu quá ngần này tính tới BÂY GIỜ thì file trên ổ chắc
+ * chắn đã đóng — ffmpeg cắt đoạn mỗi 60 giây. Row vẫn mở chỉ vì báo đóng tới
+ * muộn (đường lên kho nghẽn) hoặc bị mất (hàng đợi báo đoạn của agent
+ * ≤ 0.12.x có thể ghi đè mất). 60s đoạn + 120s cho báo trễ và lệch đồng hồ.
+ *
+ * Vì sao cần (26/09/2026, kho Đại Kim): luật cũ đo tuổi so với `clipEnd` —
+ * mốc CỐ ĐỊNH — nên đoạn cuối của một đơn mà mất báo đóng thì chặn cắt clip
+ * MÃI MÃI (tới job dọn 03:30 sáng hôm sau). Chủ dự án: "có segment rồi mà
+ * vẫn không cắt được video".
+ */
+export const OPEN_SEGMENT_CLOSE_GRACE_SECONDS = 180;
+
+/** Độ dài đoạn ghi mặc định — dùng ước giờ đóng khi báo đóng chưa tới. */
+export const SEGMENT_SECONDS_ESTIMATE = 60;
+
 export interface OpenSegmentInput {
   /** `camera_recording_files.started_at` (ISO). */
   started_at: string;
@@ -63,6 +79,12 @@ export interface OpenSegmentVerdict {
    * 8 ngày mới phát hiện.
    */
   staleOpen: OpenSegmentInput[];
+  /**
+   * Row open nhưng CHẮC CHẮN đã đóng trên ổ (bắt đầu quá
+   * `OPEN_SEGMENT_CLOSE_GRACE_SECONDS` trước BÂY GIỜ) — báo đóng tới muộn
+   * hoặc bị mất. Không chặn; tầng gọi dùng được với giờ đóng ước lượng.
+   */
+  lateReported: OpenSegmentInput[];
 }
 
 /**
@@ -75,10 +97,13 @@ export function evaluateOpenSegments(
   files: OpenSegmentInput[],
   clipEnd: Date,
   maxAgeSeconds: number = OPEN_SEGMENT_MAX_AGE_SECONDS,
+  now: Date = new Date(),
 ): OpenSegmentVerdict {
   const clipEndMs = clipEnd.getTime();
   const maxAgeMs = maxAgeSeconds * 1000;
+  const nowMs = now.getTime();
   const staleOpen: OpenSegmentInput[] = [];
+  const lateReported: OpenSegmentInput[] = [];
   let blocking = false;
 
   for (const f of files) {
@@ -96,10 +121,15 @@ export function evaluateOpenSegments(
     // Luật cũ đã bỏ qua ca này, giữ nguyên.
     if (startedMs > clipEndMs) continue;
 
-    // Còn trẻ so với clipEnd → nhiều khả năng đây chính là file ffmpeg
-    // đang cầm lúc đơn kết thúc. Chặn.
+    // Còn trẻ so với clipEnd → có thể là file ffmpeg đang cầm lúc đơn kết
+    // thúc. Nhưng nếu tính tới BÂY GIỜ nó đã bắt đầu quá lâu thì file đó chắc
+    // chắn đã đóng trên ổ — chỉ là báo đóng chưa tới. Không chặn.
     if (clipEndMs - startedMs <= maxAgeMs) {
-      blocking = true;
+      if (nowMs - startedMs > OPEN_SEGMENT_CLOSE_GRACE_SECONDS * 1000) {
+        lateReported.push(f);
+      } else {
+        blocking = true;
+      }
       continue;
     }
 
@@ -109,5 +139,5 @@ export function evaluateOpenSegments(
     staleOpen.push(f);
   }
 
-  return { blocking, staleOpen };
+  return { blocking, staleOpen, lateReported };
 }

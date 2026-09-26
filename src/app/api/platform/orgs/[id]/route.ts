@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePlatformRole } from "@/lib/supabase/guard";
 import { resolveOrgParams, resolveWarehouseParams } from "@/lib/config/effective";
 import { getClipMaxSeconds } from "@/lib/config/template-store";
+import { loadFleetRows, returnClipSecondsByOrg } from "@/lib/warehouse/fleet";
 
 export const runtime = "nodejs";
 
@@ -258,7 +259,12 @@ export async function GET(_req: Request, ctx: RouteContext) {
     last_activity_at: lastActivityAt,
     config: {
       webhooks_configured: webhooksConfigured,
-      params: buildConfigParams(org, warehousesRes.data ?? [], await getClipMaxSeconds(admin)),
+      params: await (async () => {
+        const clipMax = await getClipMaxSeconds(admin);
+        const fleet = await loadFleetRows(admin, { orgIds: [orgId], activeOnly: true });
+        const returnClip = returnClipSecondsByOrg(fleet.rows, clipMax).get(orgId) ?? clipMax;
+        return buildConfigParams(org, warehousesRes.data ?? [], clipMax, returnClip);
+      })(),
     },
     recent: {
       last_order: lastOrderRes.data
@@ -333,6 +339,7 @@ function buildConfigParams(
     session_fallback_seconds: number | null;
   }>,
   clipMaxSeconds: number,
+  returnClipSeconds: number,
 ) {
   return {
     org: resolveOrgParams(org, warehouses[0]?.packing_timing_config ?? null),
@@ -342,7 +349,7 @@ function buildConfigParams(
         id: w.id,
         code: w.code,
         name: w.name,
-        params: resolveWarehouseParams(w, clipMaxSeconds),
+        params: resolveWarehouseParams(w, clipMaxSeconds, returnClipSeconds),
       })),
   };
 }

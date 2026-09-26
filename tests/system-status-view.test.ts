@@ -15,6 +15,7 @@ import {
   sharedChecks,
   unavailableChecks,
 } from "../src/lib/system/status-view.ts";
+import { LATEST_AGENT_VERSION } from "../src/lib/warehouse/self-report.ts";
 
 /**
  * Tầng hiển thị: biến 6 mục kiểm thành "hỏng cái gì, ở kho nào, làm gì".
@@ -143,11 +144,17 @@ async function snapshot(w: World): Promise<{ checks: SystemCheck[]; scope: Monit
   });
 }
 
+// Agent mẫu tự khai bản MỚI NHẤT, không khai ổ đĩa: các bài ở file này kiểm
+// heartbeat / camera / thứ tự sự cố, không kiểm bản agent. Hành vi "bản cũ
+// bị báo" có bài riêng ở tests/agent-self-report.test.ts.
 const agent = (code: string, orgId: string, lastSeen: string | null) => ({
   id: `id-${code}`,
   code,
   organization_id: orgId,
   last_seen_at: lastSeen,
+  agent_version: LATEST_AGENT_VERSION,
+  self_report_at: lastSeen,
+  self_report: { version: LATEST_AGENT_VERSION, cameras: [], queues: {}, capabilities: [] },
 });
 
 const cam = (

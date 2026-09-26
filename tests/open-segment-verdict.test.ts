@@ -16,6 +16,13 @@ import {
  */
 
 const clipEnd = new Date("2026-09-04T08:53:32.000Z");
+/**
+ * "Bây giờ" = ngay sau khi đơn xong — lúc người ta bấm xem clip. Từ
+ * 26/09/2026 luật còn hỏi tuổi của row so với BÂY GIỜ (xem
+ * OPEN_SEGMENT_CLOSE_GRACE_SECONDS); các bài vế dương dựng đúng khoảnh khắc
+ * đoạn cuối còn đang ghi, nên phải truyền mốc này.
+ */
+const justAfter = new Date(clipEnd.getTime() + 10_000);
 
 function open(startedAt: string) {
   return { started_at: startedAt, ended_at: null };
@@ -29,14 +36,15 @@ function closed(startedAt: string, endedAt: string) {
 test("segment đang ghi (mở ngay trước clipEnd) → VẪN chặn", () => {
   // Đúng ca mà luật cũ sinh ra để bảo vệ: ffmpeg vừa mở file lúc
   // 08:53:08, đơn kết thúc 08:53:32 → đuôi chưa flush.
-  const v = evaluateOpenSegments([open("2026-09-04T08:53:08.000Z")], clipEnd);
+  const v = evaluateOpenSegments([open("2026-09-04T08:53:08.000Z")], clipEnd, undefined, justAfter);
   assert.equal(v.blocking, true);
   assert.equal(v.staleOpen.length, 0);
 });
 
 test("row open ngay tại ngưỡng tuổi → vẫn chặn (biên đóng)", () => {
   const startedMs = clipEnd.getTime() - OPEN_SEGMENT_MAX_AGE_SECONDS * 1000;
-  const v = evaluateOpenSegments([open(new Date(startedMs).toISOString())], clipEnd);
+  // "Bây giờ" = ngay lúc đoạn đó vừa mở: nó chưa thể đóng.
+  const v = evaluateOpenSegments([open(new Date(startedMs).toISOString())], clipEnd, undefined, new Date(startedMs + 10_000));
   assert.equal(v.blocking, true);
 });
 
@@ -50,6 +58,8 @@ test("có CẢ mồ côi lẫn segment đang ghi → chặn vì cái đang ghi",
   const v = evaluateOpenSegments(
     [open("2026-08-27T07:25:31.000Z"), open("2026-09-04T08:53:08.000Z")],
     clipEnd,
+    undefined,
+    justAfter,
   );
   assert.equal(v.blocking, true);
   assert.equal(v.staleOpen.length, 1, "vẫn báo cáo row mồ côi để ops thấy");

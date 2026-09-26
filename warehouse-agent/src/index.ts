@@ -13,7 +13,8 @@ import { randomUUID } from "node:crypto";
 import { loadConfig, type AgentConfig, type ScannerPin } from "./config";
 import { resolveBackendUrl, isLocalBackend } from "./backend-url";
 import { sendScan, type ScanPayload } from "./sender";
-import { ScanQueue, type QueuedScan } from "./queue";
+import { ScanQueue, scanQueueKey, type QueuedScan } from "./queue";
+import { isPermanentRejection } from "./queue-lock";
 import { ScannerSession, type ScannerBinding } from "./scanner";
 import { sendHeartbeat } from "./heartbeat";
 import {
@@ -66,6 +67,9 @@ import { describeFetchError, LogRateLimiter } from "./fetch-error";
 import { installFatalHandlers, swallow } from "./fatal";
 import { uploadWithTimeout } from "./upload";
 import { evaluateClipSize } from "./clip-size-guard";
+import { reencodeToFit } from "./compose/fit-to-size";
+import { buildSelfReport, configFingerprint } from "./self-report";
+import { applyCloudTuning, tuning } from "./runtime-tuning";
 import { PidRegistry } from "./pid-registry";
 import {
   recoverZombieFfmpeg,
@@ -79,7 +83,7 @@ import { callBootDeclare } from "./boot-declare";
 import { FfmpegRuntimeWatchdog } from "./ffmpeg-runtime-watchdog";
 import { DiskGuard } from "./disk-guard";
 import { CleanupLogRelay } from "./cleanup-log-relay";
-import { listActiveRecordings } from "./recording";
+import { listActiveRecordings, maskRtspUrl } from "./recording";
 import { connectCamera } from "./camera-connect";
 import { RelayHub, relayPathName, type RelayPath } from "./live/relay-hub";
 import {
@@ -89,6 +93,7 @@ import {
 import {
   ClipResultOutbox,
   isExpiredOutboxItem,
+  outboxKey,
   isPermanentClipResultStatus,
   type OutboxClipResult,
   type QueuedClipResult,
@@ -296,13 +301,16 @@ async function main(): Promise<void> {
     if (items.length === 0) return;
 
     const nowMs = Date.now();
-    const keep: QueuedClipResult[] = [];
+    // 0.13.0: nhớ ĐÚNG dòng nào đã gửi / bỏ để xoá trên file mới nhất. Dòng
+    // gửi hỏng thì cứ để nguyên trong file — lượt drain sau gửi lại.
+    const settled = new Set<string>();
     let sent = 0;
     let dropped = 0;
 
     for (const item of items) {
       if (isExpiredOutboxItem(item, nowMs)) {
         dropped++;
+        settled.add(outboxKey(item));
         console.error(
           `[clip-outbox] BỎ item quá hạn 24h clip=${item.payload.clipId} outcome=${item.payload.outcome} attempt=${item.attempt} last_error=${item.last_error ?? "?"}`,
         );
@@ -316,27 +324,25 @@ async function main(): Promise<void> {
       });
       if (res.ok) {
         sent++;
+        settled.add(outboxKey(item));
         continue;
       }
       if (isPermanentClipResultStatus(res.status)) {
         dropped++;
+        settled.add(outboxKey(item));
         console.error(
           `[clip-outbox] BỎ item clip=${item.payload.clipId}: http_${res.status} — backend từ chối vì nội dung request`,
         );
         continue;
       }
-      keep.push({
-        ...item,
-        attempt: item.attempt + 1,
-        last_error: res.status === 0 ? "network" : `http_${res.status}`,
-      });
     }
 
     // Chỉ ghi lại file khi có thay đổi thật (gửi được hoặc bỏ được).
-    // Không có gì đổi thì đừng đụng ổ mỗi nhịp drain.
+    // Không có gì đổi thì đừng đụng ổ mỗi nhịp drain. Chỉ bỏ đúng dòng đã
+    // xong trên file MỚI NHẤT (0.13.0) — không ghi đè bằng bản chụp.
     if (sent > 0 || dropped > 0) {
       try {
-        await clipResultOutbox.rewrite(keep);
+        await clipResultOutbox.removeWhere((item) => settled.has(outboxKey(item)));
       } catch (err) {
         // Ghi lại hỏng = lần drain sau gửi trùng. Backend idempotent
         // theo clip_id (UPDATE, không INSERT) nên gửi trùng vô hại.
@@ -345,7 +351,7 @@ async function main(): Promise<void> {
         );
       }
       console.log(
-        `[clip-outbox] drain: gửi ${sent}, bỏ ${dropped}, còn ${keep.length}`,
+        `[clip-outbox] drain: gửi ${sent}, bỏ ${dropped}, còn ${items.length - sent - dropped}`,
       );
     }
   }
@@ -398,6 +404,8 @@ async function main(): Promise<void> {
   const encodeGate = new EncodeGate();
   // id các lệnh đang xử lý — chặn chạy trùng khi reaper trả lệnh dài về pending.
   const inFlightCommandIds = new Set<string>();
+  /** 0.13.0: số lệnh cắt clip đang chạy, TÍNH CẢ lúc tải lên — xem pollOnce. */
+  let clipJobsInFlight = 0;
 
   const lifecycle = new RecordingLifecycle({
     backendUrl: config.backendUrl,
@@ -432,7 +440,15 @@ async function main(): Promise<void> {
   // Active sessions, keyed by device_code (NOT by port path).
   const sessions = new Map<string, ScannerSession>();
 
-  async function tryDeliver(payload: ScanPayload, { fromQueue }: { fromQueue: boolean }) {
+  /**
+   * "ok" = cloud đã nhận; "retry" = mạng / máy chủ lỗi, xếp hàng gửi lại;
+   * "drop" = cloud từ chối VĨNH VIỄN (dữ liệu hỏng — 400/413/422): gửi lại bao
+   * nhiêu lần cũng thế, giữ trong hàng đợi chỉ làm tắc (0.13.0).
+   */
+  async function tryDeliver(
+    payload: ScanPayload,
+    { fromQueue }: { fromQueue: boolean },
+  ): Promise<"ok" | "retry" | "drop"> {
     try {
       const result = await sendScan({
         backendUrl: config.backendUrl,
@@ -477,17 +493,17 @@ async function main(): Promise<void> {
         console.log(
           `${tag}${dup}${warn}${staff}${session}${packing}${control} ${payload.scanner_device_code} ${payload.port} -> ${displayValue}`,
         );
-        return true;
+        return "ok";
       }
       console.error(
         `[FAIL ${result.status}] ${payload.scanner_device_code} ${payload.port} -> ${payload.raw_value} :: ${JSON.stringify(result.body)}`,
       );
-      return false;
+      return isPermanentRejection(result.status) ? "drop" : "retry";
     } catch (err) {
       console.error(
         `[NET-FAIL] ${payload.scanner_device_code} ${payload.port} -> ${payload.raw_value} :: ${(err as Error).message}`,
       );
-      return false;
+      return "retry";
     }
   }
 
@@ -509,8 +525,8 @@ async function main(): Promise<void> {
     // pickShiftCameras de biet vi sao khong doan.
     swallow(shiftRecording.onLocalStaffQr(rawValue, null), "shiftRecording.onLocalStaffQr[serial]");
     void (async () => {
-      const ok = await tryDeliver(payload, { fromQueue: false });
-      if (!ok) {
+      const outcome = await tryDeliver(payload, { fromQueue: false });
+      if (outcome === "retry") {
         try {
           await queue.append(payload);
           console.log(
@@ -543,8 +559,8 @@ async function main(): Promise<void> {
       shiftRecording.onLocalStaffQr(emission.text, camera.station_id),
       "shiftRecording.onLocalStaffQr[camera]",
     );
-    const ok = await tryDeliver(payload, { fromQueue: false });
-    if (!ok) await queue.append(payload);
+    const outcome = await tryDeliver(payload, { fromQueue: false });
+    if (outcome === "retry") await queue.append(payload);
   }
 
   function openOrRebind(binding: ScannerBinding): void {
@@ -662,6 +678,46 @@ async function main(): Promise<void> {
    * không crash agent.
    */
   async function handleCommand(command: AgentCommand): Promise<void> {
+    // 0.13.0: gói chẩn đoán — thay cho việc nhờ người ở kho gõ lệnh và đọc
+    // kích thước file exe. Chỉ ĐỌC trạng thái, không đổi gì trên máy kho.
+    // Không có mật khẩu camera, không có AGENT_SECRET.
+    if (command.type === "collect_diagnostics") {
+      const recordings = listActiveRecordings().map((r) => ({
+        camera_id: r.spec.cameraId,
+        camera_code: r.spec.cameraCode,
+        pid: r.pid,
+        started_at: r.startedAt.toISOString(),
+        // stderr ffmpeg có thể in URL RTSP kèm tài khoản camera — che trước khi gửi.
+        last_stderr: maskRtspUrl((r.lastStderr ?? "").slice(-300)),
+      }));
+      const r = await reportCommandResult({
+        backendUrl: config.backendUrl,
+        agentCode: config.agentCode,
+        agentSecret: config.agentSecret,
+        commandId: command.id,
+        status: "done",
+        result: {
+          collected_at: new Date().toISOString(),
+          node: process.version,
+          platform: `${process.platform} ${process.arch}`,
+          memory_rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+          self_report: (await collectSelfReport()) ?? null,
+          disk_guard: diskGuard?.getStatus() ?? null,
+          disk_guard_liveness_ms: diskGuard?.getLivenessMsAgo() ?? null,
+          watchdog_liveness_ms: runtimeWatchdog.current?.getLivenessMsAgo() ?? null,
+          recordings,
+          encoding_busy: encodeGate.isBusy(),
+          in_flight_commands: inFlightCommandIds.size,
+          runtime_tuning: { ...tuning },
+          recent_problems: remoteLogger.recent().map(maskRtspUrl),
+        },
+      });
+      if (!r.ok) {
+        console.warn(`[COMMAND-REPORT-FAIL ${r.status}] ${command.id} :: ${JSON.stringify(r.body)}`);
+      }
+      return;
+    }
+
     if (command.type === "ping") {
       console.log(`[COMMAND PING] ${command.id}`, command.payload);
       const r = await reportCommandResult({
@@ -1096,6 +1152,8 @@ async function main(): Promise<void> {
               targetEnd: targetEndIso,
               informationText: p.information_strip ?? p.waybill_code,
               fontPath: fontCandidates.find((candidate) => existsSync(candidate)),
+              // 0.13.0: clip dài (kiện hoàn 310s) hạ bitrate cho vừa ngưỡng.
+              maxOutputBytes: config.maxProofClipUploadBytes,
             }),
           );
           const outputStat = await fsp.stat(tmpAbs);
@@ -1178,11 +1236,43 @@ async function main(): Promise<void> {
       // suy từ duration — bitrate camera đổi là công thức theo duration
       // sai ngay. Trả error code riêng + đủ số để chẩn đoán từ xa:
       // dung lượng, độ dài, bitrate thực tế.
-      const sizeRejection = evaluateClipSize({
+      let sizeRejection = evaluateClipSize({
         fileSizeBytes: cutResult.fileSizeBytes,
         durationSeconds: cutResult.durationSeconds,
         limitBytes: config.maxProofClipUploadBytes,
       });
+      // 0.13.0: vượt ngưỡng thì NÉN LẠI MỘT LẦN cho vừa, không vứt ngay.
+      // Đường một góc chép thẳng luồng camera nên dung lượng đi theo bitrate
+      // camera; kiện hoàn 310s dễ vượt. Vẫn vượt sau khi nén mới từ chối.
+      if (sizeRejection && cutResult.durationSeconds > 0) {
+        const fitAbs = `${tmpAbs}.fit.tmp.mp4`;
+        try {
+          const rate = await encodeGate.run(() =>
+            reencodeToFit({
+              ffmpegBin: config.ffmpegPath,
+              inputPath: tmpAbs,
+              outputPath: fitAbs,
+              durationSeconds: cutResult.durationSeconds,
+              maxOutputBytes: config.maxProofClipUploadBytes,
+            }),
+          );
+          const fitStat = await fsp.stat(fitAbs);
+          console.warn(
+            `[clip-cutter] clip=${p.clip_id} vượt trần ${sizeRejection.metadata.file_size_bytes}B → ` +
+              `nén lại ${rate.bitrateKbps}kbps còn ${fitStat.size}B`,
+          );
+          await fsp.rename(fitAbs, tmpAbs);
+          cutResult = { ...cutResult, fileSizeBytes: fitStat.size };
+          sizeRejection = evaluateClipSize({
+            fileSizeBytes: fitStat.size,
+            durationSeconds: cutResult.durationSeconds,
+            limitBytes: config.maxProofClipUploadBytes,
+          });
+        } catch (error) {
+          await fsp.unlink(fitAbs).catch(() => undefined);
+          console.warn(`[clip-cutter] clip=${p.clip_id} nén lại cho vừa thất bại: ${(error as Error).message.slice(0, 300)}`);
+        }
+      }
       if (sizeRejection) {
         console.error(
           `[clip-cutter] size guard clip=${p.clip_id} ` +
@@ -1812,7 +1902,11 @@ async function main(): Promise<void> {
         agentCode: config.agentCode,
         agentSecret: config.agentSecret,
         activeRecordings: lifecycle.snapshotActive(),
-        encodingBusy: encodeGate.isBusy(),
+        // 0.13.0: "bận" tính cả lúc TẢI LÊN, không chỉ lúc ffmpeg chạy. Trước
+        // đây trong lúc clip A đang tải (mạng kho ~180 KB/s: 7–12 phút), cloud
+        // vẫn giao clip B → nhiều clip tải song song, chiếm trọn đường lên, và
+        // lượt quét / báo đoạn video phải chờ 1–3 phút (Đại Kim 26/09/2026).
+        encodingBusy: encodeGate.isBusy() || clipJobsInFlight > 0,
         instanceId: agentInstanceId,
       });
     } catch (err) {
@@ -1854,6 +1948,8 @@ async function main(): Promise<void> {
         continue;
       }
       inFlightCommandIds.add(cmd.id);
+      const isClipJob = cmd.type === "cut_clip";
+      if (isClipJob) clipJobsInFlight++;
       try {
         await handleCommand(cmd);
       } catch (err) {
@@ -1870,6 +1966,7 @@ async function main(): Promise<void> {
         }).catch(() => undefined);
       } finally {
         inFlightCommandIds.delete(cmd.id);
+        if (isClipJob) clipJobsInFlight--;
       }
     }
   }
@@ -1888,6 +1985,40 @@ async function main(): Promise<void> {
   // NTP guard: sendHeartbeat đo drift qua /api/warehouse/time-check
   // trước POST. Log warning khi drift > 30s để user biết. Rate limit
   // qua fetchLogLimiter (không spam mỗi 30s).
+  // 0.13.0: dấu vân tay cấu hình — tính một lần, .env không đổi khi đang chạy.
+  const agentConfigFingerprint = configFingerprint(config as unknown as Record<string, unknown>);
+
+  /**
+   * Gom số liệu cho bản tự khai. KHÔNG BAO GIỜ NÉM: hỏng thì nhịp tim vẫn đi,
+   * chỉ thiếu bản khai — nhịp tim là thứ cloud dùng để biết kho còn sống.
+   */
+  async function collectSelfReport(): Promise<Record<string, unknown> | undefined> {
+    try {
+      const recordingIds = new Set(listActiveRecordings().map((r) => r.spec.cameraId));
+      const known = new Set<string>([...lifecycle.probeTargets().map((t) => t.cameraId), ...recordingIds]);
+      const badFrames = qrScanService.badFramesByCamera();
+      const disk = diskGuard?.getStatus() ?? null;
+      return buildSelfReport({
+        uptimeSeconds: process.uptime(),
+        cameras: [...known].map((cameraId) => ({
+          cameraId,
+          recording: recordingIds.has(cameraId),
+          lastSegmentAt: runtimeWatchdog.current?.lastClosedSegmentAt(cameraId) ?? null,
+          badFramesLastHour: badFrames.get(cameraId) ?? null,
+        })),
+        disk: disk
+          ? { freeBytes: disk.freeBytes, totalBytes: disk.totalBytes, bytesPerRecordingHour: disk.bytesPerRecordingHour }
+          : null,
+        scansPending: await queue.count().catch(() => null),
+        lastQrSuccessAt: qrScanService.lastSuccessAt(),
+        configFingerprint: agentConfigFingerprint,
+      });
+    } catch (err) {
+      console.warn(`[self-report] không dựng được bản tự khai: ${(err as Error).message}`);
+      return undefined;
+    }
+  }
+
   async function ping(): Promise<void> {
     try {
       const r = await sendHeartbeat({
@@ -1898,8 +2029,12 @@ async function main(): Promise<void> {
         // có thể alert khi watchdog treo (hiện endpoint không đọc, chỉ
         // log warn ở agent khi vượt ngưỡng).
         watchdogLastTickMsAgo: runtimeWatchdog.current?.getLivenessMsAgo(),
+        selfReport: await collectSelfReport(),
       });
       if (!r.ok) console.error(`[HEARTBEAT-FAIL ${r.status}]`);
+      // 0.13.0: núm chỉnh độ ồn log nhận từ cloud — áp ngay, không khởi động lại.
+      const tuned = applyCloudTuning(r.agentConfig);
+      if (tuned.length > 0) console.warn(`[runtime-tuning] cloud đổi: ${tuned.join(", ")}`);
       // Đồng bộ phiên ghi hoàn theo TRẠNG THÁI cloud, không chỉ theo lệnh.
       // `null` = không đọc được (mạng lỗi / cloud bản cũ) → giữ nguyên,
       // tuyệt đối không tự tắt phiên đang chạy.
@@ -2486,28 +2621,43 @@ async function main(): Promise<void> {
   }, config.cameraProbeIntervalMs);
 
   // Retry queued scans periodically.
+  //
+  // 0.13.0 — sửa lỗi MẤT lượt quét (xem queue-lock.ts): không ghi đè cả file
+  // bằng bản chụp cũ nữa, mà chỉ bỏ đúng những dòng đã gửi xong, trên file
+  // mới nhất. Và không cho hai vòng chạy chồng: mạng nghẽn thì một vòng có
+  // thể kéo dài vài phút, lâu hơn nhịp 5 giây.
+  let scanFlushInFlight = false;
   const flushTimer = setInterval(async () => {
-    const items = await queue.readAll().catch((): QueuedScan[] => []);
-    if (items.length === 0) return;
-    const remaining: QueuedScan[] = [];
-    for (const item of items) {
-      // Older queued payloads may not have source/identity. Backfill so
-      // the backend never sees a malformed body.
-      const payload: ScanPayload = {
-        ...item.payload,
-        source: item.payload.source ?? "serial",
-        device_identity_snapshot:
-          item.payload.device_identity_snapshot ?? null,
-      };
-      const ok = await tryDeliver(payload, { fromQueue: true });
-      if (!ok) {
-        remaining.push({ ...item, attempt: item.attempt + 1 });
-      }
-    }
+    if (scanFlushInFlight) return;
+    scanFlushInFlight = true;
     try {
-      await queue.rewrite(remaining);
-    } catch (err) {
-      console.error(`[QUEUE-REWRITE-FAIL] ${(err as Error).message}`);
+      const items = await queue.readAll().catch((): QueuedScan[] => []);
+      if (items.length === 0) return;
+      const settled = new Set<string>();
+      for (const item of items) {
+        // Older queued payloads may not have source/identity. Backfill so
+        // the backend never sees a malformed body.
+        const payload: ScanPayload = {
+          ...item.payload,
+          source: item.payload.source ?? "serial",
+          device_identity_snapshot:
+            item.payload.device_identity_snapshot ?? null,
+        };
+        const outcome = await tryDeliver(payload, { fromQueue: true });
+        if (outcome !== "retry") settled.add(scanQueueKey(item));
+        if (outcome === "drop") {
+          console.error(`[QUEUE-DROP] cloud từ chối vĩnh viễn — bỏ khỏi hàng đợi: ${payload.scanner_device_code} ${payload.scanned_at}`);
+        }
+      }
+      if (settled.size > 0) {
+        try {
+          await queue.removeWhere((item) => settled.has(scanQueueKey(item)));
+        } catch (err) {
+          console.error(`[QUEUE-REWRITE-FAIL] ${(err as Error).message}`);
+        }
+      }
+    } finally {
+      scanFlushInFlight = false;
     }
   }, config.retryIntervalMs);
 

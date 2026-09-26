@@ -21,6 +21,7 @@ import {
 } from "@/lib/station/return-scan";
 import { hookLarkNotifyScan } from "@/lib/lark/hook-scan";
 import { isMissingColumnError } from "@/lib/supabase/missing-column";
+import { findSameDayOutboundOrder, vnClock } from "@/lib/warehouse/same-day-order";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -334,6 +335,36 @@ export async function POST(req: Request) {
     console.warn(
       `[warehouse-scans] unmapped scanner: org=${agent.organization_id} device=${parsed.scanner_device_code} at=${parsed.scanned_at}`,
     );
+  }
+
+  // MÃ TRÙNG từ nguồn đang tắt → báo trùng, KHÔNG LƯU GÌ (chủ dự án chốt
+  // 26/09/2026: "mã trùng thì báo mã trùng rồi không lưu").
+  //
+  // Ca thật ở Đại Kim: bàn đặt nguồn camera, camera đã ghi đơn, nhân viên
+  // quét lại bằng súng 4 lần — mỗi lần thành một dòng "Mã sai / Đang chờ xử
+  // lý" trong nhật ký. Lượt súng đó không mang thông tin gì mới: đơn đã có.
+  //
+  // Mã CHƯA có đơn thì vẫn lưu kèm lý do bên dưới — đó có thể là đơn bị mất
+  // (camera không đọc được), mục kiểm "Lượt quét bị bỏ" cần thấy nó.
+  if (scanSourceDisabled && scanType === "waybill") {
+    const existingOrder = await findSameDayOutboundOrder(admin, {
+      organizationId: agent.organization_id,
+      waybillCode: parsed.raw_value,
+      scannedAt: parsed.scanned_at,
+    });
+    if (existingOrder) {
+      return NextResponse.json({
+        ok: true,
+        ignored: "duplicate",
+        duplicate: true,
+        event_id: null,
+        scan_type: scanType,
+        warning: {
+          code: "duplicate_scan",
+          message: `Mã trùng — đơn đã được ghi nhận lúc ${vnClock(existingOrder.scanned_at)}. Lượt quét này không lưu.`,
+        },
+      });
+    }
   }
 
   // Phase 3 recognition: if the QR shape matches a staff token, verify it

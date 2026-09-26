@@ -134,6 +134,11 @@ const ACTION_META: Record<string, ActionMeta> = {
     icon: Settings,
     severity: "warning",
   },
+  "platform.agent.collect_diagnostics": {
+    label: "Thu chẩn đoán máy kho",
+    icon: Activity,
+    severity: "info",
+  },
   "platform.incident.acknowledge": {
     label: "Ghi nhận sự cố",
     icon: Activity,

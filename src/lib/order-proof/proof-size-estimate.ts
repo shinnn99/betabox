@@ -27,6 +27,7 @@
  */
 
 import type { ClipWindow } from "@/lib/order-proof/clip-window";
+import { REENCODE_CONTAINER_FACTOR, reencodedBytes } from "@/lib/order-proof/compose-bitrate";
 
 const MIB = 1024 * 1024;
 
@@ -159,7 +160,17 @@ export type ProofSizeEstimateMethod =
   /** Không đủ segment phủ cửa sổ → dùng bitrate p95 gần đây của camera. */
   | "camera_recent_p95"
   /** Không có dữ liệu nào để ước lượng. */
-  | "none";
+  | "none"
+  /**
+   * Bàn HAI GÓC: agent ghép hai góc rồi NÉN LẠI — dung lượng theo bitrate
+   * nén (compose-bitrate.ts), không theo dung lượng thô của camera.
+   */
+  | "composite_reencode"
+  /**
+   * Bàn một góc, chép thẳng sẽ vượt ngưỡng, nhưng agent (≥ 0.13.0) nén lại
+   * một lần cho vừa — con số là dung lượng SAU khi nén lại.
+   */
+  | "refit_to_fit";
 
 export interface SegmentForEstimate {
   started_at: string;
@@ -339,4 +350,45 @@ export function percentile95BytesPerSecond(
   rates.sort((a, b) => a - b);
   const idx = Math.min(rates.length - 1, Math.floor(rates.length * 0.95));
   return rates[idx];
+}
+
+/**
+ * Clip bàn HAI GÓC: agent ghép rồi nén lại ở bitrate của compose-bitrate.ts.
+ * Không đọc dung lượng camera — nó không liên quan tới file ra.
+ */
+export function estimateCompositeProofSize(input: {
+  window: ClipWindow;
+  guardBytes: number;
+  warnBytes: number;
+}): ProofSizeEstimate {
+  const seconds = input.window.windowSeconds;
+  const bytes = reencodedBytes(seconds, input.guardBytes);
+  return {
+    proof_size_risk: classify(bytes, input.guardBytes, input.warnBytes),
+    estimated_file_size_bytes: bytes,
+    estimated_bitrate_kbps: bitrateKbps(bytes, seconds),
+    proof_window_seconds: Math.round(seconds),
+    upload_guard_bytes: input.guardBytes,
+    estimate_method: "composite_reencode",
+    estimate_correction_factor: REENCODE_CONTAINER_FACTOR,
+  };
+}
+
+/**
+ * Clip một góc sẽ vượt ngưỡng, nhưng agent cắt clip nén lại được cho vừa
+ * (khả năng `adaptive_clip_bitrate`, agent ≥ 0.13.0): con số thật tải lên là
+ * dung lượng SAU khi nén lại. Không vượt ngưỡng thì giữ nguyên ước lượng.
+ */
+export function applyRefitToFit(estimate: ProofSizeEstimate, warnBytes: number): ProofSizeEstimate {
+  if (estimate.proof_size_risk !== "over_limit") return estimate;
+  const seconds = estimate.proof_window_seconds;
+  const bytes = reencodedBytes(seconds, estimate.upload_guard_bytes);
+  return {
+    ...estimate,
+    proof_size_risk: classify(bytes, estimate.upload_guard_bytes, warnBytes),
+    estimated_file_size_bytes: bytes,
+    estimated_bitrate_kbps: bitrateKbps(bytes, seconds),
+    estimate_method: "refit_to_fit",
+    estimate_correction_factor: REENCODE_CONTAINER_FACTOR,
+  };
 }

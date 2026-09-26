@@ -174,7 +174,8 @@ test("canh trần chung của clip-resolver — đổi nó thì phải đổi c�
   // đỏ để nhắc sửa luôn.
   const resolver = readFileSync("src/lib/order-proof/clip-resolver.ts", "utf8");
   assert.ok(
-    resolver.includes("const maxClipEndMs = clipStart.getTime() + clipMaxSeconds * 1000;"),
+    resolver.includes("const maxClipEndMs = clipStart.getTime() + capSeconds * 1000;") &&
+      resolver.includes("? await returnClipCapSeconds(admin, opts.cameraIdOverride ?? packingEvent.proof_camera_id, clipMaxSeconds)"),
     "trần chung trong clip-resolver đã đổi — cập nhật câu hệ quả `return_max_seconds` trong src/lib/config/effective.ts",
   );
 });

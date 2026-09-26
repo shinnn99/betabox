@@ -5,6 +5,12 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { isMissingColumnError } from "@/lib/supabase/missing-column";
 import { getClipMaxSeconds } from "@/lib/config/template-store";
 import {
+  LATEST_AGENT_VERSION,
+  compareVersions,
+  diskDaysLeft,
+  parseSelfReport,
+} from "@/lib/warehouse/self-report";
+import {
   SYSTEM_JOB_CLEANUP_CLIPS,
   SYSTEM_JOB_CLOSE_ORPHAN_SEGMENTS,
   errorMessage,
@@ -152,6 +158,7 @@ export const CHECK_KEYS = {
   clipFailures: "clip_failures",
   unmappedScanner: "unmapped_scanner",
   ignoredScans: "ignored_scans",
+  agentFleet: "agent_fleet",
   vps: "vps_resources",
   storage: "storage_usage",
   warehouseDisk: "warehouse_disk",
@@ -287,6 +294,25 @@ export const CHECK_CONFIG = {
     fetchLimit: 200,
   },
 
+  /**
+   * Bản tự khai (đợt 7). Ngưỡng theo quyết định #5 của kế hoạch: ổ còn > 7
+   * ngày, hàng đợi clip < 20. Agent khai, cloud phán — đổi ở đây, không cần
+   * bản agent mới.
+   */
+  selfReport: {
+    diskWarnDays: 7,
+    diskCritDays: 3,
+    /** Khi chưa đủ số liệu tốc độ ghi: phán theo phần trăm còn trống. */
+    diskWarnFreePct: 10,
+    diskCritFreePct: 3,
+    queueWarn: 20,
+    queueCrit: 100,
+    /** Agent bản mới vẫn ping mà bản khai cũ hơn ngần này → ngừng tự khai. */
+    staleReportMinutes: 15,
+    /** Bản khai cũ hơn ngần này thì không dùng để phán ổ đĩa. */
+    diskReportMaxAgeMinutes: 60,
+  },
+
   ignoredScans: {
     windowHours: 24,
     /**
@@ -313,6 +339,10 @@ export const CHECK_CONFIG = {
    */
   alertOnUnknown: {
     [CHECK_KEYS.egress]: false,
+    // Ổ máy kho: đo được từ đợt 7 NẾU agent tự khai. Cờ này chỉ nói về lúc
+    // "chưa đo được": khi chưa agent nào khai, mục ở chân trang "Điểm mù" —
+    // đúng sự thật. Đo được mà sắp đầy thì vẫn báo như mọi mục. Đọc bảng
+    // agent lỗi thì mục agent_fleet (cùng bảng, cờ bật) báo thay.
     [CHECK_KEYS.warehouseDisk]: false,
     // Dung lượng Storage: cùng lý do với egress — Supabase không công khai
     // mẫu số hạn mức. Xem checkStorageUsage().
@@ -331,6 +361,8 @@ export const CHECK_CONFIG = {
     // Lượt quét bị bỏ: không đọc được bảng lượt quét là sự cố thật. Chưa có
     // cột (chưa chạy migration) là `structural` — không báo.
     [CHECK_KEYS.ignoredScans]: true,
+    // Bản agent & hàng đợi: không đọc được bảng agent là sự cố thật.
+    [CHECK_KEYS.agentFleet]: true,
   } as Record<string, boolean>,
 
   /**
@@ -965,6 +997,33 @@ export async function checkAgentHeartbeat(
 // 4. Camera probe
 // ============================================================================
 
+/**
+ * id camera đang gắn vào ít nhất một bàn (phân công đang hiệu lực) — cùng
+ * cách nối với `resolve_station_camera_at`: `station_devices` loại camera,
+ * `config_json->>'camera_id'`. null = không đọc được.
+ */
+async function loadAssignedCameraIds(admin: Admin, orgIds: string[]): Promise<Set<string> | null> {
+  try {
+    const { data, error } = await admin
+      .from("station_devices")
+      .select("config_json, station_device_assignments!inner(unassigned_at)")
+      .eq("device_type", "camera")
+      .eq("status", "active")
+      .in("organization_id", orgIds)
+      .is("station_device_assignments.unassigned_at", null)
+      .abortSignal(queryTimeout());
+    if (error) return null;
+    const out = new Set<string>();
+    for (const d of (data as Array<{ config_json: { camera_id?: string } | null }> | null) ?? []) {
+      const id = d.config_json?.camera_id;
+      if (typeof id === "string" && id) out.add(id);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 interface CameraRow {
   id?: string | null;
   camera_code: string | null;
@@ -1077,12 +1136,21 @@ export async function checkCameraProbe(
     };
   }
 
+  // Camera nào đang GẮN vào bàn (có phân công đang hiệu lực). Camera chưa
+  // gắn bàn nào không quay bằng chứng cho đơn nào — nó mất kết nối không phải
+  // sự cố (26/09/2026: `dahua_01` đã tháo khỏi kho từ lâu nhưng vẫn để trạng
+  // thái active, sổ sự cố giữ một dòng "Camera không phản hồi" cho nó mãi).
+  // null = không đọc được bảng phân công → coi mọi camera là đã gắn (thà báo
+  // thừa còn hơn im nhầm camera đang quay).
+  const assignedCameraIds = await loadAssignedCameraIds(admin, scope.orgIds);
+
   const staleMs = CHECK_CONFIG.cameraProbe.staleProbeMinutes * 60_000;
   const failingMs = CHECK_CONFIG.cameraProbe.failingMinutes * 60_000;
   const perFailMs = CHECK_CONFIG.cameraProbe.probeIntervalSeconds * 1_000;
   const failingHours = CHECK_CONFIG.cameraProbe.failingMinutes / 60;
 
   const stale: string[] = [];
+  const unassignedOffline: string[] = [];
   const failingLong: string[] = [];
   const failingShort: string[] = [];
   const entities: CheckEntity[] = [];
@@ -1126,6 +1194,14 @@ export async function checkCameraProbe(
       );
       continue;
     }
+    if (assignedCameraIds && r.id && !assignedCameraIds.has(r.id)) {
+      // Mất kết nối nhưng không gắn bàn nào → không ảnh hưởng bằng chứng.
+      // RA KHỎI danh sách theo dõi (không phải "bỏ qua"): sổ sự cố đóng dòng
+      // cũ với lý do "không còn theo dõi" — "bỏ qua" thì sổ giữ dòng mãi vì
+      // không có bằng chứng đã khỏi. Tên vẫn hiện ở câu thông báo chung.
+      unassignedOffline.push(code);
+      continue;
+    }
     const failingFor = (r.probe_consecutive_fails ?? 0) * perFailMs;
     if (failingFor >= failingMs) {
       failingLong.push(code);
@@ -1157,16 +1233,21 @@ export async function checkCameraProbe(
     }
   }
 
+  // Mẫu số = camera ĐANG THEO DÕI (đã loại camera chưa gắn bàn mà mất kết nối).
+  const tracked = rows.length - unassignedOffline.length;
   const staleNote =
-    stale.length > 0
+    (stale.length > 0
       ? ` (Thêm ${stale.length} camera có số liệu probe cũ — bình thường khi kho nghỉ.)`
-      : "";
+      : "") +
+    (unassignedOffline.length > 0
+      ? ` (${unassignedOffline.join(", ")}: mất kết nối nhưng chưa gắn bàn nào — không ảnh hưởng bằng chứng; nếu đã tháo hẳn thì lưu trữ camera để ngừng thử kết nối.)`
+      : "");
 
   if (failingLong.length > 0) {
     return {
       key,
       status: "warn",
-      value: `${failingLong.length}/${rows.length} camera lỗi ≥ ${failingHours} giờ`,
+      value: `${failingLong.length}/${tracked} camera lỗi ≥ ${failingHours} giờ`,
       message:
         `Camera không phản hồi RTSP quá ${failingHours} giờ: ${failingLong.join(", ")}.` +
         staleNote,
@@ -1177,20 +1258,20 @@ export async function checkCameraProbe(
     return {
       key,
       status: "ok",
-      value: `${failingShort.length}/${rows.length} camera vừa lỗi`,
+      value: `${failingShort.length}/${tracked} camera vừa lỗi`,
       message:
         `Có ${failingShort.length} camera đang lỗi nhưng chưa quá ${failingHours} giờ: ${failingShort.join(", ")}.` +
         staleNote,
       entities,
     };
   }
-  if (stale.length === rows.length) {
+  if (stale.length === tracked) {
     return {
       key,
       // MỌI camera đều số liệu cũ = không kho nào đang ghi hình. Đây là ca
       // "kho nghỉ", và nó tự đúng mà không cần biết mấy giờ.
       status: "skipped",
-      value: `${stale.length}/${rows.length} camera không được probe`,
+      value: `${stale.length}/${tracked} camera không được probe`,
       message:
         `Không camera nào được probe trong ${CHECK_CONFIG.cameraProbe.staleProbeMinutes} phút qua — ` +
         "kho đang nghỉ hoặc không camera nào trong diện ghi hình. Không kết luận, không cảnh báo.",
@@ -1205,7 +1286,7 @@ export async function checkCameraProbe(
       // Nếu agent chết thật thì agent_heartbeat mới là mục nói đúng bản
       // chất — không nhân đôi cùng một sự cố.
       unknownKind: "structural",
-      value: `${stale.length}/${rows.length} camera số liệu cũ`,
+      value: `${stale.length}/${tracked} camera số liệu cũ`,
       message: `Có ${stale.length} camera không được probe quá ${CHECK_CONFIG.cameraProbe.staleProbeMinutes} phút (agent không còn probe nhóm này) — không kết luận được: ${stale.join(", ")}.`,
       entities,
     };
@@ -1213,8 +1294,8 @@ export async function checkCameraProbe(
   return {
     key,
     status: "ok",
-    value: `${rows.length}/${rows.length} camera bình thường`,
-    message: `Không có camera active nào đang ở trạng thái probe lỗi (${rows.length} camera đang được probe).`,
+    value: `${tracked}/${tracked} camera bình thường`,
+    message: `Không có camera active nào đang ở trạng thái probe lỗi (${tracked} camera đang được probe).` + staleNote,
     entities,
   };
 }
@@ -2206,16 +2287,259 @@ export function checkStorageUsage(): SystemCheck {
  * agent phải gửi kèm dung lượng ổ ghi trong heartbeat (thêm 2 field), cloud
  * thêm 2 cột — việc của agent v0.8.x, không làm lén ở đây.
  */
-export function checkWarehouseDisk(): SystemCheck {
+// ============================================================================
+// Bản tự khai của agent (đợt 7, VAN-HANH-NHIEU-KHO) — hai mục:
+//   - warehouse_disk: ổ máy kho còn mấy ngày (trước đợt 7: luôn "chưa có nguồn")
+//   - agent_fleet   : bản agent cũ, agent ngừng tự khai, hàng đợi ùn
+//
+// Agent khai sự thật; ngưỡng ở CHECK_CONFIG.selfReport.
+// ============================================================================
+
+export interface FleetAgentRow {
+  id: string;
+  code: string | null;
+  organization_id: string;
+  last_seen_at: string | null;
+  self_report: unknown;
+  self_report_at: string | null;
+  agent_version: string | null;
+}
+
+type FleetLoad =
+  | { ok: true; rows: FleetAgentRow[] }
+  | { ok: false; check: SystemCheck };
+
+async function loadFleet(admin: Admin, key: string, scope: MonitoringScope): Promise<FleetLoad> {
+  if (scope.orgIds.length === 0) {
+    return {
+      ok: false,
+      check: {
+        key,
+        status: "unknown",
+        unknownKind: "structural",
+        value: "không có tổ chức nào theo dõi",
+        message: "Không tổ chức nào bật monitoring_enabled.",
+        entities: [],
+      },
+    };
+  }
+  const { data, error } = await admin
+    .from("warehouse_agents")
+    .select("id, code, organization_id, last_seen_at, self_report, self_report_at, agent_version")
+    .eq("status", "active")
+    .in("organization_id", scope.orgIds)
+    .abortSignal(queryTimeout());
+  if (error) {
+    if (["self_report", "agent_version"].some((c) => isMissingColumnError(error, c))) {
+      return {
+        ok: false,
+        check: {
+          key,
+          status: "unknown",
+          unknownKind: "structural",
+          value: "chưa có cột tự khai",
+          message: "Database chưa có cột bản tự khai của agent — cần chạy migration 20260926130000.",
+          entities: [],
+        },
+      };
+    }
+    throw new Error(error.message);
+  }
+  return { ok: true, rows: (data as FleetAgentRow[] | null) ?? [] };
+}
+
+const minutesSince = (iso: string | null, now: Date) =>
+  iso ? (now.getTime() - Date.parse(iso)) / 60_000 : Number.POSITIVE_INFINITY;
+
+/** Một agent: ổ đĩa. Hàm thuần. */
+export function diskEntity(row: FleetAgentRow, now: Date): CheckEntity {
+  const cfg = CHECK_CONFIG.selfReport;
+  const report = parseSelfReport(row.self_report);
+  const base = { id: row.id, code: row.code, last_seen_at: row.last_seen_at, organization_id: row.organization_id };
+  // "Bỏ qua", không phải "chưa đo được": máy bản cũ / ngừng tự khai đã có
+  // mục agent_fleet báo — ở đây báo nữa là một chuyện hai dòng.
+  if (!report?.disk) {
+    return agentEntity(base, "skipped", "Agent chưa tự khai ổ đĩa (bản ≤ 0.12.x).");
+  }
+  const age = minutesSince(row.self_report_at, now);
+  if (age > cfg.diskReportMaxAgeMinutes) {
+    return agentEntity(base, "skipped", `Bản tự khai cũ ${Math.round(age)} phút — không dùng để phán ổ đĩa.`);
+  }
+  const { free_bytes, total_bytes } = report.disk;
+  const freePct = Math.round((free_bytes / total_bytes) * 1000) / 10;
+  const freeGb = Math.round((free_bytes / 1024 ** 3) * 10) / 10;
+  const days = diskDaysLeft(report.disk);
+  let status: CheckStatus = "ok";
+  if ((days !== null && days < cfg.diskCritDays) || freePct < cfg.diskCritFreePct) status = "crit";
+  else if ((days !== null && days < cfg.diskWarnDays) || freePct < cfg.diskWarnFreePct) status = "warn";
+  const daysLabel = days === null ? "chưa đủ số liệu tốc độ ghi" : `ước còn ${days} ngày`;
+  return agentEntity(base, status, `Ổ còn ${freeGb} GB (${freePct}%), ${daysLabel}.`, {
+    ...(status === "ok"
+      ? {}
+      : {
+          action:
+            "Ổ máy kho sắp đầy: agent sẽ ngừng ghi, không có gì báo trước. Kiểm script dọn ổ có chạy không (hạn lưu của tổ chức đã đặt chưa), hạ hạn lưu, hoặc thay ổ lớn hơn (kế hoạch 1.4).",
+        }),
+    signalAgeMs: Number.isFinite(age) ? age * 60_000 : null,
+  });
+}
+
+export async function checkWarehouseDisk(
+  admin?: Admin,
+  now: Date = new Date(),
+  preloaded?: MonitoringScope,
+): Promise<SystemCheck> {
+  const key = CHECK_KEYS.warehouseDisk;
+  if (!admin) {
+    return { key, status: "unknown", unknownKind: "structural", value: "chưa có nguồn", message: "Không có kết nối Supabase." };
+  }
+  const scope = preloaded ?? (await loadMonitoringScope(admin));
+  const load = await loadFleet(admin, key, scope);
+  if (!load.ok) return load.check;
+
+  const entities = load.rows.map((r) => diskEntity(r, now));
+  const measured = entities.filter((e) => e.status !== "skipped");
+  if (measured.length === 0) {
+    return {
+      key,
+      status: "unknown",
+      unknownKind: "structural",
+      value: "chưa agent nào tự khai",
+      message: `Chưa agent nào gửi dung lượng ổ (cần agent ≥ ${LATEST_AGENT_VERSION}).`,
+      entities,
+    };
+  }
+  const bad = measured.filter((e) => e.status === "crit" || e.status === "warn");
+  const worst: CheckStatus = bad.some((e) => e.status === "crit") ? "crit" : bad.length > 0 ? "warn" : "ok";
   return {
-    key: CHECK_KEYS.warehouseDisk,
-    status: "unknown",
-    unknownKind: "structural",
-    value: "chưa có nguồn",
+    key,
+    status: worst,
+    value: `${measured.length}/${entities.length} máy đo được`,
     message:
-      "Chưa có nguồn dữ liệu: agent không gửi dung lượng ổ trong heartbeat " +
-      "(chỉ gửi time_drift_seconds) và warehouse_agents không có cột nào lưu. " +
-      "Cần agent gửi kèm + thêm cột thì mục này mới đo được.",
+      bad.length > 0
+        ? `Ổ máy kho sắp đầy: ${bad.map((e) => `${e.code} — ${e.detail}`).join(" ")}`
+        : `Mọi máy kho đã tự khai còn đủ chỗ. ${entities.length - measured.length > 0 ? `${entities.length - measured.length} máy chưa tự khai.` : ""}`.trim(),
+    entities,
+  };
+}
+
+/**
+ * Một agent: bản cũ, ngừng tự khai, hàng đợi ùn. Hàm thuần.
+ *
+ * `cutBacklog`: lệnh cắt clip đang chờ / đang làm của agent này, CLOUD tự
+ * đếm từ `agent_commands` — agent không có hàng đợi clip riêng (lệnh nằm ở
+ * cloud, tải lên chạy ngay trong lệnh cắt), nên agent khai `null` cho hai
+ * hàng đợi clip và cloud điền bằng số thật của mình.
+ */
+export function fleetEntity(row: FleetAgentRow, now: Date, cutBacklog: number | null = null): CheckEntity {
+  const cfg = CHECK_CONFIG.selfReport;
+  const report = parseSelfReport(row.self_report);
+  const base = { id: row.id, code: row.code, last_seen_at: row.last_seen_at, organization_id: row.organization_id };
+  const problems: Array<{ status: CheckStatus; detail: string; action: string }> = [];
+
+  const version = report?.version ?? row.agent_version;
+  if (!version) {
+    problems.push({
+      status: "warn",
+      detail: "Chạy bản cũ chưa biết tự khai (≤ 0.12.x) — không biết phiên bản, ổ đĩa, hàng đợi.",
+      action: `Cài agent ${LATEST_AGENT_VERSION} lên máy kho (xem RELEASES.md).`,
+    });
+  } else if (compareVersions(version, LATEST_AGENT_VERSION) < 0) {
+    problems.push({
+      status: "warn",
+      detail: `Chạy bản ${version}, bản mới nhất ${LATEST_AGENT_VERSION}.`,
+      action: `Cài agent ${LATEST_AGENT_VERSION} lên máy kho (xem RELEASES.md).`,
+    });
+  }
+
+  // Vẫn ping mà ngừng khai: bộ tự khai hỏng giữa chừng — mọi phán xét phía
+  // trên đang dựa trên số cũ.
+  if (version && row.self_report_at) {
+    const reportAge = minutesSince(row.self_report_at, now);
+    if (minutesSince(row.last_seen_at, now) < 5 && reportAge > cfg.staleReportMinutes) {
+      problems.push({
+        status: "warn",
+        detail: `Agent vẫn ping nhưng ngừng tự khai ${Math.round(reportAge)} phút.`,
+        action: "Gửi lệnh Thu chẩn đoán từ trang Đội agent, hoặc khởi động lại dịch vụ BetacomAgent.",
+      });
+    }
+  }
+
+  {
+    // Hàng đợi clip: cloud tự đếm — áp cho CẢ agent bản cũ. Hai hàng đợi
+    // còn lại chỉ có khi agent tự khai.
+    const q = report?.queues;
+    const queues: Array<[string, number | null]> = [
+      ["clip chờ cắt", q?.clips_pending ?? cutBacklog],
+      ["clip chờ tải lên", q?.uploads_pending ?? null],
+      ["lượt quét chờ gửi", q?.scans_pending ?? null],
+    ];
+    for (const [label, n] of queues) {
+      if (n === null || n < cfg.queueWarn) continue;
+      problems.push({
+        status: n >= cfg.queueCrit ? "crit" : "warn",
+        detail: `${n} ${label}.`,
+        action:
+          label === "lượt quét chờ gửi"
+            ? "Máy kho không gửi được lượt quét lên — kiểm mạng kho. Đơn chưa lên sẽ chưa được đếm."
+            : "Hàng đợi clip ùn: kiểm mạng kho (tải lên) và CPU máy kho (cắt clip). Gửi lệnh Thu chẩn đoán để xem chi tiết.",
+      });
+    }
+  }
+
+  if (problems.length === 0) {
+    return agentEntity(base, "ok", `Bản ${version}, hàng đợi bình thường.`);
+  }
+  const status: CheckStatus = problems.some((p) => p.status === "crit") ? "crit" : "warn";
+  return agentEntity(base, status, problems.map((p) => p.detail).join(" "), {
+    action: [...new Set(problems.map((p) => p.action))].join(" "),
+  });
+}
+
+export async function checkAgentFleet(admin: Admin, now: Date, preloaded?: MonitoringScope): Promise<SystemCheck> {
+  const key = CHECK_KEYS.agentFleet;
+  const scope = preloaded ?? (await loadMonitoringScope(admin));
+  const load = await loadFleet(admin, key, scope);
+  if (!load.ok) return load.check;
+  if (load.rows.length === 0) {
+    return {
+      key,
+      status: "unknown",
+      unknownKind: "structural",
+      value: "không có agent nào",
+      message: "Không có agent active nào ở các tổ chức đang theo dõi.",
+      entities: [],
+    };
+  }
+  // Lệnh cắt clip đang ùn — cloud tự đếm (xem fleetEntity).
+  const { data: cmds, error: cmdErr } = await admin
+    .from("agent_commands")
+    .select("agent_id")
+    .eq("type", "cut_clip")
+    .in("status", ["pending", "taken"])
+    .in(
+      "agent_id",
+      load.rows.map((r) => r.id),
+    )
+    .abortSignal(queryTimeout());
+  if (cmdErr) throw new Error(cmdErr.message);
+  const backlog = new Map<string, number>();
+  for (const c of (cmds as Array<{ agent_id: string }> | null) ?? []) {
+    backlog.set(c.agent_id, (backlog.get(c.agent_id) ?? 0) + 1);
+  }
+
+  const entities = load.rows.map((r) => fleetEntity(r, now, backlog.get(r.id) ?? 0));
+  const bad = entities.filter((e) => e.status === "crit" || e.status === "warn");
+  const status: CheckStatus = bad.some((e) => e.status === "crit") ? "crit" : bad.length > 0 ? "warn" : "ok";
+  return {
+    key,
+    status,
+    value: `${entities.length - bad.length}/${entities.length} máy ổn`,
+    message:
+      bad.length > 0
+        ? bad.map((e) => `${e.code}: ${e.detail}`).join(" ")
+        : `Mọi máy kho chạy bản ${LATEST_AGENT_VERSION}, hàng đợi bình thường.`,
+    entities,
   };
 }
 
@@ -2291,7 +2615,7 @@ export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemS
       return fn(admin);
     });
 
-  const [cron, cronOrphan, agent, camera, recording, clips, unmapped, ignored, vps, config] =
+  const [cron, cronOrphan, agent, camera, recording, clips, unmapped, ignored, vps, disk, fleet, config] =
     await Promise.all([
       needAdmin(CHECK_KEYS.cronCleanup, (a) => checkCronCleanup(a, now)),
       needAdmin(CHECK_KEYS.cronOrphanSegments, (a) => checkCronOrphanSegments(a, now)),
@@ -2308,6 +2632,8 @@ export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemS
       safeCheck(CHECK_KEYS.vps, () =>
         checkVpsResources({ now, os: deps.os, statfs: deps.statfs, path: deps.path }),
       ),
+      needAdmin(CHECK_KEYS.warehouseDisk, (a) => checkWarehouseDisk(a, now, scope ?? undefined)),
+      needAdmin(CHECK_KEYS.agentFleet, (a) => checkAgentFleet(a, now, scope ?? undefined)),
       needAdmin(CHECK_KEYS.config, (a) => checkConfiguration(a, now, scope ?? undefined)),
     ]);
 
@@ -2324,7 +2650,8 @@ export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemS
       ignored,
       vps,
       checkStorageUsage(),
-      checkWarehouseDisk(),
+      disk,
+      fleet,
       config,
     ],
     scope,

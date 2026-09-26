@@ -124,6 +124,7 @@ type ActivityKind =
   | "waybill_invalid"
   | "waybill_return_suspect"
   | "waybill_source_disabled"
+  | "waybill_unprocessed"
   | "qr_invalid";
 
 type ActivityCategory = "ok" | "warning" | "error" | "info";
@@ -218,7 +219,7 @@ interface ProofRisk {
   estimated_bitrate_kbps: number | null;
   proof_window_seconds: number;
   upload_guard_bytes: number;
-  estimate_method: "overlapping_segments" | "camera_recent_p95" | "none";
+  estimate_method: "overlapping_segments" | "camera_recent_p95" | "none" | "composite_reencode" | "refit_to_fit";
   estimate_correction_factor: number;
 }
 
@@ -270,6 +271,7 @@ const ACTIVITY_KIND_LABEL: Record<ActivityKind, string> = {
   waybill_invalid: "Mã sai",
   waybill_return_suspect: "Hàng hoàn",
   waybill_source_disabled: "Nguồn quét tắt",
+  waybill_unprocessed: "Không tạo đơn",
   qr_invalid: "QR sai",
 };
 
@@ -484,7 +486,11 @@ function ProofSizeBadge({ risk }: { risk?: ProofRisk }) {
       ? "Ước tính từ chính các đoạn video của đơn này."
       : risk.estimate_method === "camera_recent_p95"
         ? "Ước tính theo bitrate gần đây của camera (chưa đủ đoạn video phủ khoảng đơn)."
-        : "";
+        : risk.estimate_method === "composite_reencode"
+          ? "Bàn hai góc: máy kho ghép rồi nén lại clip, ước tính theo bitrate nén."
+          : risk.estimate_method === "refit_to_fit"
+            ? "Máy kho sẽ nén lại clip cho vừa giới hạn tải lên."
+            : "";
 
   if (risk.proof_size_risk === "over_limit") {
     return (

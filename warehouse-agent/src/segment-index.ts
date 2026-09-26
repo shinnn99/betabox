@@ -9,6 +9,7 @@ import { SegmentTracker } from "./segment-tracker";
 import { SegmentWatcher, type OpenedEvent } from "./segment-watcher";
 import {
   SegmentReportQueue,
+  reportQueueKey,
   type QueuedReport,
 } from "./segment-report-queue";
 import { swallow } from "./fatal";
@@ -408,39 +409,53 @@ export class SegmentIndex {
     }
   }
 
-  private async flushQueue(): Promise<void> {
-    let items: QueuedReport[] = [];
-    try {
-      items = await this.queue.readAll();
-    } catch {
-      return;
-    }
-    if (items.length === 0) return;
+  /** 0.13.0: một vòng gửi lại tại một thời điểm — xem queue-lock.ts. */
+  private flushInFlight = false;
 
-    // Group thành batch để gửi.
-    const remaining: QueuedReport[] = [];
-    for (let i = 0; i < items.length; i += BATCH_SIZE) {
-      const chunk = items.slice(i, i + BATCH_SIZE);
-      const r = await postRecordingFiles({
-        backendUrl: this.deps.backendUrl,
-        agentCode: this.deps.agentCode,
-        agentSecret: this.deps.agentSecret,
-        files: chunk.map((c) => c.payload),
-      });
-      if (!r.ok) {
-        for (const c of chunk) remaining.push({ ...c, attempt: c.attempt + 1 });
-      } else if (r.collisions && r.collisions.length > 0) {
-        console.warn(
-          `[segment-index] SEGMENT_COLLISION on flush: ${r.collisions.join(", ")}`,
-        );
-      }
-    }
+  private async flushQueue(): Promise<void> {
+    if (this.flushInFlight) return;
+    this.flushInFlight = true;
     try {
-      await this.queue.rewrite(remaining);
-    } catch (err) {
-      console.error(
-        `[segment-index] queue rewrite failed: ${(err as Error).message}`,
-      );
+      let items: QueuedReport[] = [];
+      try {
+        items = await this.queue.readAll();
+      } catch {
+        return;
+      }
+      if (items.length === 0) return;
+
+      // Group thành batch để gửi. Chỉ bỏ khỏi hàng đợi đúng những dòng đã gửi
+      // xong, trên file MỚI NHẤT — trước 0.13.0 ghi đè cả file bằng bản chụp,
+      // làm mất báo "đóng đoạn" vừa thêm trong lúc đang gửi: đoạn đó "mở" mãi
+      // tới job dọn 03:30 và clip của đơn đó không cắt được.
+      const delivered = new Set<string>();
+      for (let i = 0; i < items.length; i += BATCH_SIZE) {
+        const chunk = items.slice(i, i + BATCH_SIZE);
+        const r = await postRecordingFiles({
+          backendUrl: this.deps.backendUrl,
+          agentCode: this.deps.agentCode,
+          agentSecret: this.deps.agentSecret,
+          files: chunk.map((c) => c.payload),
+        });
+        if (!r.ok) continue;
+        for (const c of chunk) delivered.add(reportQueueKey(c));
+        if (r.collisions && r.collisions.length > 0) {
+          console.warn(
+            `[segment-index] SEGMENT_COLLISION on flush: ${r.collisions.join(", ")}`,
+          );
+        }
+      }
+      if (delivered.size > 0) {
+        try {
+          await this.queue.removeWhere((item) => delivered.has(reportQueueKey(item)));
+        } catch (err) {
+          console.error(
+            `[segment-index] queue rewrite failed: ${(err as Error).message}`,
+          );
+        }
+      }
+    } finally {
+      this.flushInFlight = false;
     }
   }
 }

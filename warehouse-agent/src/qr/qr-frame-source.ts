@@ -1,5 +1,7 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { stripNoisyFfmpegLines } from "../recording";
+import { RollingCounter } from "../log-noise";
+import { tuning } from "../runtime-tuning";
 
 /**
  * Cỡ khung hình đưa vào bộ giải mã.
@@ -130,6 +132,14 @@ export class QrFrameSource {
   private pending = Buffer.alloc(0);
   /** Cỡ khung đang đọc. Chỉ biết chắc sau khi dò xong camera. */
   private size: FrameSize;
+  /**
+   * 0.13.0: nhiễu giải mã ffmpeg thành TỈ LỆ (bản tự khai: khung hỏng / giờ)
+   * thay vì một dòng log mỗi mẩu stderr — một nguồn từng chiếm 20.948 /
+   * 26.990 dòng log một tuần ở một kho.
+   */
+  private readonly badFrames = new RollingCounter();
+  private noiseWindowStartMs = 0;
+  private noiseSuppressed = 0;
 
   constructor(
     private readonly ffmpegBin: string,
@@ -140,6 +150,34 @@ export class QrFrameSource {
     private readonly ffprobeBin: string | null = null,
   ) {
     this.size = { width: QR_FALLBACK_WIDTH, height: QR_FALLBACK_HEIGHT };
+  }
+
+  /** Số mẩu lỗi giải mã trong 60 phút qua — cho bản tự khai. */
+  badFramesLastHour(): number {
+    return this.badFrames.lastHour();
+  }
+
+  /**
+   * Lần đầu trong khoảng: ghi log (lỗi mới thì phải thấy ngay). Trong khoảng:
+   * chỉ đếm. Sang khoảng mới: một dòng tóm tắt khoảng trước rồi mở khoảng
+   * mới. Khoảng nhận từ cloud (`tuning.qrNoiseWindowMs`).
+   */
+  private onNoise(clean: string): void {
+    this.badFrames.record();
+    const now = Date.now();
+    if (now - this.noiseWindowStartMs < tuning.qrNoiseWindowMs) {
+      this.noiseSuppressed++;
+      return;
+    }
+    if (this.noiseSuppressed > 0) {
+      const minutes = Math.max(1, Math.round((now - this.noiseWindowStartMs) / 60_000));
+      console.warn(
+        `[qr-frame-source] ${this.pathName}: thêm ${this.noiseSuppressed} mẩu lỗi giải mã trong ${minutes} phút (đã gom)`,
+      );
+    }
+    this.noiseWindowStartMs = now;
+    this.noiseSuppressed = 0;
+    console.warn(`[qr-frame-source] ${this.pathName}: ${clean.slice(-500)}`);
   }
 
   start(): void {
@@ -190,7 +228,7 @@ export class QrFrameSource {
     child.stdout.on("data", (chunk: Buffer) => this.consume(chunk));
     child.stderr.on("data", (chunk: Buffer) => {
       const clean = stripNoisyFfmpegLines(chunk.toString("utf8")).trim();
-      if (clean) console.warn(`[qr-frame-source] ${clean.slice(-1_000)}`);
+      if (clean) this.onNoise(clean);
     });
     child.once("error", (error) => {
       console.error(`[qr-frame-source] spawn failed: ${error.message}`);

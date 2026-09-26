@@ -47,10 +47,9 @@ test("câu nhật ký nói rõ nguồn nào bị tắt và hậu quả", () => {
 
 test("nhật ký: lượt có lý do không còn rơi vào 'Mã sai' / 'Đang chờ xử lý'", () => {
   const src = readFileSync("src/lib/warehouse/live/activity.ts", "utf8");
-  const branch = src.indexOf('r.ignored_reason === "scan_source_disabled"');
-  const pending = src.indexOf('note = "Đang chờ xử lý"');
-  assert.ok(branch > 0 && pending > branch, "nhánh lý do phải đứng TRƯỚC nhánh mồ côi");
-  assert.ok(src.includes('kind = "waybill_source_disabled"'));
+  // Hành vi của nhãn mồ côi kiểm ở tests/scan-incident-fixes.test.ts
+  // (describeOrphanScan); ở đây chỉ canh nhật ký dùng đúng hàm đó.
+  assert.ok(src.includes("const orphanNote = describeOrphanScan({"));
   // Chưa có cột → đọc lại không có cột, nhật ký không gãy.
   assert.ok(src.includes('isMissingColumnError(firstRawsRes.error, "ignored_reason")'));
   for (const page of ["src/app/dashboard/operations/page.tsx", "src/app/dashboard/(return-module)/returns/page.tsx"]) {

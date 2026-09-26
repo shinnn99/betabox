@@ -5,6 +5,7 @@ import {
   quarantineCorruptQueue,
   SerializedWriter,
 } from "./atomic-file";
+import { AsyncMutex } from "./queue-lock";
 
 /**
  * Payload gửi cho POST /api/agent/recording-files. Một record đại diện
@@ -30,6 +31,15 @@ export interface QueuedReport {
 }
 
 /**
+ * Khoá so trùng của một báo cáo đoạn video. Có `ended_at` trong khoá: báo
+ * "mở" và báo "đóng" của cùng một file là HAI dòng khác nhau, cần cả hai.
+ */
+export function reportQueueKey(item: QueuedReport): string {
+  const p = item.payload;
+  return `${p.camera_id}|${p.file_path}|${p.ended_at ?? "open"}`;
+}
+
+/**
  * HIGH-19 (B4): JSONL queue cho segment report — atomic + fsync +
  * serialized writer + corrupt quarantine (không silent-drop).
  *
@@ -38,6 +48,8 @@ export interface QueuedReport {
  */
 export class SegmentReportQueue {
   private readonly writer: SerializedWriter<QueuedReport[]>;
+  /** 0.13.0: thêm và bớt không được chen nhau — xem queue-lock.ts. */
+  private readonly mutex = new AsyncMutex();
 
   constructor(private readonly filePath: string) {
     this.writer = new SerializedWriter(50, async (items) => {
@@ -50,6 +62,10 @@ export class SegmentReportQueue {
   }
 
   async append(report: SegmentReport): Promise<void> {
+    await this.mutex.run(() => this.appendUnlocked(report));
+  }
+
+  private async appendUnlocked(report: SegmentReport): Promise<void> {
     await fs.mkdir(dirname(this.filePath), { recursive: true });
     const line: QueuedReport = {
       enqueued_at: new Date().toISOString(),
@@ -61,6 +77,24 @@ export class SegmentReportQueue {
 
   async appendMany(reports: SegmentReport[]): Promise<void> {
     if (reports.length === 0) return;
+    await this.mutex.run(() => this.appendManyUnlocked(reports));
+  }
+
+  /**
+   * 0.13.0: bỏ những dòng đã gửi xong. Đọc lại file MỚI NHẤT trong khoá — báo
+   * cáo vừa thêm trong lúc đang gửi vẫn còn nguyên. Thay cho `rewrite`.
+   */
+  async removeWhere(drop: (item: QueuedReport) => boolean): Promise<void> {
+    await this.mutex.run(async () => {
+      const current = await this.readAll();
+      const keep = current.filter((item) => !drop(item));
+      if (keep.length === current.length) return;
+      const body = keep.length === 0 ? "" : keep.map((i) => JSON.stringify(i)).join("\n") + "\n";
+      await atomicWriteFile(this.filePath, body);
+    });
+  }
+
+  private async appendManyUnlocked(reports: SegmentReport[]): Promise<void> {
     await fs.mkdir(dirname(this.filePath), { recursive: true });
     const now = new Date().toISOString();
     const body = reports

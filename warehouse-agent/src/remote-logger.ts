@@ -1,5 +1,7 @@
 import { signBodyV2 } from "./signing";
 import { AGENT_API_PATHS } from "./agent-api-paths";
+import { RepeatCollapser } from "./log-noise";
+import { tuning } from "./runtime-tuning";
 
 /**
  * Remote logger — bắt console.warn/error, gộp batch, push lên cloud
@@ -39,6 +41,7 @@ const MAX_QUEUE_SIZE = 500;
 const MAX_BATCH_SIZE = 100;
 const MAX_MESSAGE_LENGTH = 2048;
 const PUSH_TIMEOUT_MS = 10_000;
+const RECENT_LINES = 50;
 
 export class RemoteLogger {
   private queue: LogEvent[] = [];
@@ -47,6 +50,16 @@ export class RemoteLogger {
   private originalWarn: typeof console.warn;
   private originalError: typeof console.error;
   private disposed = false;
+  /**
+   * 0.13.0: cùng một câu lặp lại trong `tuning.logRepeatWindowMs` → gửi lần
+   * đầu, phần lặp gom thành một dòng "(lặp N lần)". Khoảng nhận từ cloud.
+   */
+  private readonly collapser = new RepeatCollapser(() => tuning.logRepeatWindowMs);
+  /**
+   * 0.13.0: 50 dòng warn/error gần nhất, KỂ CẢ dòng đã gom — cho lệnh thu
+   * chẩn đoán. Chỉ ở RAM, không gửi đi trừ khi cloud xin.
+   */
+  private readonly recentLines: string[] = [];
 
   constructor(private readonly config: RemoteLoggerConfig) {
     this.originalWarn = console.warn.bind(console);
@@ -66,14 +79,19 @@ export class RemoteLogger {
     };
     console.error = function (...args: unknown[]) {
       self.originalError(...args);
-      self.enqueue("error", args);
-      // ERROR = flush ngay (không đợi 30s), để Hạnh thấy sớm.
-      void self.flush();
+      // ERROR = flush ngay (không đợi 30s), để Hạnh thấy sớm — chỉ khi câu
+      // được nhận; lỗi lặp lại đã gom thì chờ dòng tóm tắt.
+      if (self.enqueue("error", args)) void self.flush();
     };
     this.startTimer();
     this.originalWarn(
       `[remote-logger] installed (flush every ${this.config.flushIntervalMs}ms, url=${this.config.backendUrl}${AGENT_API_PATHS.logEvents})`,
     );
+  }
+
+  /** 50 dòng warn/error gần nhất (cả dòng đã gom) — cho `collect_diagnostics`. */
+  recent(): string[] {
+    return [...this.recentLines];
   }
 
   /** Gỡ wrap, flush pending (dùng khi shutdown). */
@@ -85,6 +103,7 @@ export class RemoteLogger {
     }
     console.warn = this.originalWarn;
     console.error = this.originalError;
+    for (const summary of this.collapser.drainExpired()) this.push(summary.level, summary.message);
     if (this.queue.length > 0) {
       await this.flush();
     }
@@ -92,6 +111,7 @@ export class RemoteLogger {
 
   private startTimer(): void {
     this.flushTimer = setInterval(() => {
+      for (const summary of this.collapser.drainExpired()) this.push(summary.level, summary.message);
       if (this.queue.length > 0) {
         void this.flush();
       }
@@ -100,16 +120,25 @@ export class RemoteLogger {
     this.flushTimer.unref?.();
   }
 
-  private enqueue(level: "warn" | "error", args: unknown[]): void {
-    if (this.disposed) return;
-    if (this.queue.length >= MAX_QUEUE_SIZE) {
-      // Queue đầy — drop oldest (FIFO). Không log warn vì sẽ tự-lặp.
-      this.queue.shift();
-    }
+  /** true = câu được đưa vào hàng gửi; false = lặp lại, đã gom. */
+  private enqueue(level: "warn" | "error", args: unknown[]): boolean {
+    if (this.disposed) return false;
     const message = args
       .map((a) => (typeof a === "string" ? a : safeStringify(a)))
       .join(" ")
       .slice(0, MAX_MESSAGE_LENGTH);
+    this.recentLines.push(`${new Date().toISOString()} ${level} ${message.slice(0, 500)}`);
+    if (this.recentLines.length > RECENT_LINES) this.recentLines.shift();
+    if (!this.collapser.admit(level, message)) return false;
+    this.push(level, message);
+    return true;
+  }
+
+  private push(level: "warn" | "error", message: string): void {
+    if (this.queue.length >= MAX_QUEUE_SIZE) {
+      // Queue đầy — drop oldest (FIFO). Không log warn vì sẽ tự-lặp.
+      this.queue.shift();
+    }
     this.queue.push({
       level,
       message,

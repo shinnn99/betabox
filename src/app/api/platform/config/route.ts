@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePlatformRole } from "@/lib/supabase/guard";
 import { resolveOrgParams, resolveWarehouseParams } from "@/lib/config/effective";
 import { readPlatformTemplate } from "@/lib/config/template-store";
+import { loadFleetRows, returnClipSecondsByOrg } from "@/lib/warehouse/fleet";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,6 +54,8 @@ export async function GET() {
   // Trần clip đang áp — cùng con số với máy cắt clip.
   const template = await readPlatformTemplate(admin);
   const clipMax = template.template.clip_max_seconds;
+  // Trần clip kiện hoàn theo khả năng agent của từng tổ chức (đợt 7).
+  const returnClipByOrg = returnClipSecondsByOrg((await loadFleetRows(admin, { activeOnly: true })).rows, clipMax);
   return NextResponse.json({
     template,
     // Chỉ platform_owner sửa được — giao diện ẩn nút sửa với người còn lại.
@@ -68,7 +71,7 @@ export async function GET() {
           id: w.id as string,
           code: w.code as string | null,
           name: w.name as string | null,
-          params: resolveWarehouseParams(w, clipMax),
+          params: resolveWarehouseParams(w, clipMax, returnClipByOrg.get(o.id) ?? clipMax),
         })),
     })),
   });

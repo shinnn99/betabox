@@ -26,6 +26,8 @@ interface TestCollector {
 export interface QrSource {
   start(): void;
   stop(): Promise<void>;
+  /** 0.13.0: số mẩu lỗi giải mã trong 60 phút qua (bản tự khai). */
+  badFramesLastHour?(): number;
 }
 
 type SourceFactory = (
@@ -63,6 +65,8 @@ interface QrTarget {
 export class QrScanService {
   private cameras: CredentialItem[] = [];
   private readonly targets = new Map<string, QrTarget>();
+  /** 0.13.0: lần cuối một mã được xác nhận thành lượt quét — cho bản tự khai. */
+  private lastEmissionAt: Date | null = null;
   private readonly testCollectors = new Set<TestCollector>();
   /** Camera đang được thử giải mã tạm thời dù bàn không quét bằng camera. */
   private testCameraId: string | null = null;
@@ -116,6 +120,21 @@ export class QrScanService {
         camera.station_id !== null &&
         camera.scan_source === "camera",
     );
+  }
+
+  /** Lần cuối đọc QR thành một lượt quét (bản tự khai). */
+  lastSuccessAt(): Date | null {
+    return this.lastEmissionAt;
+  }
+
+  /** Mẩu lỗi giải mã trong 60 phút qua, theo camera_id (bản tự khai). */
+  badFramesByCamera(): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const [cameraId, target] of this.targets) {
+      const n = target.source?.badFramesLastHour?.();
+      if (typeof n === "number") out.set(cameraId, n);
+    }
+    return out;
   }
 
   /** Đang đọc camera nào — dùng cho log và test. */
@@ -259,6 +278,7 @@ export class QrScanService {
       }
     }
     if (result.emission) {
+      this.lastEmissionAt = new Date();
       swallow(
         Promise.resolve(this.options.onScan({ camera: target.camera, emission: result.emission })),
         "qrScanService.onScan",

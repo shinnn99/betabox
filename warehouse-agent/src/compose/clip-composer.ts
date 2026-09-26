@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { ffmpegRateArgs, videoRateFor } from "./bitrate";
 
 export interface ComposeAngleInput {
   segments: string[];
@@ -17,6 +18,11 @@ export interface ComposeClipOptions {
   informationText?: string;
   fontPath?: string;
   timeoutMs?: number;
+  /**
+   * Ngưỡng tải lên (byte). Có thì clip dài được hạ bitrate cho vừa — xem
+   * bitrate.ts. Không có = 3200k như trước 0.13.0.
+   */
+  maxOutputBytes?: number;
 }
 
 function quoteConcat(filePath: string): string {
@@ -31,7 +37,7 @@ function escapeFilterValue(value: string): string {
     .replaceAll("%", "\\%");
 }
 
-function run(bin: string, args: string[], timeoutMs: number): Promise<void> {
+export function runFfmpeg(bin: string, args: string[], timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, {
       windowsHide: true,
@@ -100,7 +106,7 @@ export async function composeProofClip(options: ComposeClipOptions): Promise<voi
       angle.segments.map(quoteConcat).join("\n") + "\n",
       "utf8",
     );
-    await run(
+    await runFfmpeg(
       options.ffmpegBin,
       [
         "-hide_banner", "-loglevel", "error", "-y",
@@ -184,11 +190,11 @@ export async function composeProofClip(options: ComposeClipOptions): Promise<voi
       "-filter_complex", filters.join(";"),
       "-map", `[${composedLabel}]`,
       "-an", "-c:v", "libx264", "-preset", "veryfast",
-      "-b:v", "3200k", "-maxrate", "4500k", "-bufsize", "9000k",
+      ...ffmpegRateArgs(videoRateFor(durationSeconds, options.maxOutputBytes)),
       "-pix_fmt", "yuv420p", "-movflags", "+faststart",
       options.outputPath,
     );
-    await run(options.ffmpegBin, args, timeoutMs);
+    await runFfmpeg(options.ffmpegBin, args, timeoutMs);
   } finally {
     await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => undefined)));
   }

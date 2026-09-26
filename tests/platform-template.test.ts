@@ -61,8 +61,10 @@ test("khoảng của migration khớp khoảng trong mã", () => {
 });
 
 test(`trần clip ${CLIP_MAX_SAFE_SECONDS}s vừa ngưỡng tải lên của agent ở bitrate ghép clip, còn dư 10%`, () => {
-  const composer = readFileSync("warehouse-agent/src/compose/clip-composer.ts", "utf8");
-  const kbps = Number(composer.match(/"-b:v", "(\d+)k"/)?.[1]);
+  // Bitrate CƠ SỞ của bộ ghép (clip ngắn giữ nguyên mức này; từ 0.13.0 clip
+  // dài tự hạ — nhưng trần 210 phải an toàn cả với agent cũ chưa biết hạ).
+  const bitrate = readFileSync("warehouse-agent/src/compose/bitrate.ts", "utf8");
+  const kbps = Number(bitrate.match(/BASE_VIDEO_KBPS = (\d+);/)?.[1]);
   const agentCfg = readFileSync("warehouse-agent/src/config.ts", "utf8");
   assert.ok(agentCfg.includes(".default(90 * 1024 * 1024)"), "ngưỡng tải lên của agent đổi — tính lại trần");
   const uploadBytes = 90 * 1024 * 1024;
@@ -172,14 +174,15 @@ test("mục kiểm Cấu hình dùng cùng trần — 190s không bị báo kẹ
 
 test("mọi nơi dùng trần đều đọc từ mẫu", () => {
   const uses: Array<[string, string]> = [
-    ["src/lib/order-proof/clip-resolver.ts", "clipStart.getTime() + clipMaxSeconds * 1000"],
+    ["src/lib/order-proof/clip-resolver.ts", "clipStart.getTime() + capSeconds * 1000"],
+    ["src/lib/order-proof/clip-resolver.ts", ": clipMaxSeconds;"],
     ["src/lib/order-proof/clip-resolver.ts", "maxClipSeconds: clipMaxSeconds"],
     ["src/lib/station/force-stop-expired-orders.ts", "resolveOrderLimitSeconds(cfg, orderHardLimit)"],
     ["src/app/api/live/[stationId]/events/route.ts", "await getClipMaxSeconds(access.admin)"],
     ["src/lib/order-proof/proof-size-risk.ts", "maxClipSeconds,"],
     ["src/lib/system/checks.ts", "clipMaxSeconds,\n    });"],
-    ["src/app/api/platform/config/route.ts", "resolveWarehouseParams(w, clipMax)"],
-    ["src/app/api/platform/orgs/[id]/route.ts", "resolveWarehouseParams(w, clipMaxSeconds)"],
+    ["src/app/api/platform/config/route.ts", "resolveWarehouseParams(w, clipMax, returnClipByOrg.get(o.id) ?? clipMax)"],
+    ["src/app/api/platform/orgs/[id]/route.ts", "resolveWarehouseParams(w, clipMaxSeconds, returnClipSeconds)"],
   ];
   for (const [file, needle] of uses) assert.ok(readFileSync(file, "utf8").includes(needle), `${file}: ${needle}`);
 });

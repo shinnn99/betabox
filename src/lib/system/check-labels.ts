@@ -15,6 +15,7 @@ export const CHECK_LABELS: Record<string, string> = {
   clip_failures: "Clip đơn hàng",
   unmapped_scanner: "Quét không rõ bàn",
   ignored_scans: "Lượt quét bị bỏ",
+  agent_fleet: "Bản agent & hàng đợi",
   vps_resources: "Ổ đĩa + RAM VPS",
   storage_usage: "Dung lượng Storage",
   warehouse_disk: "Ổ đĩa máy kho",

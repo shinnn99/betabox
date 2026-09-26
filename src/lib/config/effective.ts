@@ -204,6 +204,12 @@ export function resolveWarehouseParams(
    * số cũ.
    */
   clipMaxSeconds: number = MAX_CLIP_DURATION_SECONDS,
+  /**
+   * Trần clip KIỆN HOÀN thực tế của tổ chức — 310s khi mọi agent của tổ chức
+   * tự khai `adaptive_clip_bitrate` (đợt 7), còn lại bằng trần chung. Xem
+   * `returnClipCapSeconds` trong clip-resolver.ts. Không truyền = trần chung.
+   */
+  returnClipSeconds: number = clipMaxSeconds,
 ): EffectiveParam[] {
   const cfg = wh.packing_timing_config;
   const timing = readTimingConfig(cfg);
@@ -308,13 +314,12 @@ export function resolveWarehouseParams(
     };
     const set = storedNumber(cfg, "return_max_seconds");
     const eff = resolveReturnLimitSeconds(cfg);
-    // Trần CHUNG cuối cùng của clip-resolver áp cho MỌI loại lượt, kể cả
-    // kiện hoàn — nên dù clip-window cho kiện hoàn tới 310s, file thật vẫn
-    // dừng ở MAX_CLIP_DURATION_SECONDS tính cả đệm. Đo trên production
-    // 26/09/2026: kiện hoàn 300s ra clip đúng 180s, lý do
-    // `capped_at_max_duration`. Có test canh: ai sửa trần đó trong
-    // clip-resolver thì phải sửa cả dòng này.
-    const coverage = clipMaxSeconds - timing.pre;
+    // Trần cuối cùng của clip-resolver cho kiện hoàn: trần chung (đo trên
+    // production 26/09/2026: kiện hoàn 300s ra clip đúng 180s, lý do
+    // `capped_at_max_duration`), trừ khi agent tự khai hạ được bitrate — lúc
+    // đó 310s (đợt 7). Có test canh: ai sửa trần đó trong clip-resolver thì
+    // phải sửa cả dòng này.
+    const coverage = returnClipSeconds - timing.pre;
     const consequence =
       eff - coverage > UNCOVERED_TAIL_NOTICE_SECONDS
         ? `Kiện hoàn tự đóng sau ${eff}s nhưng clip bằng chứng chỉ ghi được ${coverage}s đầu — ` +

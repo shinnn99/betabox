@@ -728,7 +728,24 @@ function DevicesPage() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
-                        {formatRelative(d.updated_at)}
+                        {/* Camera mất kết nối: `updated_at` đổi MỖI LẦN agent thử kết nối
+                            (ghi kết quả probe), nên "29s trước" trông như vừa kết nối
+                            được. Chủ dự án hỏi 26/09/2026 về dahua_01 đã tháo từ lâu. */}
+                        {d.kind === "camera" && d.camera_online_state === "offline" ? (
+                          <span
+                            className="text-rose-600"
+                            title={`Lần thử kết nối gần nhất: ${formatRelative(d.last_probe_at ?? d.updated_at)}`}
+                          >
+                            Không kết nối được
+                            {!d.current_station && (
+                              <span className="block text-[11px] text-slate-400">
+                                chưa gắn bàn — lưu trữ nếu đã tháo
+                              </span>
+                            )}
+                          </span>
+                        ) : (
+                          formatRelative(d.updated_at)
+                        )}
                       </td>
                       <td className="px-2 py-3 text-center whitespace-nowrap">
                         <DeviceActionMenu

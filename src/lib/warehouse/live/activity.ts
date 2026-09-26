@@ -25,6 +25,8 @@ export type ActivityKind =
   // Lượt quét bị bỏ vì nguồn quét (súng / camera) đang tắt ở bàn — đợt 5,
   // VAN-HANH-NHIEU-KHO. Trước đây rơi vào "Mã sai" / "Đang chờ xử lý".
   | "waybill_source_disabled"
+  // Lượt quét mồ côi cũ, không rõ lý do — thay cho "Đang chờ xử lý" mãi mãi.
+  | "waybill_unprocessed"
   | "qr_invalid"
   // Hàng hoàn dùng chung các kind ở trên (chủ dự án chốt 23/09/2026);
   // riêng thẻ điều khiển chỉ còn trong lịch sử cũ.
@@ -45,6 +47,58 @@ interface RawRow {
 
 const RAW_COLUMNS_LEGACY = "id, scanner_device_code, raw_value, scan_type, scanned_at, received_at, source";
 const RAW_COLUMNS = `${RAW_COLUMNS_LEGACY}, ignored_reason`;
+
+/** Lượt quét mồ côi quá ngần này mà vẫn không có đơn thì không còn "đang chờ". */
+export const ORPHAN_PENDING_MS = 2 * 60_000;
+
+/**
+ * Nhãn cho lượt quét KHÔNG sinh bản ghi nào phía sau (mồ côi). Thứ tự ưu
+ * tiên có lý do:
+ *   1. Mã đã có đơn trong ngày → "Trùng": quét lại, không tính. Dữ liệu nói
+ *      chắc chắn, bất kể nguồn nào quét.
+ *   2. Route đã ghi lý do → nói đúng lý do.
+ *   3. QR nhân sự → như cũ.
+ *   4. Mới tới (< 2 phút) → "Đang chờ xử lý" (đúng là đang xử lý).
+ *   5. Cũ hơn mà không lý do → "Không tạo đơn" — không để "Đang chờ xử lý"
+ *      mãi mãi, cũng không gọi là "Mã sai" khi không biết mã có sai không.
+ * Hàm thuần.
+ */
+export function describeOrphanScan(input: {
+  isStaff: boolean;
+  ignoredReason: string | null;
+  source: string | null;
+  alreadyOrdered: boolean;
+  ageMs: number;
+}): { kind: ActivityKind; category: ActivityCategory; note: string } {
+  if (input.alreadyOrdered) {
+    return {
+      kind: "waybill_duplicated",
+      category: "warning",
+      note:
+        input.ignoredReason === "scan_source_disabled"
+          ? "Quét lại mã đã có đơn (nguồn quét này đang tắt ở bàn) — không tính"
+          : "Quét lại mã đã có đơn — không tính",
+    };
+  }
+  if (input.ignoredReason === "scan_source_disabled") {
+    return {
+      kind: "waybill_source_disabled",
+      category: "warning",
+      note: describeSourceDisabled(input.source, input.isStaff),
+    };
+  }
+  if (input.isStaff) {
+    return { kind: "qr_invalid", category: "info", note: "QR nhân sự chưa được xử lý" };
+  }
+  if (input.ageMs < ORPHAN_PENDING_MS) {
+    return { kind: "waybill_invalid", category: "info", note: "Đang chờ xử lý" };
+  }
+  return {
+    kind: "waybill_unprocessed",
+    category: "warning",
+    note: "Lượt quét không thành đơn — không rõ lý do (trước 26/09/2026 hệ thống chưa ghi lý do)",
+  };
+}
 
 /**
  * Câu nhật ký cho lượt quét bị bỏ vì nguồn quét đang tắt ở bàn. Nói rõ nguồn
@@ -238,6 +292,30 @@ export async function buildLiveActivity(
   const orphanRaws = (raws ?? []).filter(
     (r) => !packByRaw.has(r.id) && !scanByRaw.has(r.id),
   );
+
+  // Mã của lượt quét mồ côi mà ĐÃ CÓ ĐƠN trong ngày → đây là lượt QUÉT LẠI
+  // (trùng), không phải "mã sai" (chủ dự án chỉ ra 26/09/2026: nhân viên quét
+  // lại bằng súng ở bàn đặt camera, nhật ký hiện "Mã sai / Đang chờ xử lý"
+  // cho một mã hoàn toàn hợp lệ đã có đơn). Suy từ DỮ LIỆU, không từ cấu
+  // hình bàn hôm nay — nên đúng cả cho các dòng cũ chưa có cột lý do.
+  const orphanCodes = [
+    ...new Set(
+      orphanRaws.filter((r) => r.scan_type === "waybill").map((r) => r.raw_value.trim().toUpperCase()),
+    ),
+  ];
+  const orderedCodes = new Set<string>();
+  if (orphanCodes.length > 0) {
+    const { data: ordered } = await admin
+      .from("packing_events")
+      .select("waybill_code")
+      .eq("organization_id", orgId)
+      .eq("event_kind", "outbound")
+      .in("status", ["valid", "duplicated"])
+      .in("waybill_code", orphanCodes)
+      .gte("scanned_at", day.startIso)
+      .lt("scanned_at", day.endIso);
+    for (const o of ordered ?? []) orderedCodes.add(o.waybill_code as string);
+  }
   const orphanResolved = new Map<
     string,
     { station_code: string; station_name: string; warehouse_code: string }
@@ -372,22 +450,17 @@ export async function buildLiveActivity(
         station = { code: orphan.station_code, name: orphan.station_name };
         warehouseCode = orphan.warehouse_code;
       }
-      if (r.ignored_reason === "scan_source_disabled") {
-        // Route đã ghi lý do lúc nhận — nói đúng lý do, không đoán.
-        kind = "waybill_source_disabled";
-        category = "warning";
-        note = describeSourceDisabled(r.source ?? null, isStaff);
-        waybill = isStaff ? null : r.raw_value;
-      } else if (isStaff) {
-        kind = "qr_invalid";
-        category = "info";
-        note = "QR nhân sự chưa được xử lý";
-      } else {
-        kind = "waybill_invalid";
-        category = "info";
-        note = "Đang chờ xử lý";
-        waybill = r.raw_value;
-      }
+      const orphanNote = describeOrphanScan({
+        isStaff,
+        ignoredReason: r.ignored_reason ?? null,
+        source: r.source ?? null,
+        alreadyOrdered: !isStaff && orderedCodes.has(r.raw_value.trim().toUpperCase()),
+        ageMs: Date.now() - Date.parse(r.received_at),
+      });
+      kind = orphanNote.kind;
+      category = orphanNote.category;
+      note = orphanNote.note;
+      waybill = isStaff ? null : r.raw_value;
     }
 
     return {

@@ -5,6 +5,7 @@ import {
   quarantineCorruptQueue,
   SerializedWriter,
 } from "./atomic-file";
+import { AsyncMutex } from "./queue-lock";
 import type { PostClipResultParams } from "./commands";
 
 /**
@@ -70,9 +71,19 @@ export function isPermanentClipResultStatus(status: number): boolean {
  */
 export const OUTBOX_MAX_AGE_HOURS = 24;
 
+/**
+ * Khoá so trùng của một kết quả cắt clip trong outbox: cùng clip, cùng kết
+ * cục, cùng lúc xếp hàng là cùng một dòng.
+ */
+export function outboxKey(item: QueuedClipResult): string {
+  return `${item.payload.clipId}|${item.payload.outcome}|${item.enqueued_at}`;
+}
+
 export class ClipResultOutbox {
   private readonly writer: SerializedWriter<QueuedClipResult[]>;
   private readonly filePath: string;
+  /** 0.13.0: thêm và bớt không được chen nhau — xem queue-lock.ts. */
+  private readonly mutex = new AsyncMutex();
 
   // Gán tường minh thay vì parameter property — Node chạy TypeScript ở
   // chế độ strip-only không hiểu cú pháp đó (cùng lý do đã ghi trong
@@ -89,14 +100,32 @@ export class ClipResultOutbox {
   }
 
   async append(payload: OutboxClipResult, lastError: string): Promise<void> {
-    await fs.mkdir(dirname(this.filePath), { recursive: true });
-    const line: QueuedClipResult = {
-      enqueued_at: new Date().toISOString(),
-      attempt: 1,
-      last_error: lastError,
-      payload,
-    };
-    await fs.appendFile(this.filePath, JSON.stringify(line) + "\n", "utf8");
+    await this.mutex.run(async () => {
+      await fs.mkdir(dirname(this.filePath), { recursive: true });
+      const line: QueuedClipResult = {
+        enqueued_at: new Date().toISOString(),
+        attempt: 1,
+        last_error: lastError,
+        payload,
+      };
+      await fs.appendFile(this.filePath, JSON.stringify(line) + "\n", "utf8");
+    });
+  }
+
+  /**
+   * 0.13.0: bỏ những dòng đã gửi xong / bị bỏ. Đọc lại file MỚI NHẤT trong
+   * khoá — kết quả vừa thêm trong lúc đang gửi vẫn còn nguyên. Trước 0.13.0
+   * `rewrite(keep)` ghi đè bằng bản chụp: kết quả cắt clip mới bị mất, giao
+   * diện đứng ở "Đang cắt" tới khi cloud tự dọn.
+   */
+  async removeWhere(drop: (item: QueuedClipResult) => boolean): Promise<void> {
+    await this.mutex.run(async () => {
+      const current = await this.readAll();
+      const keep = current.filter((item) => !drop(item));
+      if (keep.length === current.length) return;
+      const body = keep.length === 0 ? "" : keep.map((i) => JSON.stringify(i)).join("\n") + "\n";
+      await atomicWriteFile(this.filePath, body);
+    });
   }
 
   async readAll(): Promise<QueuedClipResult[]> {

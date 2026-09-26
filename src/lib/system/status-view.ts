@@ -51,6 +51,8 @@ export const CHECK_MEANING: Record<string, string> = {
   [CHECK_KEYS.clipFailures]: "Mỗi clip lỗi là một đơn hàng không có bằng chứng khi khách hỏi.",
   [CHECK_KEYS.unmappedScanner]:
     "Quét được mã nhưng không biết của bàn nào: đơn không được đếm, không gắn ca, không có video bằng chứng.",
+  [CHECK_KEYS.agentFleet]:
+    "Máy kho chạy bản cũ thì không tự khai được, không nhận bản sửa lỗi; hàng đợi ùn là đơn và clip chưa lên cloud.",
   [CHECK_KEYS.ignoredScans]:
     "Mã bị bỏ vì nguồn quét đang tắt ở bàn mà không thành đơn: đơn biến mất — không đếm, không clip, không tính công.",
   [CHECK_KEYS.vps]: "Ổ đầy thì ffmpeg và build cùng chết; RAM cạn thì web đứng.",
@@ -72,6 +74,7 @@ const CHECK_SCOPE_LABEL: Record<string, string> = {
   [CHECK_KEYS.clipFailures]: "Toàn bộ kho",
   [CHECK_KEYS.unmappedScanner]: "Toàn bộ kho",
   [CHECK_KEYS.ignoredScans]: "Toàn bộ kho",
+  [CHECK_KEYS.agentFleet]: "Toàn bộ kho",
 };
 
 /** Việc cần làm cho mục không gắn với kho. Mục gắn kho tự mang `action`. */
@@ -101,6 +104,8 @@ const EMPTY_SCOPE_ACTION: Record<string, string> = {
   [CHECK_KEYS.clipFailures]: "Kiểm cờ monitoring_enabled của tổ chức.",
   [CHECK_KEYS.unmappedScanner]: "Kiểm cờ monitoring_enabled của tổ chức.",
   [CHECK_KEYS.ignoredScans]: "Kiểm cờ monitoring_enabled của tổ chức, hoặc chạy migration 20260926110000.",
+  [CHECK_KEYS.agentFleet]: "Kiểm cờ monitoring_enabled, agent active, hoặc chạy migration 20260926130000.",
+  [CHECK_KEYS.warehouseDisk]: "Cài agent bản mới (tự khai ổ đĩa), hoặc chạy migration 20260926130000.",
 };
 
 /**

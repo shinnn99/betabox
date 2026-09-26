@@ -5,6 +5,7 @@ import {
   Activity,
   Warehouse,
   Sparkles,
+  Server,
   Siren,
   SlidersHorizontal,
   type LucideIcon,
@@ -69,6 +70,13 @@ export const PLATFORM_NAV: PlatformNavItem[] = [
     label: "Sự cố",
     href: "/platform/incidents",
     icon: Siren,
+  },
+  // Đợt 7: mọi máy kho một màn hình — phiên bản, camera ghi, ổ đĩa, hàng đợi.
+  {
+    id: "agents",
+    label: "Đội agent",
+    href: "/platform/agents",
+    icon: Server,
   },
   {
     id: "config",

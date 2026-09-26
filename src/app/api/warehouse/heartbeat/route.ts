@@ -11,6 +11,8 @@ import { forceStopExpiredOrders } from "@/lib/station/force-stop-expired-orders"
 import { revertIdleReturnModes } from "@/lib/station/station-mode";
 import { requestClipsForOpenReturnClaims } from "@/lib/station/return-clip-requests";
 import { listActiveCaptures } from "@/lib/station/return-capture";
+import { AGENT_REMOTE_TUNING, parseSelfReport, type SelfReport } from "@/lib/warehouse/self-report";
+import { isMissingColumnError } from "@/lib/supabase/missing-column";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -74,12 +76,15 @@ export async function POST(req: Request) {
   // (agent tự cộng/trừ RTT trước khi gửi). Đơn giản backend, tin agent
   // đã tính đúng.
   let timeDriftSeconds: number | null = null;
+  // Bản tự khai (đợt 7, VAN-HANH-NHIEU-KHO). Agent ≤ 0.12.x không gửi — null.
+  let selfReport: SelfReport | null = null;
   try {
-    const parsed = JSON.parse(rawBody) as { time_drift_seconds?: unknown };
+    const parsed = JSON.parse(rawBody) as { time_drift_seconds?: unknown; self_report?: unknown };
     if (typeof parsed.time_drift_seconds === "number" && Number.isFinite(parsed.time_drift_seconds)) {
       // Clamp về [0, 999999] để tránh row DB bị số kỳ dị (agent bug).
       timeDriftSeconds = Math.min(999_999, Math.max(0, Math.round(parsed.time_drift_seconds)));
     }
+    selfReport = parseSelfReport(parsed.self_report);
   } catch {
     // Body không phải JSON hợp lệ hoặc rỗng — bỏ qua drift, vẫn update last_seen_at.
   }
@@ -89,10 +94,15 @@ export async function POST(req: Request) {
   if (timeDriftSeconds !== null) {
     updates.time_drift_seconds = timeDriftSeconds;
   }
-  const { error: seenErr } = await admin
-    .from("warehouse_agents")
-    .update(updates)
-    .eq("id", agent.id);
+  const withReport = selfReport
+    ? { ...updates, self_report: selfReport, self_report_at: now, agent_version: selfReport.version }
+    : updates;
+  let { error: seenErr } = await admin.from("warehouse_agents").update(withReport).eq("id", agent.id);
+  // Chưa chạy migration 20260926130000: lưu như cũ, bỏ bản tự khai. Nhịp tim
+  // là nhịp chạy tự dừng đơn và dọn phiên hoàn — không được gãy vì cột mới.
+  if (selfReport && ["self_report", "agent_version"].some((c) => isMissingColumnError(seenErr, c))) {
+    ({ error: seenErr } = await admin.from("warehouse_agents").update(updates).eq("id", agent.id));
+  }
   if (seenErr) {
     console.warn(
       `[heartbeat] last_seen_at update failed agent=${agent.id} code=${seenErr.code ?? "?"} message=${seenErr.message}`,
@@ -167,5 +177,7 @@ export async function POST(req: Request) {
     last_seen_at: now,
     retention_days: retentionDays,
     return_captures: activeCaptures,
+    // Agent ≥ 0.13.0 áp ngay; agent cũ bỏ qua trường lạ.
+    agent_config: AGENT_REMOTE_TUNING,
   });
 }

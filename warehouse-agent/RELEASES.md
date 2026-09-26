@@ -4,6 +4,57 @@ Ghi từ 0.8.6 trở đi. Mỗi mục nêu: sửa gì, vì sao, và người đi
 
 ---
 
+## 0.13.0 — 2026-09-26
+
+**Máy kho tự khai trạng thái lên hệ thống; clip kiện hoàn dài không còn bị từ chối.**
+
+Trước bản này, muốn biết máy kho chạy bản nào phải nhờ người ở kho gõ lệnh
+và đọc kích thước file exe. Log gửi lên thì ồn: một kho 26.990 dòng một
+tuần, 77% là nhiễu giải mã, 528 lần FATAL nằm im trong đó không ai được báo.
+
+- **Bản tự khai** gửi kèm mỗi nhịp tim: phiên bản, camera nào đang ghi và
+  đoạn video cuối lúc nào, ổ còn bao nhiêu (tính ra còn mấy ngày), số lượt
+  quét chờ gửi, lần đọc QR thành công cuối, dấu vân tay cấu hình. Agent chỉ
+  khai sự thật; hệ thống quyết định cái gì là lỗi — đổi ngưỡng không cần
+  bản agent mới. Trang **Đội agent** trên platform hiện đủ mọi máy.
+- **Clip dài tự hạ bitrate cho vừa ngưỡng tải lên 90 MiB.** Clip đến ~200
+  giây giữ nguyên 3200 kbps (đơn đi không đổi chất lượng); clip kiện hoàn
+  310 giây xuống khoảng 2000 kbps. Clip nào vẫn vượt ngưỡng (kể cả clip một
+  góc chép thẳng từ camera) được **nén lại một lần** thay vì bị vứt. Hệ
+  thống chỉ mở cửa sổ 310 giây cho kiện hoàn khi thấy máy kho khai khả năng
+  này — nên cài bản này là tự hết cảnh clip kiện hoàn cụt 2 phút cuối.
+- **Gom nhiễu log:** cùng một câu lặp lại trong 5 phút → gửi lần đầu, phần
+  lặp gom thành một dòng "(lặp lại N lần)". Nhiễu giải mã của luồng đọc QR
+  thành con số "khung hỏng / giờ" trong bản tự khai. Lỗi mới vẫn tới ngay.
+  Khoảng gom do hệ thống gửi xuống, đổi được không cần cài lại.
+- **Lệnh Thu chẩn đoán** từ trang Đội agent: bản tự khai, tiến trình ghi,
+  ổ đĩa, 50 dòng cảnh báo gần nhất. Tài khoản camera trong URL RTSP được
+  che trước khi gửi.
+- **Sửa lỗi MẤT dữ liệu trong hàng đợi gửi lại** (tìm ra 26/09 khi soát sự
+  cố Đại Kim). Ba hàng đợi — lượt quét, báo đoạn video, kết quả cắt clip —
+  đều đọc bản chụp, gửi (mạng nghẽn: vài phút), rồi ghi đè cả file: dòng nào
+  thêm vào TRONG LÚC đó bị mất. Mất lượt quét là mất đơn; mất báo "đóng đoạn"
+  là đoạn video "mở" mãi và clip của đơn đó không cắt được. Nay mọi thao tác
+  qua một khoá, dọn thì chỉ bỏ đúng dòng đã gửi trên file mới nhất, và không
+  cho hai vòng gửi lại chạy chồng. Dòng bị hệ thống từ chối vĩnh viễn (dữ liệu
+  hỏng) được bỏ thay vì nằm tắc hàng đợi mãi.
+- **Một clip một lúc, tính cả lúc tải lên.** Trước đây trong lúc clip A đang
+  tải (đường lên kho ~180 KB/s: 7–12 phút), máy kho vẫn nhận cắt clip B — nhiều
+  clip tải song song chiếm trọn đường lên, lượt quét và báo đoạn video phải
+  chờ 1–3 phút rồi tới ngược thứ tự (thời lượng đơn âm ở Đại Kim sáng 26/09).
+
+**Người đi cài cần biết:**
+
+- **Máy đã có agent:** chỉ đổi một file chạy, không thêm file, không đổi
+  cấu hình. Xem [releases/THAY-FILE-CHAY-0.13.0.md](releases/THAY-FILE-CHAY-0.13.0.md).
+- **Chạy migration `20260926130000_agent_self_report.sql` TRƯỚC** — không
+  có thì hệ thống vẫn nhận nhịp tim như cũ nhưng bỏ bản tự khai, và lệnh
+  Thu chẩn đoán chưa gửi được.
+- Sau khi cài: trang Đội agent phải hiện bản 0.13.0 cho máy này trong vòng
+  1 phút.
+
+---
+
 ## 0.12.1 — 2026-09-25
 
 **Bỏ qua mã QR đường link, chỉ nhận mã vận đơn.**

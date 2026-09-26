@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isTransientSegmentFailure } from "@/lib/order-proof/transient-failure";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermissionStrict, isError } from "@/lib/supabase/guard";
 import { enqueueCutClip } from "@/lib/agent-commands/enqueue";
@@ -293,13 +294,16 @@ export async function POST(req: Request, ctx: RouteContext) {
     return NextResponse.json<WatchResponse>({ state: "preparing_cut" });
   }
 
-  if (latestFailedRow) {
+  if (latestFailedRow && !isTransientSegmentFailure(latestFailedRow.error_message)) {
     // Không có ready, không có pending. Failed cuối = terminal state.
     return NextResponse.json<WatchResponse>({
       state: "failed",
       error: latestFailedRow.error_message ?? "cut_failed",
     });
   }
+  // Dòng failed "Segment cuối chưa đóng" (bản trước 26/09/2026 ghi lỗi này
+  // thành vĩnh viễn) KHÔNG phải kết thúc: đoạn đó giờ đã đóng hoặc được coi
+  // là báo-đóng-tới-muộn — rơi xuống nhánh enqueue để tự cắt lại.
 
   // ================ NHÁNH 3: có evicted (2026-07-24) ================
   // Clip đã dọn khỏi cloud (72h TTL bucket) nhưng từng cắt thành công.
@@ -343,6 +347,18 @@ export async function POST(req: Request, ctx: RouteContext) {
       state: "failed",
       error: `enqueue_cut_failed: ${(err as Error).message}`,
     });
+  }
+
+  if (!cutResult.ok && cutResult.reason === "segment_still_open") {
+    // Đoạn cuối còn THẬT SỰ đang ghi (bắt đầu chưa quá 3 phút — xem
+    // OPEN_SEGMENT_CLOSE_GRACE_SECONDS). Đây là trạng thái CHỜ, không phải
+    // lỗi: trước 26/09/2026 nhánh này ghi một dòng `failed` vĩnh viễn, rồi
+    // không gì tự thử lại, và bấm "Thử lại" cũng không đổi gì.
+    //
+    // Không ghi dòng nào: lượt hỏi kế của trình duyệt vào lại đây, không có
+    // lệnh cắt nào nên không vướng cooldown → thử cắt lại. Quá 3 phút thì
+    // resolver coi đoạn đó là báo-đóng-tới-muộn và cắt được.
+    return NextResponse.json<WatchResponse>({ state: "preparing_cut" });
   }
 
   if (!cutResult.ok) {

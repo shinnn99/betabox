@@ -27,6 +27,8 @@ export async function sendHeartbeat(params: {
    *  AbortSignal fail). Cloud endpoint HIỆN CHƯA đọc field này —
    *  agent gửi kèm để log + dự phòng cloud dashboard alert sau. */
   watchdogLastTickMsAgo?: number;
+  /** 0.13.0: bản tự khai (self-report.ts). Không có thì gửi như bản cũ. */
+  selfReport?: Record<string, unknown>;
 }): Promise<{
   ok: boolean;
   status: number;
@@ -34,6 +36,8 @@ export async function sendHeartbeat(params: {
   retentionDays: number | null;
   /** null = không đọc được; [] = cloud nói không có phiên nào đang bật. */
   activeCaptures: ActiveCapture[] | null;
+  /** 0.13.0: núm chỉnh từ cloud (runtime-tuning.ts). null = cloud không gửi. */
+  agentConfig: unknown;
 }> {
   // Đo drift trước heartbeat. Nếu fail, tiếp tục với null.
   const driftSeconds = await measureTimeDrift(params.backendUrl);
@@ -52,6 +56,7 @@ export async function sendHeartbeat(params: {
       );
     }
   }
+  if (params.selfReport) bodyObj.self_report = params.selfReport;
   const body = JSON.stringify(bodyObj);
   const res = await fetchWithRetrySigned(
     `${params.backendUrl}${AGENT_API_PATHS.heartbeat}`,
@@ -77,12 +82,15 @@ export async function sendHeartbeat(params: {
   // cloud cũ chưa gửi) — KHÁC hẳn `[]` (cloud nói không có phiên nào).
   // Nhầm hai cái này là tự tắt phiên đang chạy mỗi lần mạng chập.
   let activeCaptures: ActiveCapture[] | null = null;
+  let agentConfig: unknown = null;
   if (res.ok) {
     try {
       const json = (await res.json()) as {
         retention_days?: unknown;
         return_captures?: unknown;
+        agent_config?: unknown;
       };
+      agentConfig = json.agent_config ?? null;
       if (
         typeof json.retention_days === "number" &&
         Number.isInteger(json.retention_days) &&
@@ -111,7 +119,7 @@ export async function sendHeartbeat(params: {
     }
   }
 
-  return { ok: res.ok, status: res.status, driftSeconds, retentionDays, activeCaptures };
+  return { ok: res.ok, status: res.status, driftSeconds, retentionDays, activeCaptures, agentConfig };
 }
 
 /**
