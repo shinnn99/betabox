@@ -1502,7 +1502,7 @@ docs([Module]):     Cập nhật tài liệu
   1. `video_pre_seconds`: database `packing_timing_default_config()` mặc định **5**, máy cắt clip (`clip-resolver.ts`) mặc định **10**. Máy cắt clip đọc thẳng cấu hình đã lưu, không qua `resolve_packing_timing`. Hai kho đang chạy đều lưu đủ khoá nên chưa dính; **chưa đồng bộ vì đổi con số là đổi hành vi cắt clip** — ghi rõ trong `timing-config.ts`, chờ chủ dự án quyết.
   2. `proof-size-risk.ts` **tự đọc lại** `video_pre_seconds`, cùng mặc định nhưng **không kẹp trần 120s** như máy cắt clip → đặt 300 thì clip cắt 120 mà cảnh báo dung lượng tính 300. Đúng kiểu lệch ghi chú đầu `clip-window.ts` đã cảnh báo.
   3. Ô nhập `max_order_seconds` trên trang Kho cho phép tới **3600**, hệ thống chạy thật kẹp ở **180**.
-  4. **LỖI — clip kiện hoàn bị cụt (ngoài phạm vi đợt 2, chờ quyết):** `computeFinalizedClipWindow` cho kiện hoàn dài tới 310s, nhưng dòng "cap chung cuối cùng" của `clip-resolver.ts` áp `MAX_CLIP_DURATION_SECONDS` (180s) cho **mọi** loại lượt. Đo production: kiện hoàn làm 300s ra clip **đúng 180s**, `end_reason = capped_at_max_duration` — **2 phút cuối mỗi kiện hoàn 5 phút không có video**. Chưa sửa vì 310s ở 5,88 Mbps ≈ 228 MB, vượt ngưỡng tải lên 90 MiB → cần quyết cùng chuyện bitrate/độ phân giải.
+  4. **LỖI — clip kiện hoàn bị cụt (ngoài phạm vi đợt 2, chờ quyết):** `computeFinalizedClipWindow` cho kiện hoàn dài tới 310s, nhưng dòng "cap chung cuối cùng" của `clip-resolver.ts` áp `MAX_CLIP_DURATION_SECONDS` (180s) cho **mọi** loại lượt. Đo production: kiện hoàn làm 300s ra clip **đúng 180s**, `end_reason = capped_at_max_duration` — **2 phút cuối mỗi kiện hoàn 5 phút không có video**. Chưa sửa vì clip bằng chứng hai góc được **ghép rồi nén lại** ở `clip-composer.ts` (khung 1920×1080, `libx264` **3200 kbps** cố định, bất kể camera ghi gì) → đo thật p95 3,16 Mbps → 310s ≈ **117 MiB**, vượt ngưỡng tải lên 90 MiB, và agent **từ chối** chứ không nén lại clip quá cỡ → nới trần ngay là mất trắng clip. *(Đính chính 26/09: bản đầu mục này ghi 5,88 Mbps — đó là bitrate camera, không phải bitrate clip; và hạ camera xuống 1080p KHÔNG làm clip nhỏ đi.)*
 - **Sửa (không đổi hành vi hệ thống đang chạy):**
   - `src/lib/order-proof/timing-config.ts` (mới): `readTimingConfig` + hằng số chuyển ra module thuần. `clip-resolver.ts` và `proof-size-risk.ts` cùng gọi — **chỉ còn một nơi đọc**. Với `proof-size-risk` đây là thay đổi hành vi chỉ khi giá trị vượt trần (hai kho hiện 5 và 10 → không đổi).
   - `src/lib/config/return-retention.ts` (mới): tách phép tính hạn lưu hàng hoàn khỏi route `retention-plan`; route gọi hàm chung. Có test so **từng nhánh** với bản sao nguyên văn phép tính cũ trên 60 tổ hợp đầu vào.
@@ -1516,3 +1516,21 @@ docs([Module]):     Cập nhật tài liệu
 - **Files test:** `tests/config-effective.test.ts` (mới, 13 bài — gồm bài so phép giải với hàm chạy thật trên 9 cấu hình, bài canh trần chung của clip-resolver: ai sửa lỗi cụt clip kiện hoàn thì bài đỏ để nhắc sửa luôn câu hệ quả). Cập nhật `config-health-check.test.ts`, `return-segment-retention.test.ts`, `system-status-view.test.ts`.
 - **Kết quả kiểm tra:** `pnpm test` **650/650**, `pnpm typecheck` sạch, eslint không lỗi mới.
 - **Trạng thái:** Hoàn tất đợt 2. Hai việc chờ chủ dự án quyết: (a) đồng bộ mặc định `video_pre_seconds` 10 → 5; (b) lỗi cụt clip kiện hoàn.
+
+### [DONG-BO-DEM-DAU-CLIP] - Mặc định đệm đầu clip về 5s cho khớp database; đưa lỗi cụt clip kiện hoàn vào đợt 7
+
+- **Chủ dự án chốt 26/09/2026:** "1 có, 2 ok".
+- **Việc 1 — đồng bộ `video_pre_seconds` về 5s:**
+  - `src/lib/order-proof/timing-config.ts`: `FALLBACK_PRE` 10 → **5**, bằng `packing_timing_default_config()` của database.
+  - **Tìm ra khi sửa:** form sửa kho (`src/app/dashboard/warehouses/page.tsx`) ghi cứng `?? 10` cho ô trống và **gửi thẳng con số đó khi bấm Lưu** → sửa một kho đang thiếu khoá là âm thầm ghi 10 vào kho đó. Đường **tạo** kho không gửi cấu hình nên kho mới vẫn nhận đúng 5 của database. Form giờ dùng hằng số chung `FALLBACK_PRE`.
+  - **Ảnh hưởng thật:** không đổi gì với hai kho đang chạy — cả hai đều đã lưu giá trị (Đại Kim 5, Betacom Demo 10).
+  - **Chống lệch lần nữa:** `tests/config-effective.test.ts` thêm bài đọc định nghĩa **mới nhất** của `packing_timing_default_config()` trong `supabase/migrations/` và so **từng khoá** (`video_pre_seconds`, `video_before_next_seconds`, `video_default_post_seconds`) với hằng số của máy cắt clip. Thêm migration đổi mặc định mà quên hằng số là đỏ. Thêm bài canh form không còn ghi cứng số.
+- **Việc 2 — lỗi cụt clip kiện hoàn: ĐÍNH CHÍNH tiền đề, đưa vào đợt 7:**
+  - Tin trước tôi nói *"hướng đúng là hạ camera toàn cảnh xuống 1080p trước, rồi mới nới trần"* — **sai**. Kiểm lại thì clip bằng chứng hai góc được **ghép rồi nén lại** ở `warehouse-agent/src/compose/clip-composer.ts` (khung 1920×1080, `libx264 -b:v 3200k -maxrate 4500k`), **bất kể camera ghi độ phân giải nào**. Hạ 1080p vẫn đúng cho ổ đĩa và độ trễ (đoạn ghi thô là chép nguyên), nhưng không làm clip nhỏ đi.
+  - **Đo thật** (`order_proof_clips`, 200 clip gần nhất): bitrate clip p95 **3,16 Mbps** cho cả đơn đi và kiện hoàn → clip 180s ≈ 68 MiB (vừa), clip 310s ≈ **117 MiB** (vượt 90 MiB). 0 clip failed hiện nay.
+  - **Agent từ chối clip quá cỡ chứ không nén lại** (`clip-size-guard.ts`) → nới trần ngay là biến *clip cụt* thành *không có clip*.
+  - **Cách sửa đúng, thứ tự bắt buộc:** (1) agent — bộ ghép tự hạ bitrate cho clip dài để vừa ngưỡng, clip ngắn giữ nguyên 3200 kbps; (2) cloud — *sau khi* agent mới đã cài, mới cho trần chung của `clip-resolver.ts` tôn trọng trần riêng 310s của kiện hoàn. Làm ngược là mất trắng clip.
+  - Cần bản agent mới → đưa vào **đợt 7** (bản agent chủ dự án đã chốt gộp). Kế hoạch thêm mục **3.6** và cập nhật dòng đợt 7 + tiêu chí nghiệm thu: *"kiện hoàn 300s ra clip phủ đủ 300s và dưới 90 MiB"*.
+  - Sửa luôn mục đợt 2 ở trên cho đúng số liệu (bản đầu dùng nhầm bitrate camera 5,88 Mbps).
+- **Kết quả kiểm tra:** `pnpm test` **652/652**, `pnpm typecheck` sạch.
+- **Trạng thái:** Việc 1 hoàn tất. Việc 2 nằm trong đợt 7.

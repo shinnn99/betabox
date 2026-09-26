@@ -24,6 +24,9 @@ import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
 import Select from "@/components/ui/Select";
 import { deniedClass, usePageGuard } from "@/lib/useGuard";
+// Ô trống hiện đúng con số máy cắt clip sẽ dùng — trước 26/09/2026 chỗ
+// này ghi cứng 10 trong khi mặc định thật là 5, và bấm Lưu là ghi luôn 10.
+import { FALLBACK_PRE } from "@/lib/order-proof/timing-config";
 
 interface WarehouseRow {
   id: string;
@@ -761,7 +764,7 @@ function WarehouseDialog({
     max_order_seconds:
       initial?.packing_timing_config?.max_order_seconds ?? 180,
     video_pre_seconds:
-      initial?.packing_timing_config?.video_pre_seconds ?? 10,
+      initial?.packing_timing_config?.video_pre_seconds ?? FALLBACK_PRE,
     video_default_post_seconds:
       initial?.packing_timing_config?.video_default_post_seconds ?? 60,
   });

@@ -344,7 +344,23 @@ Một kho thì phiền. Năm mươi kho thì không làm nổi.
 
 Mười phép kiểm hiện có đều về vận hành; **không phép nào hỏi "kho này cấu hình đủ chưa, giá trị đặt có thật sự được dùng không"**.
 
-## 3.6. Bốn thứ đang làm đúng — phải giữ khi mở rộng
+## 3.6. Clip kiện hoàn bị cụt 2 phút cuối
+
+Tìm ra khi làm đợt 2 (26/09/2026). `computeFinalizedClipWindow` cho clip kiện hoàn dài tới **310s** — ghi chú giải thích: *"cắt giữa chừng là mất giá trị khiếu nại"*. Nhưng ngay sau đó `clip-resolver.ts` áp một trần chung **180s cho mọi loại lượt**, đè lên trần riêng của kiện hoàn.
+
+Đo trên production: kiện hoàn làm **300s** ra clip **đúng 180s**, lý do `capped_at_max_duration`. **2 phút cuối mỗi kiện hoàn 5 phút không có video bằng chứng.** Tab Cấu hình trên platform đã hiện chuyện này ở dòng *Thời gian tối đa một kiện hoàn*.
+
+**Vì sao không nới trần ngay được:** clip hai góc được **ghép rồi nén lại** ở agent (`clip-composer.ts`) với bitrate cố định **3200 kbps**, bất kể camera ghi độ phân giải nào. Đo thật p95 3,16 Mbps → clip 310s ≈ **117 MiB**, vượt ngưỡng tải lên 90 MiB. Agent **từ chối** clip quá cỡ chứ không nén lại — nới trần ngay là biến *clip cụt* thành *không có clip*.
+
+> Hạ camera xuống 1080p (1.4) **không** chữa được chuyện này — clip luôn nén lại ở cùng bitrate. 1080p chỉ chữa ổ đĩa và độ trễ.
+
+**Cách sửa đúng, thứ tự bắt buộc — đưa vào đợt 7:**
+1. **Agent**: bộ ghép tự hạ bitrate cho clip dài để vừa ngưỡng. Clip ngắn giữ nguyên 3200 kbps — đơn đi không đổi chất lượng.
+2. **Cloud**: *sau khi* agent mới đã cài lên mọi máy kho, mới cho trần chung của `clip-resolver.ts` tôn trọng trần riêng 310s của kiện hoàn.
+
+Làm ngược thứ tự thì agent cũ nhận cửa sổ 310s, ghép ra 117 MiB, từ chối tải lên — mất trắng.
+
+## 3.7. Bốn thứ đang làm đúng — phải giữ khi mở rộng
 
 - **Im lặng là bình thường.** `alert.ts` ghi rõ: bot chỉ nói khi có việc phải làm, vì *"nếu bot nói cả lúc khoẻ, người ta sẽ tắt thông báo, và lần thật sẽ không ai đọc"*.
 - **Chống lặp 6 giờ** cho mỗi mục cùng trạng thái.
@@ -484,7 +500,7 @@ Cột **"anh/chị làm gì"** là phần cần người; còn lại tôi làm.
 | **4** | **Trang Sự cố** + **bảng cấu hình toàn hệ thống, sửa được** | Duyệt giao diện | không | Sửa được hạn lưu của một org **từ platform**, audit ghi đúng tên admin nền tảng |
 | **5** | Cloud ghi lỗi lúc chạy (4.6c) + sửa nhãn *"Nguồn quét bị tắt ở bàn này"* | — | không | Quét bằng súng ở bàn đặt camera → nhật ký hiện đúng lý do, không còn "Mã sai" |
 | **6** | **Mẫu cấu hình nền tảng** sửa được + mở trần kỹ thuật thành cấu hình | Chốt bộ giá trị mẫu | không | Tạo tổ chức mới → tự có đủ cấu hình, không còn ô trống |
-| **7** | **MỘT bản agent**: bản tự khai + nhận cấu hình từ cloud + lệnh chẩn đoán, kèm **trang Đội agent** | Cài agent mới lên máy kho | **có** | Trang Đội agent hiện đúng phiên bản, đúng số camera đang ghi, đúng ổ còn mấy ngày |
+| **7** | **MỘT bản agent**: bản tự khai + nhận cấu hình từ cloud + lệnh chẩn đoán, kèm **trang Đội agent**. Kèm **sửa clip kiện hoàn bị cụt** (xem 3.6) — agent trước, cloud sau | Cài agent mới lên máy kho, **rồi mới** cho nới trần kiện hoàn | **có** | Trang Đội agent hiện đúng phiên bản, đúng số camera đang ghi, đúng ổ còn mấy ngày; kiện hoàn 300s ra clip phủ đủ 300s và **dưới 90 MiB** |
 | **8** | Hạn lưu + gom nhiễu `agent_log_events`; định tuyến thông báo theo shop | — | không | `agent_log_events` một kho dưới 2.000 dòng/tuần |
 
 **Đợt 0–6 không đụng agent một dòng nào.** Muốn cắt bớt thì bỏ đợt 7: platform vẫn biết mọi thứ cloud nhìn thấy được, chỉ là sự cố thiết bị vẫn phải đọc log thô.
@@ -517,7 +533,7 @@ Cột **"anh/chị làm gì"** là phần cần người; còn lại tôi làm.
 ## 6.3. Dấu hiệu làm sai hướng
 
 - Sổ sự cố có hơn 20 dòng mở cho một kho đang chạy bình thường → nhiễu lọt vào, quay lại 4.4
-- Người trực bắt đầu bỏ qua tin Lark → đã phá nguyên tắc "im lặng là bình thường" ở 3.6
+- Người trực bắt đầu bỏ qua tin Lark → đã phá nguyên tắc "im lặng là bình thường" ở 3.7
 - Phải mở hai màn hình mới biết một kho khoẻ hay không → gộp lại
 - Đổi một ngưỡng mà phải dựng bản agent mới → đã phá nguyên tắc 4.1
 

@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolveOrgParams, resolveWarehouseParams } from "@/lib/config/effective";
 import { resolveReturnRetentionDays } from "@/lib/config/return-retention";
-import { readTimingConfig } from "@/lib/order-proof/timing-config";
+import {
+  FALLBACK_BEFORE_NEXT,
+  FALLBACK_DEFAULT_POST,
+  FALLBACK_PRE,
+  readTimingConfig,
+} from "@/lib/order-proof/timing-config";
+import { readdirSync } from "node:fs";
 import { resolveOrderLimitSeconds, resolveReturnLimitSeconds } from "@/lib/station/order-timeout";
 
 /**
@@ -80,7 +86,7 @@ test("ô để trống là MẶC ĐỊNH, và nói rõ con số đang chạy", (
   assert.equal(p.set, null);
   assert.equal(p.source, "default");
   assert.equal(p.effective, readTimingConfig({}).pre);
-  assert.match(p.reason ?? "", /mặc định 10s/);
+  assert.match(p.reason ?? "", /mặc định 5s/);
 });
 
 test("undefined là ô TRỐNG, không phải 'đặt giá trị ngoài khoảng'", () => {
@@ -180,4 +186,38 @@ test("trang platform hiện hai cột và dùng đúng phép giải", () => {
   const page = readFileSync("src/app/platform/orgs/[id]/page.tsx", "utf8");
   assert.ok(page.includes(">Đặt</th>") && page.includes(">Thực dùng</th>"), "thiếu hai cột");
   assert.ok(page.includes("p.consequence"), "phải hiện hệ quả, không chỉ lý do");
+});
+
+test("mặc định của máy cắt clip BẰNG mặc định của database, từng khoá", () => {
+  // Trước 26/09/2026: database 5s, máy cắt clip 10s. Kho lưu thiếu khoá thì
+  // hai nơi hiểu khác nhau, và form sửa kho còn lưu luôn số 10 vào. Chủ dự
+  // án chốt đồng bộ. Bài này đọc định nghĩa MỚI NHẤT của
+  // packing_timing_default_config() — thêm migration định nghĩa lại hàm đó
+  // mà quên sửa hằng số là đỏ.
+  const files = readdirSync("supabase/migrations")
+    .filter((f) => f.endsWith(".sql"))
+    .sort()
+    .filter((f) =>
+      /CREATE OR REPLACE FUNCTION public\.packing_timing_default_config/i.test(
+        readFileSync(`supabase/migrations/${f}`, "utf8"),
+      ),
+    );
+  assert.ok(files.length > 0, "không tìm thấy định nghĩa packing_timing_default_config");
+  const sql = readFileSync(`supabase/migrations/${files[files.length - 1]}`, "utf8");
+  const sqlDefault = (key: string) => {
+    const m = sql.match(new RegExp(`'${key}',\\s*(\\d+)`));
+    assert.ok(m, `migration không có khoá ${key}`);
+    return Number(m[1]);
+  };
+  assert.equal(FALLBACK_PRE, sqlDefault("video_pre_seconds"), "video_pre_seconds lệch database");
+  assert.equal(FALLBACK_BEFORE_NEXT, sqlDefault("video_before_next_seconds"), "video_before_next_seconds lệch database");
+  assert.equal(FALLBACK_DEFAULT_POST, sqlDefault("video_default_post_seconds"), "video_default_post_seconds lệch database");
+});
+
+test("form sửa kho hiện đúng mặc định chung, không ghi cứng số", () => {
+  // Form gửi thẳng giá trị ô lên khi Lưu. Ô trống mà hiện số sai là bấm Lưu
+  // sẽ ghi số sai vào kho — âm thầm đổi cấu hình của kho đó.
+  const form = readFileSync("src/app/dashboard/warehouses/page.tsx", "utf8");
+  assert.ok(form.includes("video_pre_seconds ?? FALLBACK_PRE"), "form phải dùng hằng số chung");
+  assert.ok(!form.includes("video_pre_seconds ?? 10"), "còn số 10 ghi cứng");
 });

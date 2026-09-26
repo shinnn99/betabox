@@ -19,15 +19,16 @@
  */
 
 /**
- * Mặc định khi kho thiếu khoá.
+ * Mặc định khi kho thiếu khoá — PHẢI BẰNG `packing_timing_default_config()`
+ * của database. Có test đọc migration mới nhất và so từng khoá.
  *
- * ⚠ LỆCH VỚI DATABASE ở `video_pre_seconds`: `packing_timing_default_config()`
- * trả **5**, còn ở đây là **10**. Kho tạo mới luôn có đủ khoá (cột mặc định
- * bằng hàm đó) nên hai kho đang chạy không bị ảnh hưởng — chỉ kho nào lưu
- * thiếu khoá mới rơi vào nhánh này. Chưa đồng bộ vì đổi con số là đổi
- * hành vi cắt clip; phép giải "Đặt / Thực dùng" hiện đúng con số 10 để thấy.
+ * Trước 26/09/2026 `FALLBACK_PRE` là **10** trong khi database là **5**: kho
+ * lưu thiếu khoá thì database nghĩ đệm đầu 5s mà clip thật cắt 10s. Tệ hơn,
+ * form sửa kho hiện 10 cho ô trống rồi LƯU LUÔN 10 — sửa một kho cũ là âm
+ * thầm đổi cấu hình của nó. Chủ dự án chốt đồng bộ về 5 ngày 26/09/2026.
+ * Hai kho đang chạy đều đã lưu giá trị nên không đổi gì với chúng.
  */
-export const FALLBACK_PRE = 10;
+export const FALLBACK_PRE = 5;
 export const FALLBACK_BEFORE_NEXT = 2;
 export const FALLBACK_DEFAULT_POST = 60;
 
