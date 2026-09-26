@@ -8,6 +8,7 @@ import {
   STALE_PENDING_ERROR_MESSAGE,
   type PendingClipCandidate,
 } from "./stale-pending";
+import { isTransientSegmentFailure } from "@/lib/order-proof/transient-failure";
 
 /**
  * Order-proof service — read-side only sau khi dọn luồng cũ 2026-07-07.
@@ -156,6 +157,11 @@ async function attachClipsToEvents(
     bucket_uploaded_at: string | null;
   }>) {
     if (clipByEvent.has(c.packing_event_id)) continue;
+    // Dòng lỗi "Segment cuối chưa đóng" (bản trước 26/09/2026 ghi lỗi TẠM
+    // THỜI này thành vĩnh viễn) không phải kết cục của đơn: bỏ qua để danh
+    // sách hiện "Chưa có · Tạo clip" thay cho "Lỗi" — bấm vào thì /watch tự
+    // cắt lại (xem transient-failure.ts).
+    if (c.status === "failed" && isTransientSegmentFailure(c.error_message)) continue;
     if (c.status === "pending") {
       pendingCandidates.push({
         id: c.id,
