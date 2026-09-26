@@ -1566,7 +1566,7 @@ docs([Module]):     Cập nhật tài liệu
   3. **Gom theo `issue_key`** — sự cố kéo dài là MỘT dòng, `occurrence_count` tăng mỗi lượt, `peak_severity` giữ mức nặng nhất từng thấy.
   - `issue_key` = **đúng `SystemIssue.id`** của danh sách "Cần chú ý" (`buildIssues`) — sổ không tự định nghĩa lại cái gì là sự cố; trang và sổ không bao giờ nói hai câu khác nhau. Thêm `orgId`, `entityId` vào `SystemIssue` để sổ không phải bóc chuỗi.
 - **Files:**
-  - `supabase/migrations/20260926100000_warehouse_incidents.sql` (mới, **CHƯA ÁP**): bảng + index **một-dòng-đang-mở mỗi `issue_key`** (open và acknowledged) + ràng buộc nhất quán trạng thái/giờ đóng + RLS bật **không policy nào** (chỉ service role — mặc định theo đề xuất quyết định #2 "chỉ Betacom thấy").
+  - `supabase/migrations/20260926100000_warehouse_incidents.sql` (mới, **đã áp 26/09** bởi chủ dự án): bảng + index **một-dòng-đang-mở mỗi `issue_key`** (open và acknowledged) + ràng buộc nhất quán trạng thái/giờ đóng + RLS bật **không policy nào** (chỉ service role — mặc định theo đề xuất quyết định #2 "chỉ Betacom thấy").
   - `src/lib/system/incidents.ts` (mới): `incidentCandidates`, `decideResolution` (hàm thuần), `syncIncidents` (ghi theo lô 10, không bao giờ ném; chưa có bảng thì **không ghi mù**), `readOpenIncidents` (chưa có bảng → nói thẳng "cần chạy migration", **không hiện "0 sự cố"**).
   - `src/app/api/system/check/route.ts`: gọi `syncIncidents` **SAU** khi gửi Lark — sổ chậm hay hỏng thì tin cảnh báo vẫn đã đi. Tóm tắt sổ vào `system_jobs.detail.incidents`. **Đường gửi Lark giữ nguyên** (chống lặp 6 giờ không đổi).
   - `src/app/api/system/status/route.ts`: **chỉ đọc** sổ — trang mà ghi thì mỗi người mở trang đẻ một lượt ghi.
@@ -1581,4 +1581,9 @@ docs([Module]):     Cập nhật tài liệu
   - Gọi thẳng route trạng thái trên production (giả lập xác thực): trả đúng "cần chạy migration", giữ đủ trường cũ, không còn crit giả của mục Ghi hình.
 - **Việc của chủ dự án:** chạy migration `20260926100000_warehouse_incidents.sql` trên SQL Editor.
 - **Sau migration tôi sẽ kiểm tiếp:** chạy vòng đồng bộ thật trên production với 3 sự cố thật hiện có (cron dọn segment mồ côi, camera `dahua_01` cũ vẫn để hoạt động, clip lỗi) → mở → lượt hai gom → ô trên trang hiện đúng.
-- **Trạng thái:** Mã xong, chờ chạy migration.
+- **Kiểm thật sau migration (26/09, chủ dự án đã chạy migration):**
+  - Trước khi ghi: bảng có, rỗng; `readOpenIncidents` trả `available`, 0 dòng.
+  - Lượt 1 `syncIncidents` trên production: mở **3** dòng (`cron_orphan_segments` crit, `clip_failures` Đại Kim warn, `vps_resources` warn), 0 lỗi.
+  - Lượt 2: **gom 3** (đếm lên 2, `first_seen_at` giữ nguyên, `last_seen_at` dời), mở **1** mới: `camera_probe` `dahua_01` — lượt 1 chưa ở mức cảnh báo, lượt 2 và 3 lượt đo sau đều warn ổn định → sổ chỉ mở khi mục thực sự xấu (luật 1).
+  - **Dòng `vps_resources` là số đo laptop, không phải VPS:** mục này đo RAM/đĩa của chính máy chạy lệnh kiểm (`os.freemem`, đĩa cục bộ); chạy từ máy lập trình (Windows, đang bật Docker) ra RAM 94%. Trên production route tự kiểm chạy trên VPS nên đo đúng. Xoá từ phía tôi bị chặn (ghi xoá production) → chủ dự án xoá tay. **Bài học:** không chạy vòng ghi sổ từ máy lập trình nữa; lần sau kiểm ghi sổ thì bỏ mục `vps_resources` khỏi danh sách đầu vào.
+- **Trạng thái:** Xong, đã kiểm thật trên production. Còn chờ chủ dự án xoá dòng `vps_resources` do tôi ghi nhầm.
