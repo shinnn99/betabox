@@ -1,6 +1,11 @@
 "use client";
 
 import { apiFetch } from "../api-fetch";
+import {
+  clipErrorText,
+  clipErrorTextOrNull,
+  retryConflictText,
+} from "../order-proof/clip-error-text";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
@@ -177,7 +182,9 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
         // Nếu regeneration_error đến (retry vừa fail nhưng ready cũ
         // vẫn còn), hiện cảnh báo — KHÔNG stop poll để user thấy
         // ngay khi họ retry lại.
-        setRegenerationError(data.regeneration_error ?? null);
+        // Chỉ câu tiếng Việt tới người dùng — route đã dịch, đây là lớp chặn
+        // cuối nếu một nhánh nào đó còn trả mã lỗi.
+        setRegenerationError(clipErrorTextOrNull(data.regeneration_error));
         // Stop poll cho state ready terminal (không có regenerating,
         // không có regeneration_error). Nếu regeneration_error có,
         // GIỮ poll để user bấm retry lại.
@@ -186,7 +193,7 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
       }
       if (data.state === "failed") {
         setState("failed");
-        setErrorMessage(data.error ?? "unknown");
+        setErrorMessage(clipErrorText(data.error));
         stop();
         return;
       }
@@ -275,12 +282,7 @@ export function useWatchClipState(peId: string): UseWatchClipStateResult {
           error?: string;
           message?: string;
         } | null;
-        setRegenerationError(
-          body?.error === "order_still_open"
-            ? (body.message ??
-              "Đơn đang được đóng gói, chưa cắt được clip đầy đủ.")
-            : "Kho đang offline, thử lại sau khi có kết nối.",
-        );
+        setRegenerationError(retryConflictText(body));
         // VẪN kick tick dù không enqueue được. /watch là nguồn chân lý
         // cho màn hình hiển thị, còn retry chỉ là hành động.
         //

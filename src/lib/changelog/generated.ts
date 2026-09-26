@@ -87,6 +87,25 @@ export const GENERATED_RELEASES: Release[] = [
     "scale": "lon"
   },
   {
+    "agentVersion": null,
+    "date": "2026-09-26",
+    "title": "Lỗi video nói bằng tiếng Việt",
+    "summary": "Khi cắt hoặc tải video không thành công, danh sách video và khung xem video trước đây hiện nguyên mã lỗi kỹ thuật (ví dụ \"proof_clip_too_large: 96.6MB…\"). Nay chỉ hiện câu tiếng Việt: lỗi gì và cần làm gì.",
+    "items": [
+      {
+        "tag": "Cải tiến",
+        "title": "Câu lỗi video bằng tiếng Việt, kèm việc cần làm",
+        "detail": "Ví dụ \"Video của đơn này quá dung lượng để tải lên (96,6 MB, giới hạn 90,0 MB). Bấm Thử lại để cắt lại\". Ổ đĩa máy kho đầy, mạng của kho bị ngắt, máy kho đang bận cũng có câu riêng, nói rõ phải làm gì."
+      },
+      {
+        "tag": "Sửa lỗi",
+        "title": "\"Thử lại\" không còn báo nhầm \"Kho đang offline\"",
+        "detail": "Bấm Thử lại cho lượt quét lúc chưa mở ca giờ hiện đúng lý do \"Lượt quét khi chưa mở ca — không có video để cắt\", thay vì báo kho mất kết nối."
+      }
+    ],
+    "scale": "nho"
+  },
+  {
     "agentVersion": "0.12.1",
     "date": "2026-09-25",
     "title": "Bỏ qua mã QR đường link trên nhãn TikTok",

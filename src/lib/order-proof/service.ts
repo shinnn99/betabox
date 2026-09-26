@@ -9,6 +9,7 @@ import {
   type PendingClipCandidate,
 } from "./stale-pending";
 import { isTransientSegmentFailure } from "@/lib/order-proof/transient-failure";
+import { clipErrorText, clipErrorTextOrNull } from "@/lib/order-proof/clip-error-text";
 
 /**
  * Order-proof service — read-side only sau khi dọn luồng cũ 2026-07-07.
@@ -195,7 +196,9 @@ async function attachClipsToEvents(
       cut_started_at: typeof cutStart === "string" ? cutStart : null,
       cut_ended_at: typeof cutEnd === "string" ? cutEnd : null,
       clip_size_bytes: c.clip_size_bytes,
-      error_message: c.error_message,
+      // Người dùng chỉ thấy câu tiếng Việt — chuỗi gốc (mã lỗi) giữ trong
+      // database cho chẩn đoán.
+      error_message: clipErrorTextOrNull(c.error_message),
       transcoded_for_browser: !!transcoded,
       bucket_path: c.bucket_path,
       bucket_uploaded_at: c.bucket_uploaded_at,
@@ -220,7 +223,7 @@ async function attachClipsToEvents(
       clipByEvent.set(peId, {
         ...c,
         status: "failed",
-        error_message: STALE_PENDING_ERROR_MESSAGE,
+        error_message: clipErrorText(STALE_PENDING_ERROR_MESSAGE),
       });
     }
   }

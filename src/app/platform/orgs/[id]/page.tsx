@@ -108,6 +108,9 @@ interface OrgDetail {
     level: string;
     message: string;
     emitted_at: string;
+    /** Số lần câu này lặp trong khung gom (1 = không lặp). */
+    repeat_count: number;
+    last_emitted_at: string;
   }>;
   platform_audit: Array<{
     id: string;
@@ -551,7 +554,7 @@ function OverviewMain({
                     {l.message}
                   </p>
                   <p className="text-slate-400 text-[11px] mt-0.5">
-                    {formatRelative(l.emitted_at)}
+                    {agentLogWhen(l)}
                   </p>
                 </div>
               </li>
@@ -854,7 +857,7 @@ function AuditTab({
                     {l.message}
                   </p>
                   <p className="text-slate-400 text-[11px] mt-0.5">
-                    {formatRelative(l.emitted_at)}
+                    {agentLogWhen(l)}
                   </p>
                 </div>
               </li>
@@ -1053,6 +1056,15 @@ function EmptyAgents() {
 }
 
 /* ---------------- Time helpers ---------------- */
+
+/**
+ * Mốc của một dòng log agent. Dòng đã gom (cùng câu lặp trong một khung giờ)
+ * hiện lần cuối và số lần: "3 phút trước · lặp 50 lần từ 1 giờ trước".
+ */
+function agentLogWhen(l: OrgDetail["agent_logs"][number]): string {
+  if (l.repeat_count <= 1) return formatRelative(l.emitted_at);
+  return `${formatRelative(l.last_emitted_at)} · lặp ${l.repeat_count.toLocaleString("vi-VN")} lần từ ${formatRelative(l.emitted_at)}`;
+}
 
 function formatRelative(iso: string): string {
   const t = new Date(iso).getTime();

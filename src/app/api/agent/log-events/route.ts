@@ -6,6 +6,8 @@ import {
 } from "@/lib/warehouse/agent-auth";
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
+import { groupLogEvents, type LogEventInput } from "@/lib/warehouse/log-grouping";
+import { isMissingFunctionError } from "@/lib/supabase/missing-column";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,6 +28,11 @@ export const dynamic = "force-dynamic";
  * Bản tối thiểu: KHÔNG dashboard tab, KHÔNG buffer offline (mất log khi
  * mất mạng, chấp nhận có ý thức — có AnyDesk bù), KHÔNG rate limit
  * (batch mỗi 30s tự giới hạn).
+ *
+ * Gom (đợt 8, 26/09/2026): cùng máy, cùng mức, cùng câu (đã bỏ số / hex /
+ * id), cùng khung giờ → MỘT dòng, `repeat_count` tăng dần — xem
+ * `src/lib/warehouse/log-grouping.ts`. Database chưa chạy migration
+ * 20260926150000 thì ghi thẳng từng dòng như trước.
  */
 
 const MAX_EVENTS_PER_BATCH = 100;
@@ -91,13 +98,7 @@ export async function POST(req: Request) {
   // Validate + normalize events. Silently drop invalid row thay vì reject
   // cả batch — không muốn 1 event bug làm mất cả batch chứa event quan
   // trọng khác.
-  const rows: Array<{
-    agent_id: string;
-    organization_id: string;
-    level: string;
-    message: string;
-    emitted_at: string;
-  }> = [];
+  const events: LogEventInput[] = [];
   for (const raw of body.events) {
     if (typeof raw !== "object" || raw === null) continue;
     const e = raw as {
@@ -111,28 +112,46 @@ export async function POST(req: Request) {
     const parsedTs = Date.parse(e.emitted_at);
     if (!Number.isFinite(parsedTs)) continue;
 
-    rows.push({
-      agent_id: agent.id,
-      organization_id: agent.organization_id,
+    events.push({
       level: e.level,
       message: e.message.length > MAX_MESSAGE_LENGTH
         ? e.message.slice(0, MAX_MESSAGE_LENGTH)
         : e.message,
-      emitted_at: new Date(parsedTs).toISOString(),
+      emittedAtMs: parsedTs,
     });
   }
 
-  if (rows.length === 0) {
+  if (events.length === 0) {
     return NextResponse.json({ ok: true, inserted: 0, skipped: body.events.length });
   }
 
-  const { error: insErr } = await admin
-    .from("agent_log_events")
-    .insert(rows);
+  const { data: stored, error: rpcErr } = await admin.rpc("ingest_agent_log_events", {
+    p_agent_id: agent.id,
+    p_organization_id: agent.organization_id,
+    p_events: groupLogEvents(events),
+  });
+  if (!rpcErr) {
+    // `inserted` giữ nghĩa cũ: số sự kiện nhận. `stored`: số dòng ghi / gộp.
+    return NextResponse.json({ ok: true, inserted: events.length, stored: stored ?? 0 });
+  }
+  if (!isMissingFunctionError(rpcErr, "ingest_agent_log_events")) {
+    console.error("[log-events] ingest failed", rpcErr);
+    return NextResponse.json({ error: "insert_failed" }, { status: 500 });
+  }
+
+  const { error: insErr } = await admin.from("agent_log_events").insert(
+    events.map((e) => ({
+      agent_id: agent.id,
+      organization_id: agent.organization_id,
+      level: e.level,
+      message: e.message,
+      emitted_at: new Date(e.emittedAtMs).toISOString(),
+    })),
+  );
   if (insErr) {
     console.error("[log-events] insert failed", insErr);
     return NextResponse.json({ error: "insert_failed" }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, inserted: rows.length });
+  return NextResponse.json({ ok: true, inserted: events.length });
 }

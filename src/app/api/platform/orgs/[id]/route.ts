@@ -4,6 +4,8 @@ import { requirePlatformRole } from "@/lib/supabase/guard";
 import { resolveOrgParams, resolveWarehouseParams } from "@/lib/config/effective";
 import { getClipMaxSeconds } from "@/lib/config/template-store";
 import { loadFleetRows, returnClipSecondsByOrg } from "@/lib/warehouse/fleet";
+import { isMissingColumnError, type ColumnQueryError } from "@/lib/supabase/missing-column";
+import { logOccurrences } from "@/lib/warehouse/log-grouping";
 
 export const runtime = "nodejs";
 
@@ -13,6 +15,38 @@ interface RouteContext {
 
 // Ngưỡng agent online — khớp reaper pg_cron 5 phút.
 const AGENT_ONLINE_THRESHOLD_MS = 5 * 60 * 1000;
+
+type AgentLogRow = {
+  id: number;
+  agent_id: string;
+  level: string;
+  message: string;
+  emitted_at: string;
+  repeat_count?: number | null;
+  last_emitted_at?: string | null;
+};
+
+/**
+ * Dòng log agent 24 giờ. Database chưa chạy migration 20260926150000 (gom
+ * log) → đọc lại không có cột gom; mỗi dòng là một lần.
+ */
+async function agentLogRowsOf(
+  admin: ReturnType<typeof createAdminClient>,
+  res: { data: AgentLogRow[] | null; error: ColumnQueryError | null },
+  orgId: string,
+  since: string,
+): Promise<AgentLogRow[]> {
+  if (!isMissingColumnError(res.error, "repeat_count")) return res.data ?? [];
+  const legacy = await admin
+    .from("agent_log_events")
+    .select("id, agent_id, level, message, emitted_at")
+    .eq("organization_id", orgId)
+    .in("level", ["warn", "error"])
+    .gte("emitted_at", since)
+    .order("emitted_at", { ascending: false })
+    .limit(50);
+  return legacy.data ?? [];
+}
 
 // GET /api/platform/orgs/[id] — trả tổng quan + thành viên + nhật ký cho 1 org.
 //
@@ -87,7 +121,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
       .eq("business_date", businessDate),
     admin
       .from("agent_log_events")
-      .select("id, agent_id, level, message, emitted_at")
+      .select("id, agent_id, level, message, emitted_at, repeat_count, last_emitted_at")
       .eq("organization_id", orgId)
       .in("level", ["warn", "error"])
       .gte("emitted_at", errorSince)
@@ -139,6 +173,8 @@ export async function GET(_req: Request, ctx: RouteContext) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
   const org = orgRes.data;
+
+  const agentLogRows = await agentLogRowsOf(admin, logsRes, orgId, errorSince);
 
   const members = (profilesRes.data ?? []) as Array<{
     id: string;
@@ -303,12 +339,15 @@ export async function GET(_req: Request, ctx: RouteContext) {
       last_sign_in_at: authByUserId.get(m.id)?.last_sign_in_at ?? null,
       created_at: m.created_at,
     })),
-    agent_logs: (logsRes.data ?? []).map((l) => ({
+    agent_logs: agentLogRows.map((l) => ({
       id: l.id,
       agent_id: l.agent_id,
       level: l.level,
       message: l.message,
       emitted_at: l.emitted_at,
+      // Dòng gom (đợt 8): số lần câu này lặp trong khung, và lần cuối.
+      repeat_count: logOccurrences(l),
+      last_emitted_at: l.last_emitted_at ?? l.emitted_at,
     })),
     platform_audit: (auditRes.data ?? []).map((a) => ({
       id: a.id,

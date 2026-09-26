@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { isTransientSegmentFailure } from "@/lib/order-proof/transient-failure";
+import { clipErrorText } from "@/lib/order-proof/clip-error-text";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermissionStrict, isError } from "@/lib/supabase/guard";
 import { enqueueCutClip } from "@/lib/agent-commands/enqueue";
@@ -217,7 +218,7 @@ export async function POST(req: Request, ctx: RouteContext) {
       // Ready row có nhưng signed URL fail — trả failed để user thấy lỗi.
       return NextResponse.json<WatchResponse>({
         state: "failed",
-        error: `signed_url_failed: ${signResult.reason ?? "unknown"}`,
+        error: clipErrorText(`signed_url_failed: ${signResult.reason ?? "unknown"}`),
       });
     }
 
@@ -245,15 +246,19 @@ export async function POST(req: Request, ctx: RouteContext) {
 
     // Không có pending song song. Nếu có failed vừa xảy ra sau ready
     // (created_at > ready.created_at), tức retry vừa fail → surface error.
+    // Dòng failed tạm thời ("Segment cuối chưa đóng", bản trước 26/09/2026)
+    // không phải lần tạo lại hỏng — bỏ qua như ở nhánh 2 và danh sách.
     if (
       latestFailedRow &&
+      !isTransientSegmentFailure(latestFailedRow.error_message) &&
       new Date(latestFailedRow.created_at).getTime() >
         new Date(readyRow.created_at).getTime()
     ) {
       return NextResponse.json<WatchResponse>({
         ...base,
-        regeneration_error:
+        regeneration_error: clipErrorText(
           latestFailedRow.error_message ?? "regeneration_failed",
+        ),
       });
     }
 
@@ -296,9 +301,10 @@ export async function POST(req: Request, ctx: RouteContext) {
 
   if (latestFailedRow && !isTransientSegmentFailure(latestFailedRow.error_message)) {
     // Không có ready, không có pending. Failed cuối = terminal state.
+    // Người dùng chỉ thấy câu tiếng Việt; chuỗi gốc giữ trong database.
     return NextResponse.json<WatchResponse>({
       state: "failed",
-      error: latestFailedRow.error_message ?? "cut_failed",
+      error: clipErrorText(latestFailedRow.error_message ?? "cut_failed"),
     });
   }
   // Dòng failed "Segment cuối chưa đóng" (bản trước 26/09/2026 ghi lỗi này
@@ -329,7 +335,7 @@ export async function POST(req: Request, ctx: RouteContext) {
   if (!pe.proof_camera_id) {
     return NextResponse.json<WatchResponse>({
       state: "failed",
-      error: "no_camera_for_event",
+      error: clipErrorText("no_camera_for_event"),
     });
   }
   if (!liveness.agent_id) return offlineResponse(liveness);
@@ -343,9 +349,10 @@ export async function POST(req: Request, ctx: RouteContext) {
       replacesClipId: null,
     });
   } catch (err) {
+    console.error(`[watch] enqueue cut failed pe=${packingEventId}: ${(err as Error).message}`);
     return NextResponse.json<WatchResponse>({
       state: "failed",
-      error: `enqueue_cut_failed: ${(err as Error).message}`,
+      error: clipErrorText(`enqueue_cut_failed: ${(err as Error).message}`),
     });
   }
 
@@ -378,7 +385,7 @@ export async function POST(req: Request, ctx: RouteContext) {
       : cutResult.reason === "expired_retention"
         ? cutResult.message ?? "Video đã quá hạn lưu trữ."
         : cutResult.reason === "no_segments"
-          ? "Không có video trong khoảng thời gian đơn hàng (segment ổ đã dọn hoặc chưa có ghi hình)."
+          ? "Không có video trong khoảng thời gian đơn hàng (đoạn video trên máy kho đã dọn, hoặc camera chưa ghi hình lúc đó)."
           : cutResult.reason === "no_camera"
             ? "Đơn không gán camera bằng chứng."
             : cutResult.reason === "segment_still_open"
@@ -416,13 +423,13 @@ export async function POST(req: Request, ctx: RouteContext) {
       // Client dừng poll ở state=failed; user cần refresh sau khi ops fix.
       return NextResponse.json<WatchResponse>({
         state: "failed",
-        error: `${userMessage} [reconcile-write-failed]`,
+        error: clipErrorText(userMessage),
       });
     }
 
     return NextResponse.json<WatchResponse>({
       state: "failed",
-      error: userMessage,
+      error: clipErrorText(userMessage),
     });
   }
 

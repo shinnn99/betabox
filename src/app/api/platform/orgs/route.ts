@@ -3,6 +3,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePlatformRole } from "@/lib/supabase/guard";
 import { logPlatformAudit } from "@/lib/platform/audit";
 import { orgFieldsForNewOrg } from "@/lib/config/template-store";
+import { isMissingColumnError } from "@/lib/supabase/missing-column";
+import { logOccurrences } from "@/lib/warehouse/log-grouping";
 
 // Slug generator — tách khỏi signup route để dùng chung. Loại dấu tiếng
 // Việt + đưa về ASCII kebab.
@@ -133,7 +135,7 @@ export async function GET() {
       .eq("business_date", businessDate),
     admin
       .from("agent_log_events")
-      .select("organization_id, level")
+      .select("organization_id, level, repeat_count")
       .in("organization_id", orgIds)
       .eq("level", "error")
       .gte("emitted_at", errorSince),
@@ -208,8 +210,27 @@ export async function GET() {
     ordersTodayByOrg.set(oId, (ordersTodayByOrg.get(oId) ?? 0) + 1);
   }
 
+  // Một dòng log đã gom (đợt 8) là `repeat_count` lần lỗi. Database chưa
+  // chạy migration 20260926150000 thì đọc lại không có cột — mỗi dòng một lần.
+  let agentErrorRows: Array<{ organization_id: string | null; repeat_count?: number | null }> =
+    agentErrorsRes.data ?? [];
+  if (isMissingColumnError(agentErrorsRes.error, "repeat_count")) {
+    const legacy = await admin
+      .from("agent_log_events")
+      .select("organization_id, level")
+      .in("organization_id", orgIds)
+      .eq("level", "error")
+      .gte("emitted_at", errorSince);
+    agentErrorRows = legacy.data ?? [];
+  }
   const agentErrors24hByOrg = new Map<string, number>();
-  bumpMap(agentErrors24hByOrg, agentErrorsRes.data, (r) => r.organization_id);
+  for (const r of agentErrorRows) {
+    if (!r.organization_id) continue;
+    agentErrors24hByOrg.set(
+      r.organization_id,
+      (agentErrors24hByOrg.get(r.organization_id) ?? 0) + logOccurrences(r),
+    );
+  }
 
   const orgsEnriched = (orgs ?? []).map((o) => {
     const owner = ownerByOrg.get(o.id);

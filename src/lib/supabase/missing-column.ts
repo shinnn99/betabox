@@ -26,3 +26,23 @@ export function isMissingColumnError(error: ColumnQueryError | null | undefined,
     /does not exist|could not find the .* column/i.test(message);
   return shapeMatches && message.includes(column);
 }
+
+/**
+ * "Database chưa có hàm RPC này" — migration tạo hàm chưa chạy. Cùng lý do
+ * với cột: mã mới lùi về đường cũ thay vì gãy.
+ *
+ *   - PostgREST `PGRST202` "Could not find the function public.x(...) in the
+ *     schema cache"
+ *   - Postgres `42883` "function x(...) does not exist"
+ *
+ * Khớp theo TÊN hàm, như cột.
+ */
+export function isMissingFunctionError(error: ColumnQueryError | null | undefined, fn: string): boolean {
+  if (!error) return false;
+  const message = error.message ?? "";
+  const shapeMatches =
+    error.code === "PGRST202" ||
+    error.code === "42883" ||
+    /could not find the function|function .* does not exist/i.test(message);
+  return shapeMatches && message.includes(fn);
+}
