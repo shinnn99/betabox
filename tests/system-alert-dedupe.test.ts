@@ -342,8 +342,8 @@ test("kịch bản Supabase sập: chạy thật loạt kiểm → đúng MỘT 
   assert.equal(candidates[0].status, "crit");
   assert.match(
     candidates[0].value,
-    /8 mục/,
-    "8 mục đo được đều mất nguồn (cron dọn clip, cron segment mồ côi, agent, camera, ghi hình, clip, vps, cấu hình); egress + storage + disk kho vốn đã không đo được nên không tính",
+    /9 mục/,
+    "9 mục đo được đều mất nguồn (cron dọn clip, cron segment mồ côi, agent, camera, ghi hình, clip, lượt quét bị bỏ, vps, cấu hình); egress + storage + disk kho vốn đã không đo được nên không tính",
   );
 });
 

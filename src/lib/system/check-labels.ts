@@ -1,7 +1,7 @@
 /**
- * Tên tiếng Việt của từng mục kiểm — dùng chung cho trang Tình trạng và
- * trang Sự cố. Tách khỏi trang Tình trạng ngày 26/09/2026 (đợt 4) để hai
- * trang không gọi cùng một mục kiểm bằng hai tên.
+ * Tên tiếng Việt của từng mục kiểm — MỘT nguồn cho trang Tình trạng, trang
+ * Sự cố, danh sách "Cần chú ý" (status-view.ts) và cột "cái gì" của sổ —
+ * để không nơi nào gọi cùng một mục kiểm bằng hai tên.
  *
  * Không import từ `checks.ts` (file đó `server-only`) — trang client dùng được.
  */
@@ -13,7 +13,8 @@ export const CHECK_LABELS: Record<string, string> = {
   camera_probe: "Camera",
   recording_freshness: "Ghi hình",
   clip_failures: "Clip đơn hàng",
-  unmapped_scanner: "Quét không quy được về bàn",
+  unmapped_scanner: "Quét không rõ bàn",
+  ignored_scans: "Lượt quét bị bỏ",
   vps_resources: "Ổ đĩa + RAM VPS",
   storage_usage: "Dung lượng Storage",
   warehouse_disk: "Ổ đĩa máy kho",

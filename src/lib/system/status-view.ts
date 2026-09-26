@@ -1,4 +1,5 @@
 import "server-only";
+import { CHECK_LABELS } from "@/lib/system/check-labels";
 import {
   CAMERA_BUCKET,
   CHECK_CONFIG,
@@ -26,20 +27,12 @@ import {
  * thì trang và cảnh báo bắt đầu nói hai chuyện khác nhau.
  */
 
-/** Nhãn tiếng Việt của từng mục — dùng chung cho trang lẫn danh sách sự cố. */
-export const CHECK_LABELS: Record<string, string> = {
-  [CHECK_KEYS.egress]: "Egress Supabase",
-  [CHECK_KEYS.cronCleanup]: "Cron dọn clip",
-  [CHECK_KEYS.cronOrphanSegments]: "Cron dọn segment mồ côi",
-  [CHECK_KEYS.agentHeartbeat]: "Kết nối agent kho",
-  [CHECK_KEYS.cameraProbe]: "Camera",
-  [CHECK_KEYS.recording]: "Ghi hình",
-  [CHECK_KEYS.clipFailures]: "Clip đơn hàng",
-  [CHECK_KEYS.unmappedScanner]: "Quét không rõ bàn",
-  [CHECK_KEYS.vps]: "Ổ đĩa + RAM VPS",
-  [CHECK_KEYS.storage]: "Dung lượng Storage",
-  [CHECK_KEYS.warehouseDisk]: "Ổ đĩa máy kho",
-};
+/**
+ * Nhãn tiếng Việt của từng mục — MỘT nguồn cho trang, danh sách "Cần chú ý"
+ * và cột "cái gì" của sổ sự cố. Trước 26/09/2026 file này giữ một bảng riêng
+ * thiếu mục Cấu hình, nên sự cố cấu hình vào sổ với chữ `config_health` thô.
+ */
+export { CHECK_LABELS };
 
 /**
  * Câu trả lời cho "cái này nghĩa là gì với việc kinh doanh".
@@ -58,6 +51,8 @@ export const CHECK_MEANING: Record<string, string> = {
   [CHECK_KEYS.clipFailures]: "Mỗi clip lỗi là một đơn hàng không có bằng chứng khi khách hỏi.",
   [CHECK_KEYS.unmappedScanner]:
     "Quét được mã nhưng không biết của bàn nào: đơn không được đếm, không gắn ca, không có video bằng chứng.",
+  [CHECK_KEYS.ignoredScans]:
+    "Mã bị bỏ vì nguồn quét đang tắt ở bàn mà không thành đơn: đơn biến mất — không đếm, không clip, không tính công.",
   [CHECK_KEYS.vps]: "Ổ đầy thì ffmpeg và build cùng chết; RAM cạn thì web đứng.",
   [CHECK_KEYS.storage]: "Bucket chạm hạn mức thì không upload được clip mới.",
   [CHECK_KEYS.warehouseDisk]: "Ổ máy kho đầy thì agent ngừng ghi, không có gì báo trước.",
@@ -76,6 +71,7 @@ const CHECK_SCOPE_LABEL: Record<string, string> = {
   [CHECK_KEYS.recording]: "Toàn bộ kho",
   [CHECK_KEYS.clipFailures]: "Toàn bộ kho",
   [CHECK_KEYS.unmappedScanner]: "Toàn bộ kho",
+  [CHECK_KEYS.ignoredScans]: "Toàn bộ kho",
 };
 
 /** Việc cần làm cho mục không gắn với kho. Mục gắn kho tự mang `action`. */
@@ -104,6 +100,7 @@ const EMPTY_SCOPE_ACTION: Record<string, string> = {
   [CHECK_KEYS.recording]: "Kiểm cờ monitoring_enabled, hoặc cách đo đã vượt trần số kho.",
   [CHECK_KEYS.clipFailures]: "Kiểm cờ monitoring_enabled của tổ chức.",
   [CHECK_KEYS.unmappedScanner]: "Kiểm cờ monitoring_enabled của tổ chức.",
+  [CHECK_KEYS.ignoredScans]: "Kiểm cờ monitoring_enabled của tổ chức, hoặc chạy migration 20260926110000.",
 };
 
 /**

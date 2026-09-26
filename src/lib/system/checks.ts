@@ -2,6 +2,7 @@ import "server-only";
 import os from "node:os";
 import { statfs } from "node:fs/promises";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { isMissingColumnError } from "@/lib/supabase/missing-column";
 import {
   SYSTEM_JOB_CLEANUP_CLIPS,
   SYSTEM_JOB_CLOSE_ORPHAN_SEGMENTS,
@@ -149,6 +150,7 @@ export const CHECK_KEYS = {
   recording: "recording_freshness",
   clipFailures: "clip_failures",
   unmappedScanner: "unmapped_scanner",
+  ignoredScans: "ignored_scans",
   vps: "vps_resources",
   storage: "storage_usage",
   warehouseDisk: "warehouse_disk",
@@ -284,6 +286,20 @@ export const CHECK_CONFIG = {
     fetchLimit: 200,
   },
 
+  ignoredScans: {
+    windowHours: 24,
+    /**
+     * Đếm ĐƠN MẤT, không đếm lượt bị bỏ. Lượt bị bỏ mà camera đã quét lại
+     * cùng mã thì không mất gì — báo lúc đó là dạy người trực lướt qua tin.
+     * Một đơn mất đã là warn: không đơn, không clip, không tính công. Từ 3
+     * thì không còn là thao tác nhầm mà là cách làm việc ở bàn lệch cấu hình.
+     */
+    critLost: 3,
+    fetchLimit: 500,
+    /** Kể tối đa ngần này mã trong câu mô tả. */
+    listCodes: 5,
+  },
+
   /**
    * Mục nào được phép báo động khi mất nguồn dữ liệu.
    *
@@ -311,6 +327,9 @@ export const CHECK_CONFIG = {
     // warehouses — sự cố thật, đáng báo. Bản thân mục warn/crit thì vẫn gửi
     // như mọi mục khác; cờ này chỉ nói về trạng thái unknown.
     [CHECK_KEYS.config]: true,
+    // Lượt quét bị bỏ: không đọc được bảng lượt quét là sự cố thật. Chưa có
+    // cột (chưa chạy migration) là `structural` — không báo.
+    [CHECK_KEYS.ignoredScans]: true,
   } as Record<string, boolean>,
 
   /**
@@ -1919,6 +1938,156 @@ export async function checkUnmappedScanner(
 }
 
 // ============================================================================
+// 6c. Lượt quét bị bỏ làm MẤT ĐƠN (ignored_scans) — đợt 5, VAN-HANH-NHIEU-KHO
+//
+// Route quét ghi `ignored_reason = 'scan_source_disabled'` khi bàn đặt nguồn
+// quét là camera mà lượt đến từ súng (hoặc ngược lại). Bản thân lượt bị bỏ
+// chưa chắc là mất: camera thường đọc lại cùng mã vài giây sau. Mất thật là
+// khi mã đó KHÔNG có đơn nào qua đường khác — đó mới là thứ mục này đếm.
+//
+// Đo 26/09/2026: 5/90 lượt không sinh đơn trong 36 giờ, cả 5 từ súng quét ở
+// bàn đặt camera; lần đó camera quét lại nên chưa mất đơn nào. Đơn nào CHỈ
+// quét bằng súng thì biến mất hoàn toàn và không ai được báo.
+// ============================================================================
+
+export interface IgnoredScanRow {
+  organization_id: string;
+  scanner_device_code: string | null;
+  raw_value: string;
+  normalized_value: string | null;
+  scan_type: string;
+  source: string | null;
+}
+
+/** Mã đơn của một lượt quét — đúng cột `packing_events.waybill_code` so với. */
+const ignoredCodeOf = (r: IgnoredScanRow) => r.normalized_value ?? r.raw_value;
+
+export async function checkIgnoredScans(
+  admin: Admin,
+  now: Date,
+  preloaded?: MonitoringScope,
+): Promise<SystemCheck> {
+  const key = CHECK_KEYS.ignoredScans;
+  const cfg = CHECK_CONFIG.ignoredScans;
+  const scope = preloaded ?? (await loadMonitoringScope(admin));
+
+  if (scope.orgIds.length === 0) {
+    return {
+      key,
+      status: "unknown",
+      unknownKind: "structural",
+      value: "không có tổ chức nào theo dõi",
+      message: "Không tổ chức nào bật monitoring_enabled — không có lượt quét nào để kiểm.",
+      entities: [],
+    };
+  }
+
+  const since = new Date(now.getTime() - cfg.windowHours * 3_600_000).toISOString();
+  const { data, error } = await admin
+    .from("warehouse_scan_raw_events")
+    .select("organization_id, scanner_device_code, raw_value, normalized_value, scan_type, source")
+    .not("ignored_reason", "is", null)
+    .gte("scanned_at", since)
+    .in("organization_id", scope.orgIds)
+    .limit(cfg.fetchLimit)
+    .abortSignal(queryTimeout());
+  if (error) {
+    if (isMissingColumnError(error, "ignored_reason")) {
+      return {
+        key,
+        status: "unknown",
+        unknownKind: "structural",
+        value: "chưa có cột lý do",
+        message: "Database chưa có cột ignored_reason — cần chạy migration 20260926110000.",
+        entities: [],
+      };
+    }
+    throw new Error(error.message);
+  }
+  const rows = (data as IgnoredScanRow[] | null) ?? [];
+
+  // Mã nào đã thành đơn qua đường khác (camera quét lại, quét tay...) —
+  // đơn đi hay kiện hoàn đều tính là "không mất".
+  const codes = [...new Set(rows.filter((r) => r.scan_type === "waybill").map(ignoredCodeOf))];
+  const covered = new Set<string>();
+  if (codes.length > 0) {
+    const { data: events, error: evErr } = await admin
+      .from("packing_events")
+      .select("organization_id, waybill_code")
+      .in("organization_id", scope.orgIds)
+      .in("waybill_code", codes)
+      .abortSignal(queryTimeout());
+    if (evErr) throw new Error(evErr.message);
+    for (const e of (events as Array<{ organization_id: string; waybill_code: string }> | null) ?? []) {
+      covered.add(`${e.organization_id}|${e.waybill_code}`);
+    }
+  }
+
+  const entities = scope.orgIds.map((orgId) =>
+    ignoredScanEntity(
+      orgId,
+      rows.filter((r) => r.organization_id === orgId),
+      covered,
+    ),
+  );
+
+  const bad = entities.filter((e) => e.status === "crit" || e.status === "warn");
+  if (bad.length > 0) {
+    const lostTotal = bad.reduce((n, e) => n + (e.count ?? 0), 0);
+    const names = bad.map((e) => scope.orgNameById.get(e.orgId) ?? e.orgId).join(", ");
+    return {
+      key,
+      status: bad.some((e) => e.status === "crit") ? "crit" : "warn",
+      value: `${lostTotal} đơn mất / ${cfg.windowHours}h`,
+      message: `Có mã vận đơn bị bỏ vì nguồn quét đang tắt ở bàn và KHÔNG thành đơn qua đường nào khác, trong ${cfg.windowHours} giờ ở kho: ${names}. Mỗi mã là một đơn không được đếm, không có video bằng chứng.`,
+      entities,
+    };
+  }
+  return {
+    key,
+    status: "ok",
+    value: `${rows.length} lượt bị bỏ, 0 đơn mất / ${cfg.windowHours}h`,
+    message:
+      rows.length === 0
+        ? `Không có lượt quét nào bị bỏ trong ${cfg.windowHours} giờ qua.`
+        : `${rows.length} lượt quét bị bỏ vì nguồn quét đang tắt, nhưng mọi mã đều đã thành đơn qua đường khác.`,
+    entities,
+  };
+}
+
+/** Một tổ chức: bao nhiêu mã bị bỏ mà không thành đơn. Hàm thuần. */
+export function ignoredScanEntity(orgId: string, rows: IgnoredScanRow[], covered: Set<string>): CheckEntity {
+  const cfg = CHECK_CONFIG.ignoredScans;
+  const label = "Lượt quét bị bỏ";
+  const lostRows = rows.filter(
+    (r) => r.scan_type === "waybill" && !covered.has(`${orgId}|${ignoredCodeOf(r)}`),
+  );
+  const lostCodes = [...new Set(lostRows.map(ignoredCodeOf))];
+  if (lostCodes.length === 0) {
+    const detail =
+      rows.length === 0
+        ? `0 lượt bị bỏ trong ${cfg.windowHours} giờ.`
+        : `${rows.length} lượt bị bỏ vì nguồn quét đang tắt, mọi mã đã thành đơn qua đường khác.`;
+    return orgEntity(orgId, label, "ok", detail, { count: 0 });
+  }
+  const devices = [...new Set(lostRows.map((r) => r.scanner_device_code).filter(Boolean))];
+  const fromGun = lostRows.some((r) => r.source !== "camera_qr");
+  const shown = lostCodes.slice(0, cfg.listCodes).join(", ");
+  const more = lostCodes.length > cfg.listCodes ? ` và ${lostCodes.length - cfg.listCodes} mã khác` : "";
+  const status: CheckStatus = lostCodes.length >= cfg.critLost ? "crit" : "warn";
+  const action = fromGun
+    ? "Có người quét bằng súng ở bàn đang đặt nguồn quét là camera. Hoặc đổi nguồn quét của bàn sang súng (trang Bàn đóng gói), hoặc hướng dẫn nhân viên đưa mã cho camera đọc. Các mã kể trên cần quét lại để thành đơn."
+    : "Camera đọc được mã ở bàn đang đặt nguồn quét là súng. Hoặc đổi nguồn quét của bàn sang camera, hoặc quét lại các mã kể trên bằng súng.";
+  return orgEntity(
+    orgId,
+    label,
+    status,
+    `${lostCodes.length} mã vận đơn bị bỏ vì nguồn quét đang tắt ở bàn và chưa thành đơn: ${shown}${more}. Thiết bị: ${devices.join(", ") || "—"}.`,
+    { count: lostCodes.length, action },
+  );
+}
+
+// ============================================================================
 // 7. Disk + RAM của VPS
 // ============================================================================
 
@@ -2114,7 +2283,7 @@ export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemS
       return fn(admin);
     });
 
-  const [cron, cronOrphan, agent, camera, recording, clips, unmapped, vps, config] =
+  const [cron, cronOrphan, agent, camera, recording, clips, unmapped, ignored, vps, config] =
     await Promise.all([
       needAdmin(CHECK_KEYS.cronCleanup, (a) => checkCronCleanup(a, now)),
       needAdmin(CHECK_KEYS.cronOrphanSegments, (a) => checkCronOrphanSegments(a, now)),
@@ -2127,6 +2296,7 @@ export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemS
       needAdmin(CHECK_KEYS.unmappedScanner, (a) =>
         checkUnmappedScanner(a, now, scope ?? undefined),
       ),
+      needAdmin(CHECK_KEYS.ignoredScans, (a) => checkIgnoredScans(a, now, scope ?? undefined)),
       safeCheck(CHECK_KEYS.vps, () =>
         checkVpsResources({ now, os: deps.os, statfs: deps.statfs, path: deps.path }),
       ),
@@ -2143,6 +2313,7 @@ export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemS
       recording,
       clips,
       unmapped,
+      ignored,
       vps,
       checkStorageUsage(),
       checkWarehouseDisk(),

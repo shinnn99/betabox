@@ -123,6 +123,7 @@ type ActivityKind =
   | "waybill_unmapped"
   | "waybill_invalid"
   | "waybill_return_suspect"
+  | "waybill_source_disabled"
   | "qr_invalid";
 
 type ActivityCategory = "ok" | "warning" | "error" | "info";
@@ -268,6 +269,7 @@ const ACTIVITY_KIND_LABEL: Record<ActivityKind, string> = {
   waybill_unmapped: "Máy quét chưa gán",
   waybill_invalid: "Mã sai",
   waybill_return_suspect: "Hàng hoàn",
+  waybill_source_disabled: "Nguồn quét tắt",
   qr_invalid: "QR sai",
 };
 
@@ -365,6 +367,12 @@ function describeActivityToast(ev: ActivityItem): {
       return {
         variant: "info",
         message: `${ev.waybill_code} đã đóng trước đó — hàng hoàn, không tính đơn`,
+      };
+    case "waybill_source_disabled":
+      // Câu đầy đủ (nguồn nào tắt) do máy chủ soạn sẵn trong `note`.
+      return {
+        variant: "error",
+        message: `${ev.waybill_code ?? "Lượt quét"}: ${ev.note ?? "nguồn quét đang tắt ở bàn"}`,
       };
     case "qr_invalid":
       return {

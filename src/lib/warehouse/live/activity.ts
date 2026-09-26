@@ -1,6 +1,7 @@
 import "server-only";
 import type { createAdminClient } from "@/lib/supabase/admin";
 import { resolveVietnamDayScope } from "@/lib/warehouse/time-range";
+import { isMissingColumnError } from "@/lib/supabase/missing-column";
 import {
   NO_SESSION_NOTE,
   describeControlCard,
@@ -21,12 +22,41 @@ export type ActivityKind =
   | "waybill_unmapped"
   | "waybill_invalid"
   | "waybill_return_suspect"
+  // Lượt quét bị bỏ vì nguồn quét (súng / camera) đang tắt ở bàn — đợt 5,
+  // VAN-HANH-NHIEU-KHO. Trước đây rơi vào "Mã sai" / "Đang chờ xử lý".
+  | "waybill_source_disabled"
   | "qr_invalid"
   // Hàng hoàn dùng chung các kind ở trên (chủ dự án chốt 23/09/2026);
   // riêng thẻ điều khiển chỉ còn trong lịch sử cũ.
   | "control_card";
 
 export type ActivityCategory = "ok" | "warning" | "error" | "info";
+
+interface RawRow {
+  id: string;
+  scanner_device_code: string;
+  raw_value: string;
+  scan_type: string;
+  scanned_at: string;
+  received_at: string;
+  source?: string | null;
+  ignored_reason?: string | null;
+}
+
+const RAW_COLUMNS_LEGACY = "id, scanner_device_code, raw_value, scan_type, scanned_at, received_at, source";
+const RAW_COLUMNS = `${RAW_COLUMNS_LEGACY}, ignored_reason`;
+
+/**
+ * Câu nhật ký cho lượt quét bị bỏ vì nguồn quét đang tắt ở bàn. Nói rõ nguồn
+ * NÀO bị tắt: người đọc cần biết là phải đổi cấu hình bàn hay đổi cách quét.
+ */
+export function describeSourceDisabled(source: string | null, isStaff: boolean): string {
+  const fromCamera = source === "camera_qr";
+  const via = fromCamera ? "Camera đọc được mã" : "Quét bằng súng";
+  const configured = fromCamera ? "súng quét" : "camera";
+  const effect = isStaff ? "không vào / ra ca" : "không tạo đơn";
+  return `${via}, nhưng bàn đang đặt nguồn quét là ${configured} — ${effect}.`;
+}
 
 export interface ActivityItem {
   id: string;
@@ -119,17 +149,18 @@ export async function buildLiveActivity(
   // `scanned_at` chứ không phải `received_at`: summary/issues/stations đều
   // bó ngày theo scanned_at, dùng cột khác ở đây là đẻ lại đúng cái mâu
   // thuẫn số liệu vừa đi sửa. Thứ tự hiển thị vẫn theo received_at.
-  const [rawsRes, countRes, returnCountRes] = await Promise.all([
+  const selectRaws = (columns: string) =>
     admin
       .from("warehouse_scan_raw_events")
-      .select(
-        "id, scanner_device_code, raw_value, scan_type, scanned_at, received_at",
-      )
+      .select(columns)
       .eq("organization_id", orgId)
       .gte("scanned_at", day.startIso)
       .lt("scanned_at", day.endIso)
       .order("received_at", { ascending: false })
-      .limit(limit),
+      .limit(limit)
+      .returns<RawRow[]>();
+  const [firstRawsRes, countRes, returnCountRes] = await Promise.all([
+    selectRaws(RAW_COLUMNS),
     admin
       .from("warehouse_scan_raw_events")
       .select("id", { count: "exact", head: true })
@@ -147,6 +178,11 @@ export async function buildLiveActivity(
       .lt("scanned_at", day.endIso),
   ]);
 
+  // Database chưa áp migration 20260926110000: đọc lại không có cột lý do —
+  // nhật ký vẫn chạy, chỉ thiếu nhãn "Nguồn quét tắt".
+  const rawsRes = isMissingColumnError(firstRawsRes.error, "ignored_reason")
+    ? await selectRaws(RAW_COLUMNS_LEGACY)
+    : firstRawsRes;
   const { data: raws, error: rawErr } = rawsRes;
   if (rawErr) throw new Error(rawErr.message);
 
@@ -336,7 +372,13 @@ export async function buildLiveActivity(
         station = { code: orphan.station_code, name: orphan.station_name };
         warehouseCode = orphan.warehouse_code;
       }
-      if (isStaff) {
+      if (r.ignored_reason === "scan_source_disabled") {
+        // Route đã ghi lý do lúc nhận — nói đúng lý do, không đoán.
+        kind = "waybill_source_disabled";
+        category = "warning";
+        note = describeSourceDisabled(r.source ?? null, isStaff);
+        waybill = isStaff ? null : r.raw_value;
+      } else if (isStaff) {
         kind = "qr_invalid";
         category = "info";
         note = "QR nhân sự chưa được xử lý";

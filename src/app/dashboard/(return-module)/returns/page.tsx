@@ -157,6 +157,7 @@ type ActivityKind =
   | "waybill_unmapped"
   | "waybill_invalid"
   | "waybill_return_suspect"
+  | "waybill_source_disabled"
   | "qr_invalid"
   | "control_card";
 
@@ -307,6 +308,7 @@ const ACTIVITY_KIND_LABEL: Record<ActivityKind, string> = {
   waybill_unmapped: "Máy quét chưa gán",
   waybill_invalid: "Mã sai",
   waybill_return_suspect: "Hàng hoàn",
+  waybill_source_disabled: "Nguồn quét tắt",
   qr_invalid: "QR sai",
   control_card: "Thẻ",
 };

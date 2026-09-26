@@ -20,6 +20,7 @@ import {
   type ReturnScanResult,
 } from "@/lib/station/return-scan";
 import { hookLarkNotifyScan } from "@/lib/lark/hook-scan";
+import { isMissingColumnError } from "@/lib/supabase/missing-column";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -385,23 +386,37 @@ export async function POST(req: Request) {
   let eventId: string;
   let isDuplicate: boolean;
   {
-    const { data: inserted, error: insertErr } = await admin
-      .from("warehouse_scan_raw_events")
-      .insert({
-        organization_id: agent.organization_id,
-        agent_id: agent.id,
-        agent_event_id: parsed.agent_event_id,
-        scanner_device_code: parsed.scanner_device_code,
-        port: parsed.port,
-        raw_value: parsed.raw_value,
-        normalized_value: normalized?.normalized ?? null,
-        scan_type: scanType,
-        scanned_at: parsed.scanned_at,
-        source: parsed.source,
-        device_identity_snapshot: parsed.device_identity_snapshot,
-      })
-      .select("id, scan_type")
-      .single();
+    const rawRow = {
+      organization_id: agent.organization_id,
+      agent_id: agent.id,
+      agent_event_id: parsed.agent_event_id,
+      scanner_device_code: parsed.scanner_device_code,
+      port: parsed.port,
+      raw_value: parsed.raw_value,
+      normalized_value: normalized?.normalized ?? null,
+      scan_type: scanType,
+      scanned_at: parsed.scanned_at,
+      source: parsed.source,
+      device_identity_snapshot: parsed.device_identity_snapshot,
+    };
+    const insertRaw = (row: Record<string, unknown>) =>
+      admin.from("warehouse_scan_raw_events").insert(row).select("id, scan_type").single();
+
+    // Lượt bị bỏ vì lệch nguồn: GHI LẠI LÝ DO (đợt 5, VAN-HANH-NHIEU-KHO) —
+    // trước đây route biết rồi vứt đi, nhật ký gắn nhãn "Mã sai".
+    //
+    // Chỉ lượt bị bỏ mới mang cột này. Lượt quét bình thường ghi đúng câu cũ,
+    // nên luồng đóng hàng không phụ thuộc migration 20260926110000. Chưa có
+    // cột (mã lên trước migration) thì lùi về câu cũ — mất lý do, không mất
+    // lượt quét.
+    let result = await insertRaw(
+      scanSourceDisabled ? { ...rawRow, ignored_reason: "scan_source_disabled" } : rawRow,
+    );
+    if (scanSourceDisabled && isMissingColumnError(result.error, "ignored_reason")) {
+      console.warn("[warehouse-scans] chưa có cột ignored_reason — cần chạy migration 20260926110000");
+      result = await insertRaw(rawRow);
+    }
+    const { data: inserted, error: insertErr } = result;
 
     if (insertErr) {
       // 23505 = unique_violation. The agent retried after we already wrote
