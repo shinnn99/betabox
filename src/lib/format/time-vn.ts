@@ -25,3 +25,12 @@ export function ago(iso: string | null, now: number): string {
   if (hours < 24) return `${hours} giờ trước`;
   return `${Math.floor(hours / 24)} ngày trước`;
 }
+
+/** "3 giờ 15 phút" — khoảng giữa hai mốc, cho cột "kéo dài" của trang Sự cố. */
+export function spanLabel(fromIso: string, toIso: string): string {
+  const mins = Math.max(0, Math.round((new Date(toIso).getTime() - new Date(fromIso).getTime()) / 60_000));
+  if (mins < 60) return `${mins} phút`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours} giờ ${mins % 60} phút`;
+  return `${Math.floor(hours / 24)} ngày ${hours % 24} giờ`;
+}

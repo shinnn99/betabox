@@ -351,3 +351,11 @@ function timingParam(
   }
   return param(base, set, effective, "set", null);
 }
+
+/**
+ * Dòng cấu hình có ô nào lệch khỏi "đặt và dùng đúng như đặt" không — bộ lọc
+ * "chỉ dòng cần chú ý" của trang Cấu hình các kho.
+ */
+export function paramsNeedAttention(params: EffectiveParam[]): boolean {
+  return params.some((p) => p.source !== "set" || p.consequence !== null);
+}

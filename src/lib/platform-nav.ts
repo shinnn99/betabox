@@ -5,6 +5,8 @@ import {
   Activity,
   Warehouse,
   Sparkles,
+  Siren,
+  SlidersHorizontal,
   type LucideIcon,
 } from "lucide-react";
 
@@ -59,5 +61,19 @@ export const PLATFORM_NAV: PlatformNavItem[] = [
     label: "Tình trạng hệ thống",
     href: "/platform/system",
     icon: Activity,
+  },
+  // Đợt 4 (VAN-HANH-NHIEU-KHO): nơi LÀM VIỆC với sổ sự cố của mọi kho, và
+  // cấu hình mọi kho trên một màn hình — không phải đóng giả vào từng tổ chức.
+  {
+    id: "incidents",
+    label: "Sự cố",
+    href: "/platform/incidents",
+    icon: Siren,
+  },
+  {
+    id: "config",
+    label: "Cấu hình các kho",
+    href: "/platform/config",
+    icon: SlidersHorizontal,
   },
 ];

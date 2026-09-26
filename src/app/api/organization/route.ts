@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermission, requirePermissionStrict, isError } from "@/lib/supabase/guard";
 import { audit } from "@/lib/audit";
+import { RETENTION_FIELDS, retentionFieldError } from "@/lib/config/validate";
 
 const EDITABLE_FIELDS = [
   "name",
@@ -9,12 +10,6 @@ const EDITABLE_FIELDS = [
   "retention_days",
   "return_retention_days",
 ] as const;
-
-// Retention hợp lệ: 7-365 ngày. Dưới 7 = mất bằng chứng ngay; trên 365 = ổ đầy
-// vô ích (không sàn nào cho khiếu nại quá năm). DB CHECK constraint enforce
-// cùng range — validate ở đây trả lỗi rõ tiếng Việt trước khi DB reject.
-const RETENTION_MIN_DAYS = 7;
-const RETENTION_MAX_DAYS = 365;
 
 export async function GET() {
   const ctx = await requirePermission("organization.view");
@@ -65,25 +60,12 @@ export async function PATCH(req: Request) {
     );
   }
 
-  for (const field of ["retention_days", "return_retention_days"] as const) {
+  // Luật chung với route platform — src/lib/config/validate.ts.
+  for (const field of RETENTION_FIELDS) {
     if (!(field in update)) continue;
-    const v = update[field];
-    if (v === null) {
-      // Cho phép null để clear cấu hình. Resolver sẽ trả nhãn trung tính,
-      // cleanup script sẽ fail-loud → Hạnh biết chưa cấu hình.
-    } else if (
-      typeof v !== "number" ||
-      !Number.isInteger(v) ||
-      v < RETENTION_MIN_DAYS ||
-      v > RETENTION_MAX_DAYS
-    ) {
-      return NextResponse.json(
-        {
-          error: "validation",
-          message: `${field} phải là số nguyên trong khoảng ${RETENTION_MIN_DAYS}-${RETENTION_MAX_DAYS} ngày (hoặc null để bỏ cấu hình).`,
-        },
-        { status: 400 }
-      );
+    const message = retentionFieldError(field, update[field]);
+    if (message) {
+      return NextResponse.json({ error: "validation", message }, { status: 400 });
     }
   }
 

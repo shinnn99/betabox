@@ -112,6 +112,28 @@ const ACTION_META: Record<string, ActionMeta> = {
   },
   "org.lock": { label: "Khóa tổ chức", icon: Lock, severity: "critical" },
   "org.suspend": { label: "Tạm khóa tổ chức", icon: Lock, severity: "critical" },
+  // Đợt 4 (VAN-HANH-NHIEU-KHO): sửa cấu hình hộ khách từ platform. Mức
+  // "warning": hạ hạn lưu là video bị xoá sớm hơn ở máy kho.
+  "platform.org.config.update": {
+    label: "Sửa cấu hình tổ chức",
+    icon: Settings,
+    severity: "warning",
+  },
+  "platform.warehouse.config.update": {
+    label: "Sửa cấu hình kho",
+    icon: Settings,
+    severity: "warning",
+  },
+  "platform.incident.acknowledge": {
+    label: "Ghi nhận sự cố",
+    icon: Activity,
+    severity: "info",
+  },
+  "platform.incident.resolve": {
+    label: "Đóng sự cố",
+    icon: Activity,
+    severity: "info",
+  },
   "platform.admin.add": {
     label: "Thêm quản trị",
     icon: UserPlus,

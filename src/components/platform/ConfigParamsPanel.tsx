@@ -49,7 +49,8 @@ export default function ConfigParamsPanel({ config }: { config: ConfigParamsData
           có tô màu và ghi lý do.
         </p>
         <p className="text-xs text-slate-400">
-          Muốn sửa: bấm <em>Bắt đầu hỗ trợ</em> rồi vào Cấu hình kho. Webhook Lark:{" "}
+          Muốn sửa: mở trang <a href="/platform/config" className="text-sky-700 underline">Cấu hình các kho</a>{" "}
+          — sửa thẳng, không cần đóng giả, nhật ký ghi tên bạn. Webhook Lark:{" "}
           {config.webhooks_configured > 0 ? `${config.webhooks_configured} kho đã bật` : "chưa cấu hình"}.
         </p>
       </div>

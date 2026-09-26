@@ -26,6 +26,7 @@ import {
 import PlatformLayout from "@/components/platform/PlatformLayout";
 import { ago, formatVn } from "@/lib/format/time-vn";
 import IncidentLedgerPanel, { type LedgerView } from "@/components/platform/IncidentLedgerPanel";
+import { CHECK_LABELS } from "@/lib/system/check-labels";
 
 /**
  * Trang tình trạng hạ tầng.
@@ -114,19 +115,7 @@ interface StatusResponse {
   incidents?: LedgerView;
 }
 
-const LABELS: Record<string, string> = {
-  supabase_egress: "Egress Supabase",
-  cron_cleanup: "Cron dọn clip",
-  cron_orphan_segments: "Cron dọn segment mồ côi",
-  agent_heartbeat: "Kết nối agent kho",
-  camera_probe: "Camera",
-  recording_freshness: "Ghi hình",
-  clip_failures: "Clip đơn hàng",
-  vps_resources: "Ổ đĩa + RAM VPS",
-  storage_usage: "Dung lượng Storage",
-  warehouse_disk: "Ổ đĩa máy kho",
-  config_health: "Cấu hình",
-};
+const LABELS = CHECK_LABELS;
 
 const HERO_ICON: Record<string, typeof Building2> = {
   warehouses: Building2,

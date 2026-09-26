@@ -1,11 +1,12 @@
 /**
  * Ô "Sổ sự cố" trên trang Tình trạng hệ thống — CHỈ ĐỌC (kế hoạch
- * VAN-HANH-NHIEU-KHO, đợt 3). Nút Ghi nhận / Đã xử lý thuộc đợt 4.
+ * VAN-HANH-NHIEU-KHO, đợt 3).
  *
  * Khác mục "Cần chú ý" ngay phía trên ở chỗ nào: "Cần chú ý" trả lời "LÚC NÀY
  * có gì hỏng" — chạy kiểm ngay lúc mở trang, không nhớ gì. Sổ trả lời "sự cố
  * này bắt đầu từ bao giờ, kéo dài bao lâu, lặp mấy lượt" — do con tự kiểm nền
- * ghi mỗi 15 phút. Con tự kiểm nền chưa chạy thì sổ RỖNG dù "Cần chú ý" có
+ * ghi mỗi 15 phút. Thao tác Ghi nhận / Đã xử lý nằm ở trang Sự cố
+ * (/platform/incidents). Con tự kiểm nền chưa chạy thì sổ RỖNG dù "Cần chú ý" có
  * mục — ô này nói rõ điều đó, không hiện "0 sự cố" cho người ta yên tâm nhầm.
  *
  * Không có hook — dựng và kiểm riêng được, như ConfigParamsPanel.
@@ -57,6 +58,9 @@ export default function IncidentLedgerPanel({ ledger, lastBackgroundRun, now, ch
             {ledger.totalOpen === 0 ? "không có sự cố mở" : `${ledger.totalOpen} đang mở`}
           </span>
         )}
+        <a href="/platform/incidents" className="text-xs text-sky-700 underline">
+          Mở trang Sự cố
+        </a>
         <span className="text-xs text-slate-400">
           Ghi lần cuối: {lastBackgroundRun ? `${formatVn(lastBackgroundRun)} · ${ago(lastBackgroundRun, now)}` : "chưa bao giờ"}
         </span>

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { CHECK_CONFIG, CHECK_KEYS, collectConfigProblems } from "@/lib/system/checks";
 import { ORDER_HARD_LIMIT_SECONDS } from "@/lib/station/order-timeout";
+import { CHECK_LABELS } from "@/lib/system/check-labels";
 
 /**
  * Mục kiểm "Cấu hình" — điểm mù cuối cùng của bộ theo dõi.
@@ -162,9 +163,10 @@ test("mục được đăng ký vào bộ kiểm và có nhãn trên trang", () 
   );
   assert.ok(src.includes("      config,\n    ],"), "chưa đưa vào danh sách checks trả về");
 
-  const page = readFileSync("src/app/platform/system/page.tsx", "utf8");
-  assert.ok(
-    page.includes(`${CHECK_KEYS.config}: "Cấu hình"`),
-    "chưa có nhãn tiếng Việt — trang sẽ hiện mã khoá thô",
-  );
+  assert.equal(CHECK_LABELS[CHECK_KEYS.config], "Cấu hình", "chưa có nhãn tiếng Việt — trang sẽ hiện mã khoá thô");
+});
+
+test("MỌI mục kiểm đều có nhãn tiếng Việt dùng chung cho trang Tình trạng và trang Sự cố", () => {
+  const missing = Object.values(CHECK_KEYS).filter((k) => !CHECK_LABELS[k]);
+  assert.deepEqual(missing, [], "thiếu nhãn — trang sẽ hiện mã khoá thô");
 });
