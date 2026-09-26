@@ -183,9 +183,17 @@ test("trang platform hiện hai cột và dùng đúng phép giải", () => {
   const api = readFileSync("src/app/api/platform/orgs/[id]/route.ts", "utf8");
   assert.ok(api.includes("resolveOrgParams(") && api.includes("resolveWarehouseParams("));
   assert.ok(api.includes("return_retention_days"), "phải đọc cột hạn lưu hàng hoàn thì mới giải được");
+  // Bảng tách ra thành phần riêng (26/09/2026) để dựng và kiểm riêng được —
+  // Next.js không cho file trang xuất thêm thành phần. Canh cả hai đầu: bảng
+  // có hai cột, VÀ trang thật sự dùng bảng đó cho tab Cấu hình.
+  const panel = readFileSync("src/components/platform/ConfigParamsPanel.tsx", "utf8");
+  assert.ok(panel.includes(">Đặt</th>") && panel.includes(">Thực dùng</th>"), "thiếu hai cột");
+  assert.ok(panel.includes("p.consequence"), "phải hiện hệ quả, không chỉ lý do");
   const page = readFileSync("src/app/platform/orgs/[id]/page.tsx", "utf8");
-  assert.ok(page.includes(">Đặt</th>") && page.includes(">Thực dùng</th>"), "thiếu hai cột");
-  assert.ok(page.includes("p.consequence"), "phải hiện hệ quả, không chỉ lý do");
+  assert.ok(
+    page.includes('{tab === "config" && <ConfigParamsPanel config={data.config} />}'),
+    "tab Cấu hình phải dùng ConfigParamsPanel",
+  );
 });
 
 test("mặc định của máy cắt clip BẰNG mặc định của database, từng khoá", () => {

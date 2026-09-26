@@ -1534,3 +1534,18 @@ docs([Module]):     Cập nhật tài liệu
   - Sửa luôn mục đợt 2 ở trên cho đúng số liệu (bản đầu dùng nhầm bitrate camera 5,88 Mbps).
 - **Kết quả kiểm tra:** `pnpm test` **652/652**, `pnpm typecheck` sạch.
 - **Trạng thái:** Việc 1 hoàn tất. Việc 2 nằm trong đợt 7.
+
+### [NGHIEM-THU-DOT-1-2] - Tự kiểm thử đợt 1 + 2 qua mười lớp trước khi sang đợt 3
+
+- **Chủ dự án yêu cầu 26/09/2026:** "tự kiểm thử những gì đã làm xem có đúng yêu cầu ban đầu đề ra không, phải pass hết các loại kiểm thử rồi mới chuyển sang làm đợt tiếp theo".
+- **Biên bản:** `plans/reports/NGHIEM-THU-DOT-1-2-2026-09-26.md` (mới).
+- **Mười lớp:** `tsc` (lệnh CI) ✅ · `typecheck:tests` ✅ · `pnpm test` **652/652** ✅ · lint **0 lỗi, 0 cảnh báo trên dòng mới** (16 lỗi + 4 cảnh báo còn lại có từ trước, xác nhận bằng `git blame`) ✅ · `build` + 4 script canh, chạy hai lần ✅ · agent `tsc` ✅ + test **227/228** ⚠ · chạy thật production ✅ · HTTP **11/11** ✅ · dựng giao diện **12/12** ✅ · đối chiếu yêu cầu ✅ phần đợt 1–2.
+- **Sửa trong lúc kiểm:** tách tab Cấu hình ra `src/components/platform/ConfigParamsPanel.tsx` — Next.js không cho file trang xuất thêm thành phần, để lọt trong đó thì không dựng riêng để kiểm được. Cập nhật bài test canh cả hai đầu: bảng có hai cột, **và** trang thật sự dùng bảng đó.
+- **Cách kiểm cố ý an toàn cho production:**
+  - nhánh báo lỗi của đợt 1 chứng minh bằng phạm vi dựng **trong bộ nhớ**, không bật cờ `monitoring_enabled` nào; kiểm lại cờ sau khi chạy: y nguyên;
+  - ca khách 403 dùng tài khoản + tổ chức tạm theo khuôn có sẵn, **tự kiểm lại đã dọn sạch** (0 còn sót);
+  - **không tạo tài khoản quản trị platform** trên production — nhánh quản trị kiểm bằng cách gọi thẳng hàm xử lý route, chỉ giả lập bước xác thực;
+  - mọi file tạm (kịch bản trong `scripts/`, `tests/`, móc nạp) đã xoá; `git status` chỉ còn đúng phần sửa chủ đích.
+- **Bài test agent đỏ — do môi trường, đã chứng minh:** cổng 8554 bị MediaMTX của dịch vụ BetacomAgent cài trên máy lập trình giữ (tiến trình cha `betacom-agent.exe`). Chạy lại đúng phép thử trên cổng trống: MediaMTX đóng gói chấp nhận cấu hình, 0 dòng lỗi. Bài chính thức xanh hẳn cần dừng dịch vụ (quyền quản trị) — lệnh trong biên bản.
+- **Việc còn mở quan trọng hơn:** con tự kiểm nền **vẫn chết 44 ngày** → mục Cấu hình phát hiện đúng, hiện đúng trên trang khi có người mở, nhưng **không có tin Lark nào được gửi**. Yêu cầu "thông báo" mới đạt nửa cho tới khi chủ dự án làm Phần 1 của kế hoạch (cài timer).
+- **Trạng thái:** Đợt 1 + 2 đạt nghiệm thu về mã. Chờ hai việc vận hành ở cuối biên bản.
