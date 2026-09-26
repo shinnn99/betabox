@@ -1,6 +1,7 @@
 import "server-only";
 import type { createAdminClient } from "@/lib/supabase/admin";
 import { resolveOrgParams, resolveWarehouseParams, type EffectiveParam } from "@/lib/config/effective";
+import { getClipMaxSeconds } from "@/lib/config/template-store";
 import {
   RETENTION_FIELDS,
   buildTimingPatch,
@@ -162,6 +163,7 @@ export async function editWarehouseConfig(
     after,
     params: resolveWarehouseParams(
       next as { packing_timing_config: unknown; session_fallback_seconds: number | null },
+      await getClipMaxSeconds(admin),
     ),
   };
 }

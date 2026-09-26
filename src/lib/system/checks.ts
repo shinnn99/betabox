@@ -3,6 +3,7 @@ import os from "node:os";
 import { statfs } from "node:fs/promises";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isMissingColumnError } from "@/lib/supabase/missing-column";
+import { getClipMaxSeconds } from "@/lib/config/template-store";
 import {
   SYSTEM_JOB_CLEANUP_CLIPS,
   SYSTEM_JOB_CLOSE_ORPHAN_SEGMENTS,
@@ -1329,12 +1330,17 @@ export async function checkConfiguration(
     agentsByOrg.set(a.organization_id, list);
   }
 
+  // Trần clip đang áp của nền tảng — cùng con số với máy cắt clip, để "bị
+  // kẹp" ở đây nghĩa đúng như ở máy cắt clip. Không bao giờ ném.
+  const clipMaxSeconds = await getClipMaxSeconds(admin);
+
   const entities: CheckEntity[] = scope.orgIds.map((orgId) => {
     const problems = collectConfigProblems({
       org: orgById.get(orgId),
       warehouses: whByOrg.get(orgId) ?? [],
       agents: agentsByOrg.get(orgId) ?? [],
       cfg,
+      clipMaxSeconds,
     });
 
     if (problems.length === 0) {
@@ -1431,13 +1437,15 @@ export function collectConfigProblems(input: {
   warehouses: ConfigWarehouseRow[];
   agents: ConfigAgentRow[];
   cfg: typeof CHECK_CONFIG.config;
+  /** Trần clip của mẫu nền tảng. Không truyền = hằng số cũ. */
+  clipMaxSeconds?: number;
 }): ConfigProblem[] {
-  const { org, warehouses, agents, cfg } = input;
+  const { org, warehouses, agents, cfg, clipMaxSeconds } = input;
   return [
     // Kho đầu tiên làm chỗ dự phòng cho hạn lưu hàng hoàn — đúng như route
     // retention-plan chọn.
     ...(org ? orgConfigProblems(org, warehouses[0]?.packing_timing_config ?? null) : []),
-    ...warehouses.flatMap(clampedParamProblems),
+    ...warehouses.flatMap((w) => clampedParamProblems(w, clipMaxSeconds)),
     ...agents.flatMap((a) => clockDriftProblems(a, cfg)),
   ];
 }
@@ -1474,9 +1482,9 @@ function orgConfigProblems(org: ConfigOrgRow, fallbackWarehouseCfg: unknown): Co
  * không ai được báo. Bản đợt 1 chỉ soi `max_order_seconds`; giờ mọi thông
  * số trong phép giải đều được soi mà không phải viết thêm luật.
  */
-function clampedParamProblems(w: ConfigWarehouseRow): ConfigProblem[] {
+function clampedParamProblems(w: ConfigWarehouseRow, clipMaxSeconds?: number): ConfigProblem[] {
   const unit = (p: EffectiveParam) => (p.unit === "giây" ? "s" : " ngày");
-  return resolveWarehouseParams(w)
+  return resolveWarehouseParams(w, clipMaxSeconds)
     .filter((p) => p.source === "clamped")
     .map((p) => ({
       status: "warn" as const,

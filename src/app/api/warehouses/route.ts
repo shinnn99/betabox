@@ -4,6 +4,7 @@ import { requirePermission, requirePermissionStrict, isError, roleHasPermission 
 import { getScopedClient } from "@/lib/supabase/scoped-client";
 import { audit } from "@/lib/audit";
 import { HIDDEN } from "@/lib/sensitive-redact";
+import { seedNewWarehouse } from "@/lib/config/template-store";
 
 export async function GET() {
   const ctx = await requirePermission("warehouse.view");
@@ -53,10 +54,24 @@ export async function POST(req: Request) {
   const { data, error } = await admin
     .from("warehouses")
     .insert({ organization_id: ctx.organizationId, code, name, address })
-    .select("id, code, name, address, status, created_at")
+    .select("id, code, name, address, status, created_at, organization_id, packing_timing_config")
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+  // Chép mẫu cấu hình nền tảng vào kho mới (đợt 6, VAN-HANH-NHIEU-KHO).
+  // Hỏng thì kho vẫn đã tạo với mặc định của DB — không chặn việc tạo kho.
+  const seedErr = await seedNewWarehouse(admin, data);
+  if (seedErr) console.warn(`[warehouses] không chép được mẫu cấu hình vào kho ${data.id}: ${seedErr}`);
+  // Phản hồi giữ đúng hình cũ — không lộ JSON cấu hình ra client.
+  const warehouse = {
+    id: data.id,
+    code: data.code,
+    name: data.name,
+    address: data.address,
+    status: data.status,
+    created_at: data.created_at,
+  };
 
   await audit({
     organizationId: ctx.organizationId,
@@ -68,5 +83,5 @@ export async function POST(req: Request) {
     metadata: { code, name },
   });
 
-  return NextResponse.json({ warehouse: data }, { status: 201 });
+  return NextResponse.json({ warehouse }, { status: 201 });
 }

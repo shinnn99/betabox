@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePlatformRole } from "@/lib/supabase/guard";
 import { logPlatformAudit } from "@/lib/platform/audit";
+import { orgFieldsForNewOrg } from "@/lib/config/template-store";
 
 // Slug generator — tách khỏi signup route để dùng chung. Loại dấu tiếng
 // Việt + đưa về ASCII kebab.
@@ -362,10 +363,12 @@ export async function POST(req: Request) {
     }
     createdUserId = created.user.id;
 
-    // Bước 2: organizations.
+    // Bước 2: organizations — kèm hạn lưu chép từ mẫu nền tảng (đợt 6,
+    // VAN-HANH-NHIEU-KHO). Trước đây tổ chức mới ra đời với hạn lưu TRỐNG:
+    // script dọn ổ máy kho fail-loud rồi không chạy.
     const { data: org, error: orgErr } = await admin
       .from("organizations")
-      .insert({ name: orgName, slug })
+      .insert({ name: orgName, slug, ...(await orgFieldsForNewOrg(admin)) })
       .select("id, name, slug")
       .single();
     if (orgErr || !org) {

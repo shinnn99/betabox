@@ -1,7 +1,8 @@
 import "server-only";
 import type { createAdminClient } from "@/lib/supabase/admin";
 import { computeFinalizedClipWindow } from "@/lib/order-proof/clip-window";
-import { readTimingConfig } from "@/lib/order-proof/timing-config";
+import { getClipMaxSeconds } from "@/lib/config/template-store";
+import { FALLBACK_DEFAULT_POST, FALLBACK_PRE, readTimingConfig } from "@/lib/order-proof/timing-config";
 import {
   estimateProofSize,
   percentile95BytesPerSecond,
@@ -146,11 +147,14 @@ export async function buildProofSizeRisks(params: {
     }),
   );
 
-  // 4) Cửa sổ clip — DÙNG CHUNG hàm với bộ sinh clip.
+  // 4) Cửa sổ clip — DÙNG CHUNG hàm với bộ sinh clip, cùng trần clip của
+  // mẫu nền tảng, cùng mặc định với máy cắt clip (timing-config.ts).
+  const maxClipSeconds = await getClipMaxSeconds(admin);
+  const fallbackTiming = { pre: FALLBACK_PRE, defaultPost: FALLBACK_DEFAULT_POST };
   const withWindow = events.map((e) => {
     const timing = e.warehouse_id
-      ? timingByWarehouse.get(e.warehouse_id) ?? { pre: 10, defaultPost: 60 }
-      : { pre: 10, defaultPost: 60 };
+      ? timingByWarehouse.get(e.warehouse_id) ?? fallbackTiming
+      : fallbackTiming;
     const window = computeFinalizedClipWindow({
       scannedAt: new Date(e.scanned_at as string),
       workEndedAt: e.work_ended_at as string,
@@ -160,6 +164,7 @@ export async function buildProofSizeRisks(params: {
       defaultPostSeconds: timing.defaultPost,
       // Trần độ dài clip khác nhau theo loại — dùng đúng trần của bộ sinh clip.
       eventKind,
+      maxClipSeconds,
     });
     return { event: e, window };
   });

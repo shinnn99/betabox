@@ -124,6 +124,16 @@ const ACTION_META: Record<string, ActionMeta> = {
     icon: Settings,
     severity: "warning",
   },
+  "platform.config_template.update": {
+    label: "Sửa mẫu cấu hình nền tảng",
+    icon: Settings,
+    severity: "warning",
+  },
+  "platform.config_template.apply": {
+    label: "Điền mẫu vào ô trống",
+    icon: Settings,
+    severity: "warning",
+  },
   "platform.incident.acknowledge": {
     label: "Ghi nhận sự cố",
     icon: Activity,

@@ -168,13 +168,13 @@ test("phép giải không tự chép logic kẹp — phải import từ nơi ch�
 
 test("canh trần chung của clip-resolver — đổi nó thì phải đổi câu hệ quả", () => {
   // Phép giải nói "clip kiện hoàn chỉ phủ (180 − đệm) giây" vì clip-resolver
-  // áp trần CHUNG MAX_CLIP_DURATION_SECONDS cho MỌI loại lượt, đè lên trần
+  // áp trần CHUNG (clip_max_seconds của mẫu nền tảng, mặc định 180) cho MỌI loại lượt, đè lên trần
   // 310s riêng của kiện hoàn. Ai sửa trần đó theo loại lượt (tức là sửa lỗi
   // cụt clip kiện hoàn) thì câu hệ quả trong effective.ts thành sai — bài này
   // đỏ để nhắc sửa luôn.
   const resolver = readFileSync("src/lib/order-proof/clip-resolver.ts", "utf8");
   assert.ok(
-    resolver.includes("const maxClipEndMs = clipStart.getTime() + MAX_CLIP_DURATION_SECONDS * 1000;"),
+    resolver.includes("const maxClipEndMs = clipStart.getTime() + clipMaxSeconds * 1000;"),
     "trần chung trong clip-resolver đã đổi — cập nhật câu hệ quả `return_max_seconds` trong src/lib/config/effective.ts",
   );
 });

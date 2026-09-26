@@ -35,15 +35,19 @@ export const AUTO_STOP_TIMING_NOTE = "auto_stopped_timeout";
  * THUẬT của video. Hai khái niệm khác nhau (xem ghi chú hai lớp ở
  * clip-resolver.ts), nhưng video thì không thể vượt 180s.
  */
-export function resolveOrderLimitSeconds(cfg: unknown): number {
-  const fallback = ORDER_HARD_LIMIT_SECONDS;
+export function resolveOrderLimitSeconds(
+  cfg: unknown,
+  /**
+   * Trần kỹ thuật đang áp — `clip_max_seconds` của mẫu nền tảng (đợt 6,
+   * VAN-HANH-NHIEU-KHO). Không truyền = hằng số cũ, hành vi không đổi.
+   */
+  hardLimit: number = ORDER_HARD_LIMIT_SECONDS,
+): number {
+  const fallback = hardLimit;
   if (!cfg || typeof cfg !== "object") return fallback;
   const raw = Number((cfg as Record<string, unknown>).max_order_seconds);
   if (!Number.isFinite(raw) || raw <= 0) return fallback;
-  return Math.min(
-    ORDER_HARD_LIMIT_SECONDS,
-    Math.max(ORDER_MIN_LIMIT_SECONDS, Math.floor(raw)),
-  );
+  return Math.min(hardLimit, Math.max(ORDER_MIN_LIMIT_SECONDS, Math.floor(raw)));
 }
 
 /**
@@ -71,10 +75,11 @@ export function resolveReturnLimitSeconds(cfg: unknown): number {
 export function resolveLimitSecondsFor(
   eventKind: string | null | undefined,
   cfg: unknown,
+  orderHardLimit: number = ORDER_HARD_LIMIT_SECONDS,
 ): number {
   return eventKind === "return"
     ? resolveReturnLimitSeconds(cfg)
-    : resolveOrderLimitSeconds(cfg);
+    : resolveOrderLimitSeconds(cfg, orderHardLimit);
 }
 
 export interface OrderTimeoutState {

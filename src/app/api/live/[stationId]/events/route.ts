@@ -11,6 +11,7 @@ import {
   type StationAnnouncement,
 } from "@/lib/station/announcements";
 import { forceStopExpiredOrders } from "@/lib/station/force-stop-expired-orders";
+import { getClipMaxSeconds } from "@/lib/config/template-store";
 import { readStationMode, revertIdleReturnModes } from "@/lib/station/station-mode";
 import {
   AUTO_STOP_TIMING_NOTE,
@@ -182,6 +183,7 @@ export async function GET(_request: Request, context: RouteContext) {
       const limitSeconds = resolveLimitSecondsFor(
         packing.event_kind,
         warehouse?.packing_timing_config ?? null,
+        await getClipMaxSeconds(access.admin),
       );
       const state = computeOrderTimeout({
         startedAt: packing.work_started_at ?? packing.scanned_at,

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePlatformRole } from "@/lib/supabase/guard";
 import { resolveOrgParams, resolveWarehouseParams } from "@/lib/config/effective";
+import { getClipMaxSeconds } from "@/lib/config/template-store";
 
 export const runtime = "nodejs";
 
@@ -257,7 +258,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
     last_activity_at: lastActivityAt,
     config: {
       webhooks_configured: webhooksConfigured,
-      params: buildConfigParams(org, warehousesRes.data ?? []),
+      params: buildConfigParams(org, warehousesRes.data ?? [], await getClipMaxSeconds(admin)),
     },
     recent: {
       last_order: lastOrderRes.data
@@ -331,6 +332,7 @@ function buildConfigParams(
     packing_timing_config: unknown;
     session_fallback_seconds: number | null;
   }>,
+  clipMaxSeconds: number,
 ) {
   return {
     org: resolveOrgParams(org, warehouses[0]?.packing_timing_config ?? null),
@@ -340,7 +342,7 @@ function buildConfigParams(
         id: w.id,
         code: w.code,
         name: w.name,
-        params: resolveWarehouseParams(w),
+        params: resolveWarehouseParams(w, clipMaxSeconds),
       })),
   };
 }

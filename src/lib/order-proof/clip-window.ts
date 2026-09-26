@@ -68,6 +68,11 @@ export interface FinalizedWindowInput {
   defaultPostSeconds: number;
   /** `packing_events.event_kind` — kiện hoàn có trần dài hơn đơn đi. */
   eventKind?: string | null;
+  /**
+   * Trần clip đơn đi đang áp — `clip_max_seconds` của mẫu nền tảng (đợt 6).
+   * Không truyền = `MAX_CLIP_DURATION_SECONDS`, hành vi không đổi.
+   */
+  maxClipSeconds?: number;
 }
 
 export interface ClipWindow {
@@ -95,7 +100,7 @@ export function computeFinalizedClipWindow(
   const maxDurationSeconds =
     input.eventKind === "return"
       ? MAX_RETURN_CLIP_DURATION_SECONDS
-      : MAX_CLIP_DURATION_SECONDS;
+      : input.maxClipSeconds ?? MAX_CLIP_DURATION_SECONDS;
   const scannedMs = scannedAt.getTime();
   const clipStart = new Date(scannedMs - preSeconds * 1000);
 

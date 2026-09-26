@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, RefreshCw, Search, SlidersHorizontal } from "lucide-react";
 import PlatformLayout from "@/components/platform/PlatformLayout";
+import TemplatePanel from "@/components/platform/TemplatePanel";
 import { apiFetch } from "@/lib/api-fetch";
 import {
   OrgGrid,
@@ -193,6 +194,7 @@ export default function PlatformConfigPage() {
   } else if (data) {
     body = (
       <>
+        <TemplatePanel orgIds={orgs.map((o) => o.id)} />
         <OrgGrid orgs={orgs} handlers={handlers} />
         <WarehouseGrid rows={whRows} handlers={handlers} />
         <p className="text-xs text-slate-400">

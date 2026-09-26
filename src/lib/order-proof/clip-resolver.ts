@@ -1,8 +1,8 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getClipMaxSeconds } from "@/lib/config/template-store";
 import {
   computeFinalizedClipWindow,
-  MAX_CLIP_DURATION_SECONDS,
 } from "@/lib/order-proof/clip-window";
 import { evaluateOpenSegments } from "@/lib/order-proof/open-segment-verdict";
 import {
@@ -308,6 +308,9 @@ export async function resolveClipBounds(opts: {
       .maybeSingle();
     timing = readTimingConfig(wh?.packing_timing_config);
   }
+  // Trần clip của cả nền tảng (mẫu cấu hình, đợt 6). Chưa có bảng mẫu thì
+  // bằng MAX_CLIP_DURATION_SECONDS — không đổi hành vi.
+  const clipMaxSeconds = await getClipMaxSeconds(admin);
 
   // 2) Find the closing boundary. Priority (MẠNH → YẾU):
   //   a) work_ended_at + WORK_ENDED_POST_BUFFER (fact "đơn này đóng xong").
@@ -348,6 +351,7 @@ export async function resolveClipBounds(opts: {
       preSeconds: timing.pre,
       defaultPostSeconds: timing.defaultPost,
       eventKind: packingEvent.event_kind,
+      maxClipSeconds: clipMaxSeconds,
     });
     clipEnd = win.clipEnd;
     endReason = win.endReason;
@@ -395,7 +399,7 @@ export async function resolveClipBounds(opts: {
   // bug thoát khi tầng cap trên tính sai). Trần trùng với nghiệp vụ
   // `max_order_seconds` mặc định 10 phút.
   // Cap the complete output file, including pre-roll, at exactly 3 minutes.
-  const maxClipEndMs = clipStart.getTime() + MAX_CLIP_DURATION_SECONDS * 1000;
+  const maxClipEndMs = clipStart.getTime() + clipMaxSeconds * 1000;
   if (clipEnd.getTime() > maxClipEndMs) {
     clipEnd = new Date(maxClipEndMs);
     endReason = "capped_at_max_duration";

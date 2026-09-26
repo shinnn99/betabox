@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getClipMaxSeconds } from "@/lib/config/template-store";
 import {
   AUTO_STOP_TIMING_NOTE,
   computeOrderTimeout,
@@ -96,13 +97,16 @@ export async function forceStopExpiredOrders(params: {
     ]),
   );
 
+  // Trần tự dừng đơn đi = trần clip của cả nền tảng (mẫu cấu hình, đợt 6).
+  const orderHardLimit = await getClipMaxSeconds(params.admin);
+
   const stopped: ForceStoppedOrder[] = [];
   for (const row of rows) {
     const isReturn = row.event_kind === "return";
     const cfg = row.warehouse_id ? configByWarehouse.get(row.warehouse_id) ?? null : null;
     const limitSeconds = isReturn
       ? resolveReturnLimitSeconds(cfg)
-      : resolveOrderLimitSeconds(cfg);
+      : resolveOrderLimitSeconds(cfg, orderHardLimit);
     const startedAt = row.work_started_at ?? row.scanned_at;
     const state = computeOrderTimeout({ startedAt, limitSeconds, now });
     if (!state.expired) continue;

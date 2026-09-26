@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { orgFieldsForNewOrg } from "@/lib/config/template-store";
 
 // ============================================================================
 // POST /api/signup — Cửa CÔNG KHAI vào SaaS. Bề mặt tấn công lớn nhất.
@@ -322,10 +323,11 @@ export async function POST(req: Request) {
     }
     createdUserId = created.user.id;
 
-    // Bước 2: tạo organization
+    // Bước 2: tạo organization — kèm hạn lưu chép từ mẫu nền tảng (đợt 6,
+    // VAN-HANH-NHIEU-KHO): tổ chức mới không còn ra đời với hạn lưu trống.
     const { data: org, error: orgErr } = await admin
       .from("organizations")
-      .insert({ name: orgName, slug })
+      .insert({ name: orgName, slug, ...(await orgFieldsForNewOrg(admin)) })
       .select("id")
       .single();
 

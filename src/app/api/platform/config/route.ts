@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePlatformRole } from "@/lib/supabase/guard";
 import { resolveOrgParams, resolveWarehouseParams } from "@/lib/config/effective";
+import { readPlatformTemplate } from "@/lib/config/template-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,7 +50,11 @@ export async function GET() {
   );
 
   const warehouses = whRes.data ?? [];
+  // Trần clip đang áp — cùng con số với máy cắt clip.
+  const template = await readPlatformTemplate(admin);
+  const clipMax = template.template.clip_max_seconds;
   return NextResponse.json({
+    template,
     // Chỉ platform_owner sửa được — giao diện ẩn nút sửa với người còn lại.
     canEdit: ctx.platformRole === "platform_owner",
     orgs: orgs.map((o, i) => ({
@@ -63,7 +68,7 @@ export async function GET() {
           id: w.id as string,
           code: w.code as string | null,
           name: w.name as string | null,
-          params: resolveWarehouseParams(w),
+          params: resolveWarehouseParams(w, clipMax),
         })),
     })),
   });

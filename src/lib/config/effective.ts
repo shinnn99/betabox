@@ -33,7 +33,6 @@ import {
   readTimingConfig,
 } from "@/lib/order-proof/timing-config";
 import {
-  ORDER_HARD_LIMIT_SECONDS,
   ORDER_MIN_LIMIT_SECONDS,
   RETURN_HARD_LIMIT_SECONDS,
   RETURN_MIN_LIMIT_SECONDS,
@@ -197,7 +196,15 @@ export function resolveOrgParams(
 // Cấp kho
 // ============================================================================
 
-export function resolveWarehouseParams(wh: WarehouseConfigInput): EffectiveParam[] {
+export function resolveWarehouseParams(
+  wh: WarehouseConfigInput,
+  /**
+   * Trần clip đang áp của cả nền tảng — `clip_max_seconds` của mẫu (đợt 6).
+   * Phải truyền đúng con số mà máy cắt clip đang dùng; không truyền = hằng
+   * số cũ.
+   */
+  clipMaxSeconds: number = MAX_CLIP_DURATION_SECONDS,
+): EffectiveParam[] {
   const cfg = wh.packing_timing_config;
   const timing = readTimingConfig(cfg);
   const out: EffectiveParam[] = [];
@@ -212,11 +219,11 @@ export function resolveWarehouseParams(wh: WarehouseConfigInput): EffectiveParam
       unit: "giây" as const,
     };
     const set = storedNumber(cfg, "max_order_seconds");
-    const eff = resolveOrderLimitSeconds(cfg);
-    const coverage = MAX_CLIP_DURATION_SECONDS - timing.pre;
+    const eff = resolveOrderLimitSeconds(cfg, clipMaxSeconds);
+    const coverage = clipMaxSeconds - timing.pre;
     const consequence =
       eff - coverage > UNCOVERED_TAIL_NOTICE_SECONDS
-        ? `Clip bằng chứng chỉ dài tối đa ${MAX_CLIP_DURATION_SECONDS}s kể cả đệm — ` +
+        ? `Clip bằng chứng chỉ dài tối đa ${clipMaxSeconds}s kể cả đệm — ` +
           `${eff - coverage}s cuối của đơn dài nhất không có video.`
         : null;
     if (set === null) {
@@ -225,14 +232,14 @@ export function resolveWarehouseParams(wh: WarehouseConfigInput): EffectiveParam
       out.push(
         param(base, set, eff, "clamped", `Giá trị không hợp lệ — dùng mặc định ${eff}s.`, consequence),
       );
-    } else if (set > ORDER_HARD_LIMIT_SECONDS) {
+    } else if (set > clipMaxSeconds) {
       out.push(
         param(
           base,
           set,
           eff,
           "clamped",
-          `Kẹp ở trần kỹ thuật ${ORDER_HARD_LIMIT_SECONDS}s của video và tự dừng đơn. ` +
+          `Kẹp ở trần kỹ thuật ${clipMaxSeconds}s của video và tự dừng đơn. ` +
             `${set}s chỉ còn dùng để đánh dấu đơn bất thường.`,
           consequence,
         ),
@@ -307,7 +314,7 @@ export function resolveWarehouseParams(wh: WarehouseConfigInput): EffectiveParam
     // 26/09/2026: kiện hoàn 300s ra clip đúng 180s, lý do
     // `capped_at_max_duration`. Có test canh: ai sửa trần đó trong
     // clip-resolver thì phải sửa cả dòng này.
-    const coverage = MAX_CLIP_DURATION_SECONDS - timing.pre;
+    const coverage = clipMaxSeconds - timing.pre;
     const consequence =
       eff - coverage > UNCOVERED_TAIL_NOTICE_SECONDS
         ? `Kiện hoàn tự đóng sau ${eff}s nhưng clip bằng chứng chỉ ghi được ${coverage}s đầu — ` +
