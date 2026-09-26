@@ -1412,3 +1412,84 @@ docs([Module]):     Cập nhật tài liệu
 - **Tiêu chí dễ bỏ qua nhất mà hậu quả tệ nhất — độ nhạy sáng:** camera nhạy kém trong kho hơi tối sẽ tự kéo dài phơi sáng còn camera kia thì không, và độ lệch **thay đổi theo ánh sáng trong ngày**. Loại lệch đó không bù được bằng một con số cố định. Đại Kim chênh ngay từ tờ thông số: 1/3" ở 0.005 Lux so với 1/2.8" ở 0.001 Lux.
 - **Ngưỡng nghiệm thu trước khi bắt vít:** dưới 200ms đạt, 200–500ms chấp nhận nhưng phải tìm nguyên nhân, **trên 500ms không nhận hàng**. Đo lại lần nữa vào lúc kho tối nhất trong ngày — con số đổi nhiều thì vấn đề là độ nhạy sáng, chữa bằng **thêm đèn** chứ không phải chỉnh camera.
 - **Trạng thái:** Hoàn tất.
+
+### [PLATFORM-GIAM-SAT] - Giám sát nhiều kho: phát hiện con tự kiểm đã chết 44 ngày
+
+- **Chủ dự án yêu cầu 26/09/2026:** platform sẽ quản lý nhiều kho cho nhiều shop; kho nào lỗi thì platform phải được báo **chính xác lỗi gì**, và kiểm soát được toàn bộ.
+- **Tài liệu:** `plans/active/PLATFORM-GIAM-SAT-nhieu-kho.md` (mới). Chưa viết dòng mã nào.
+- **PHÁT HIỆN CHẶN ĐƯỜNG — con tự kiểm hạ tầng đã chết 44 ngày.** Đo trên `system_jobs`: `cleanup-clips` 43 lần, gần nhất 25/09 ✅; **`system-check` 7 lần, gần nhất 13/08/2026** ❌; **`orphan-segments` 0 lần** ❌. `system-check` là thứ chạy 10 phép kiểm và gửi cảnh báo Lark. Suốt 44 ngày, kho nào chết agent / mất camera / đầy ổ cũng không ai được báo. Trang `/platform/system` vẫn xanh vì nó **tự chạy kiểm tra lúc mở trang** — chỉ khi có người mở.
+  - Mã nguồn đã lường trước, ghi trong `src/app/api/system/status/route.ts`: *"trang xanh nhưng timer chết thì vẫn mù"*.
+  - Mọi thứ cần **đã có sẵn trong repo** (`docs/vps/betabox-syscheck.{service,timer}`, `betabox-orphan-segments.*`, runbook) — chỉ là chưa ai cài lên VPS.
+  - **Nghi ngờ đáng kiểm khi cài:** file `.service` trong repo vẫn còn chuỗi giữ chỗ `THAY-BANG-UUID-SYSCHECK-MOI` ở `ExecStartPost`. Cài nguyên vậy thì curl fail, và với `Type=oneshot` systemd đánh dấu cả unit là failed.
+- **Đo mức nhiễu của kênh log agent (7 ngày, MỘT kho):** `agent_log_events` **26.990 dòng**, trong đó `[qr-frame-source]` 20.948 (nhiễu giải mã ffmpeg, 77%). Mức error 1.592 — gồm **528 lần `FATAL unhandledRejection`** và **525 lần MediaMTX chết**, nằm im không ai được báo. Năm mươi kho là 1,35 triệu dòng/tuần: kênh này **không mở rộng được**.
+- **Loại lỗi tệ nhất — hệ thống biết lý do rồi vứt đi:** lượt quét bị bỏ vì lệch nguồn quét. Route tính đúng `scan_source_disabled` và gửi cho agent, nhưng cloud không lưu → nhật ký gắn nhãn sai hai lần: "Mã sai" (mã hợp lệ) và "Đang chờ xử lý" (sẽ không bao giờ xử lý).
+- **Thiết kế đề xuất:** một bảng `warehouse_incidents` gom theo `(organization_id, code, subject)` — camera chết 300 lần trong đêm là MỘT dòng `occurrence_count = 300`. Ba đường đổ vào: kiểm định kỳ, agent báo có cấu trúc, cloud ghi lỗi lúc chạy. Giữ nguyên bốn thứ đang làm đúng: im lặng là bình thường, chống lặp 6 giờ, tách webhook hạ tầng khỏi webhook khách, mỗi phép kiểm tự bọc lỗi thành `unknown`.
+- **Đợt việc:** 0 bật lại timer (ops) → 1 sổ sự cố → 2 trang Sự cố → 3 cloud ghi lỗi lúc chạy → 4 agent báo có cấu trúc (gộp vào bản agent đã dự kiến ở kế hoạch cấu hình) → 5 định tuyến thông báo theo shop.
+- **Viết lại thành một tài liệu liền mạch (26/09/2026)** sau khi chủ dự án hỏi làm sao nắm được lỗi ở nhiều kho cùng lúc (dữ liệu, logic, chức năng, thiết bị kết nối). Bản mới có mục riêng **5 nguyên tắc thiết kế** và **5 tầng lỗi + ai phát hiện được**, thay cho việc nối thêm phụ lục:
+  - **Quyết định kiến trúc quan trọng nhất: agent KHAI BÁO trạng thái, cloud PHÁN XÉT.** Đổi từ "gửi sự kiện" sang "gửi trạng thái": khối lượng thành O(1) theo nhịp tim thay vì tăng theo số việc xảy ra (26.990 dòng/tuần/kho → 50 kho là 1,35 triệu); đổi ngưỡng cảnh báo chỉ sửa một chỗ trên cloud thay vì đi cài lại 50 máy; mất gói thì nhịp sau khai lại, tự lành. Agent **không** phải "kiểm soát lỗi" — nó chỉ khai sự thật về mình.
+  - **Năm tầng lỗi, mỗi tầng một người chứng kiến:** thiết bị → agent; kết nối → cloud phát hiện bằng VẮNG MẶT; chức năng → cả hai; logic nghiệp vụ và dữ liệu → hoàn toàn cloud. Ba tầng dưới không đụng agent.
+  - **Lỗi im lặng phải bắt bằng vắng mặt** — agent không báo được cái chết của chính nó. `checkAgentHeartbeat` đang làm đúng và phải giữ: đo **số phút đóng gói đã mất** chứ không đo "im lặng bao lâu", kèm `graceMinutes` để không báo động giả mỗi tối. Nguyên tắc "ngưỡng theo mất mát nghiệp vụ, không theo sự kiện kỹ thuật" phải áp cho mọi phép kiểm khi nhiều kho — kho một ca và kho ba ca không dùng chung một con số.
+  - **Bảng đội agent** (kho / phiên bản / ping cuối / camera đang ghi / ổ đĩa / sự cố mở) vá đúng lỗ hổng gặp thật 25/09: để biết máy kho chạy bản nào phải nhờ chủ dự án đọc **kích thước file exe**, vì `remote-logger` chỉ chuyển tiếp `warn`/`error` còn dòng nhận diện bản mới là `console.log`.
+  - **Điều khiển từ xa dùng lại `agent_commands`** (đã ký HMAC, đã trả mã lỗi có cấu trúc), thêm `collect_diagnostics` / `restart_recording` / `resync_segments`. Giới hạn phải tôn trọng: lệnh chỉ chạy khi agent còn sống — đừng thiết kế như thể nó thay được việc tới kho.
+  - **Chưa làm tự động cập nhật agent:** sai một bản là tắt ghi hình của toàn bộ khách cùng lúc. Nâng theo nhóm, giữ đường lùi.
+- **Trạng thái:** Chờ chủ dự án làm đợt 0 và trả lời 4 câu hỏi cuối tài liệu.
+
+### [HA-TANG-NHIEU-KHO] - Hạ tầng cần có khi chạy nhiều kho
+
+- **Chủ dự án hỏi 26/09/2026:** "bạn phải cho tôi biết cần những hạ tầng gì nữa".
+- **Tài liệu:** `docs/ha-tang-can-co-khi-nhieu-kho.md` (mới). Mọi con số đo trên hệ thống thật, phần suy ra cho nhiều kho ghi rõ là suy ra.
+- **PHÁT HIỆN NẶNG NHẤT — ổ đĩa máy kho không đủ cho hạn lưu đang cấu hình, và điều này đúng ngay ở kho ĐẦU TIÊN:**
+  - Đo thật: CTC01 5,88 Mbps + CQR01 2,73 Mbps = 8,61 Mbps = **3,87 GB/giờ** → ca 8 tiếng ≈ **31 GB/ngày**.
+  - Hạn lưu đặt **30 ngày** cần **≈ 930 GB**; ổ máy kho chỉ **≈ 465 GB**. **Thiếu một nửa.**
+  - Nghĩa là bộ giữ ổ sẽ xoá dần, **hạn lưu thật ngắn hơn hạn lưu đã hứa với khách**, và không ai được báo.
+  - Ba cách: ổ 2 TB (rẻ nhất), hạ toàn cảnh xuống 1080p (31 → ~21 GB/ngày, dù sao cũng nên làm), hoặc hạ hạn lưu xuống 15 ngày và báo khách.
+  - **Công thức báo giá kho mới:** `GB/ngày = tổng Mbps × 0,45 × số giờ`; `ổ cần = GB/ngày × số ngày lưu × 1,3`. Kho từ 3 camera trở lên phải tính **2–4 TB** ngay từ lúc báo giá.
+- **Ba thứ thiếu hẳn, cần có trước khi nhận kho thứ hai:**
+  1. **Dead-man switch bên ngoài** (healthchecks.io, gói miễn phí đủ) — thứ duy nhất báo lỗi mà nằm trên cùng cái máy có thể chết thì nó chết cùng máy đó. Đúng chuyện đã xảy ra 44 ngày.
+  2. **NTP ở mỗi máy kho** — toàn bộ cắt clip chạy theo đồng hồ máy kho; lệch 30 giây là mọi clip của kho đó lệch 30 giây. Hệ thống **có đo** (`warehouse_agents.time_drift_seconds`, cả hai agent đang 0s) nhưng **không phép kiểm nào cảnh báo**. Đo mà không ai nhìn.
+  3. **Sao lưu Supabase + thử phục hồi một lần** — một dự án giữ bằng chứng của mọi shop. Bản sao lưu chưa từng thử phục hồi thì chưa phải bản sao lưu.
+- **Điểm mù về tiền:** hai phép kiểm `supabase_egress` và `storage_usage` đều trả "chưa đo được" — Supabase không công khai API trả lượng dùng so với hạn mức. Một kho thì xem tay được; nhiều kho thì vượt hạn mức mới biết.
+- **Quy mô dữ liệu đếm thật (một kho):** `agent_log_events` 32.029 (26.990 chỉ trong 7 ngày, **77% là nhiễu ffmpeg**) → suy ra 50 kho ≈ **5,8 triệu dòng/tháng**; `camera_recording_files` 34.275 → ≈ 1,4 triệu/tháng. Hai bảng này chiếm gần hết; cần hạn lưu + gom nhiễu tại nguồn.
+- **VPS:** một máy cho tất cả, không dự phòng. Tin tốt: VPS chết thì **máy kho vẫn ghi hình bình thường** (ghi local + hàng đợi gửi lại) — mất giao diện chứ không mất bằng chứng. Nên chưa đáng đầu tư dự phòng nóng.
+- **Đường lên kho 198 KB/s** (đo Đại Kim) là trần cứng: một camera ghi ra 1 GB/giờ, đường lên chở 0,68 GB/giờ → **đẩy video gốc lên cloud không chạy được** với bất kỳ kho nào, trừ khi khách có đường riêng.
+- **Thứ tự đầu tư đề xuất:** (1) cài timer + dead-man switch — 0 đồng; (2) chốt và thử sao lưu — 0 đồng; (3) ổ 2 TB cho Đại Kim — vài triệu; (4) chốt cách theo dõi egress; (5) hạn lưu + gom nhiễu log; (6) đưa danh sách hạ tầng kho vào hợp đồng trước khi ký kho thứ hai. **Ba việc đầu không cần viết dòng mã nào.**
+- **Trạng thái:** Hoàn tất tài liệu; chờ chủ dự án quyết đầu tư.
+
+### [GOP-TAI-LIEU] - Gộp ba tài liệu vận hành nhiều kho thành một
+
+- **Chủ dự án yêu cầu 26/09/2026:** "ghi chung vào 1 file md thôi, để tôi đọc tài liệu cho dễ".
+- **Tài liệu mới:** `plans/active/VAN-HANH-NHIEU-KHO.md`.
+- **Đã gộp và XOÁ ba file:**
+  - `plans/active/PLATFORM-GIAM-SAT-nhieu-kho.md` → phần C
+  - `plans/active/PLATFORM-quan-ly-cau-hinh-tap-trung.md` → phần D
+  - `docs/ha-tang-can-co-khi-nhieu-kho.md` → phần B
+- **Gộp không chỉ là nối lại — nó gỡ một vấn đề thật:** ba tài liệu có **ba lộ trình riêng chồng lên nhau**, cùng đòi một bản phát hành agent và cùng phụ thuộc phép giải "Đặt / Thực dùng". Bản gộp có **một lộ trình duy nhất 9 đợt** (phần E), thêm cột "đụng agent?" — **đợt 0–6 không đụng agent dòng nào**, chỉ đợt 7 cần bản mới và nó chở cả ba việc agent cùng lúc.
+- **Phần A mới — gom mọi việc 0 đồng làm được ngay:** cài hai timer; chốt và **thử** sao lưu Supabase; điền `return_retention_days` (cả hai tổ chức đang NULL); đặt ổ 2 TB cho Đại Kim (hạn lưu 30 ngày đang cần 930 GB mà ổ chỉ 465 GB).
+- **Giữ nguyên toàn bộ số đo thật:** watchdog chết 44 ngày; 26.990 dòng log/tuần/kho với 77% nhiễu ffmpeg; 528 `FATAL` + 525 MediaMTX chết không ai được báo; 5/90 lượt quét bị nuốt vì lệch nguồn; 31 GB/ngày so với ổ 465 GB; đường lên kho 198 KB/s.
+- **Cố ý KHÔNG gộp hai tài liệu camera** (`docs/camera-giam-do-tre-toan-canh.md`, `docs/chon-2-camera-tranh-lech-clip.md`): người đọc và thời điểm dùng khác hẳn — đó là hướng dẫn cầm tay làm việc tại kho, không phải tài liệu để quyết đầu tư. Có mục dẫn tới chúng ở cuối bản gộp.
+- **Viết lại lần hai (26/09/2026) theo yêu cầu "tài liệu phải đảm bảo chỉ cần tôi làm theo duy nhất tài liệu đó là có thể đáp ứng được yêu cầu tôi đề ra":**
+  - **Bảng "Yêu cầu và chỗ đáp ứng"** ngay đầu tài liệu — soi từng yêu cầu của chủ dự án sang phần trả lời.
+  - **Phần 0 — sáu quyết định gom một bảng**, mỗi câu có đề xuất sẵn và ghi rõ chặn đợt nào. Đồng ý hết thì nhắn "theo đề xuất" là đủ.
+  - **Phần 1 viết lại thành các bước chạy được**: lệnh `ssh`/`sed`/`cp`/`systemctl` đầy đủ, tiêu chí ĐẠT sau mỗi bước, câu SQL kiểm trên Supabase. Không còn trỏ sang `RUNBOOK-P0-GIAO-KHACH.md`.
+  - **Gộp phần chỉnh camera 1080p vào thẳng mục ổ đĩa** — trước đó phải mở `docs/camera-giam-do-tre-toan-canh.md` mới làm được việc này.
+  - **Thêm đường dẫn UI cụ thể** cho việc điền hạn lưu video hoàn (`/dashboard/settings/warehouse-config` → mục 1 → ô "Số ngày giữ video hàng hoàn").
+  - **Bảng lộ trình thêm hai cột: "anh/chị làm gì"** (tách việc cần người khỏi việc tôi làm) **và "nghiệm thu"** từng đợt.
+  - **Phần 6 mới — nghiệm thu:** checklist sau phần 1; bảng "coi như đáp ứng yêu cầu khi" soi lại đúng từng yêu cầu (gây lỗi thật ở kho → 15 phút có dòng sự cố nêu đúng camera + lý do + câu cần làm); và **"dấu hiệu làm sai hướng"** để tự phát hiện lệch.
+  - Hai tài liệu camera đổi nhãn thành "tham khảo thêm — **không cần** cho yêu cầu này", để không ai tưởng là thiếu.
+- **Trạng thái:** Hoàn tất. Chờ chủ dự án làm phần 1 và chốt sáu quyết định ở phần 0.
+
+### [GIAM-SAT-DOT-1] - Mục kiểm "Cấu hình" — vá điểm mù cuối cùng của bộ theo dõi
+
+- **Thuộc:** `plans/active/VAN-HANH-NHIEU-KHO.md` đợt 1. Chủ dự án yêu cầu 26/09/2026: "chia nhỏ thành từng task rồi xử lý tuần tự".
+- **Vấn đề:** 11 mục kiểm hiện có đều hỏi *"hệ thống có đang chạy không"*. Không mục nào hỏi *"kho này cấu hình đủ chưa, và giá trị người ta đặt có thật sự được dùng không"*. Ba kiểu hỏng này đều **im lặng** — hệ thống chạy bình thường, số liệu vẫn ra, chỉ là không đúng ý người đặt.
+- **Bốn luật** (`collectConfigProblems` trong `src/lib/system/checks.ts`):
+  1. **THIẾU `retention_days`** → **crit**, không phải warn: hạn lưu NULL thì agent không ghi cache và script dọn ổ máy kho fail-loud rồi KHÔNG chạy → ổ đầy dần tới lúc hỏng ghi hình. Mất bằng chứng thật.
+  2. **THIẾU `return_retention_days`** → warn. Câu thông báo nói rõ **con số đang chạy** ("đang chạy mặc định 7 ngày"), không chỉ "chưa đặt" — không thì người đọc không biết hệ thống đang làm gì.
+  3. **BỊ KẸP**: `max_order_seconds` > `ORDER_HARD_LIMIT_SECONDS` → warn. Import hằng số từ `@/lib/station/order-timeout` chứ **không chép lại con số** — chép là hai chỗ lệch nhau rồi mục kiểm báo sai đúng cái nó đi soi.
+  4. **LỆCH GIỜ MÁY KHO**: `warehouse_agents.time_drift_seconds` ≥ 5s warn, ≥ 30s crit. Hệ thống **vốn đã đo** con số này mỗi nhịp tim nhưng **chưa ai nhìn**. Toàn bộ cắt clip chạy theo đồng hồ máy kho nên lệch 30s là mọi clip của kho đó lệch 30s.
+- **Tách `collectConfigProblems` thành hàm thuần** để test từng luật không cần dựng client Supabase giả.
+- **Mỗi vấn đề bắt buộc kèm câu "cần làm"**, tách khỏi câu triệu chứng — có bài test khoá riêng điều này.
+- **Files test:** `tests/config-health-check.test.ts` (mới, 9 bài, gồm bài ranh giới 180 vs 181 và bài khoá việc đăng ký vào `runSystemChecks` — viết hàm mà quên cắm vào là mục không bao giờ chạy, đúng kiểu lỗi im lặng mà chính nó sinh ra để bắt). Sửa 2 bài cũ chốt cứng "11 mục" và "7 mục mất nguồn" → 12 và 8.
+- **Kết quả kiểm tra:** `pnpm test` **637/637**, `pnpm typecheck` sạch, eslint không lỗi mới.
+- **Trên dữ liệu thật sẽ hiện:** kho Đại Kim — **warn, 1 mục**: *"Chưa đặt thời gian lưu video hàng hoàn — đang chạy mặc định 7 ngày."* Tổ chức Betacom demo có `max_order_seconds = 600` bị kẹp nhưng **không hiện** vì `monitoring_enabled = false` — đúng thiết kế, phạm vi theo dõi tôn trọng cờ đó.
+- **Trạng thái:** Hoàn tất đợt 1.

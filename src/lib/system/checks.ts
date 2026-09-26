@@ -7,6 +7,10 @@ import {
   SYSTEM_JOB_CLOSE_ORPHAN_SEGMENTS,
   errorMessage,
 } from "@/lib/system/job-log";
+// Trần kỹ thuật mà `max_order_seconds` của kho bị kẹp vào. Đọc từ nguồn
+// gốc chứ không chép lại con số: chép là hai chỗ lệch nhau rồi mục kiểm
+// báo sai đúng cái nó đi soi.
+import { ORDER_HARD_LIMIT_SECONDS } from "@/lib/station/order-timeout";
 
 /**
  * Chín mục kiểm hạ tầng Betabox.
@@ -145,6 +149,7 @@ export const CHECK_KEYS = {
   vps: "vps_resources",
   storage: "storage_usage",
   warehouseDisk: "warehouse_disk",
+  config: "config_health",
 } as const;
 
 /**
@@ -299,6 +304,10 @@ export const CHECK_CONFIG = {
     [CHECK_KEYS.recording]: true,
     [CHECK_KEYS.clipFailures]: true,
     [CHECK_KEYS.vps]: true,
+    // Cấu hình: mất nguồn ở đây nghĩa là không đọc nổi bảng organizations /
+    // warehouses — sự cố thật, đáng báo. Bản thân mục warn/crit thì vẫn gửi
+    // như mọi mục khác; cờ này chỉ nói về trạng thái unknown.
+    [CHECK_KEYS.config]: true,
   } as Record<string, boolean>,
 
   /**
@@ -308,6 +317,28 @@ export const CHECK_CONFIG = {
    * cách nhanh nhất khiến người ta tắt thông báo.
    */
   unknownAggregateFrom: 2,
+
+  config: {
+    /**
+     * Lệch giờ máy kho — đo bằng `warehouse_agents.time_drift_seconds`.
+     *
+     * VÌ SAO NGƯỠNG THẤP: toàn bộ hệ thống cắt clip chạy theo ĐỒNG HỒ MÁY
+     * KHO. Tên đoạn video đặt theo giờ máy, mốc quét lấy giờ máy, cửa sổ cắt
+     * tính theo giờ máy. Máy lệch 30 giây thì MỌI clip của kho đó lệch 30
+     * giây — và không có gì trên giao diện cho thấy điều đó.
+     *
+     * 5 giây: đã đủ để người xem thấy hai góc không khớp. 30 giây: clip cắt
+     * ra có thể trượt hẳn khỏi thao tác đóng gói.
+     */
+    driftWarnSeconds: 5,
+    driftCritSeconds: 30,
+    /**
+     * Hạn lưu thấp hơn sàn của bộ giữ ổ đĩa (7 ngày) là hai cấu hình đánh
+     * nhau: một bên bảo "giữ N ngày", bên kia từ chối xoá đoạn trẻ hơn 7
+     * ngày. Người vận hành đặt số mà số đó không có tác dụng.
+     */
+    minRetentionDays: 7,
+  },
 
   vps: {
     diskWarnPct: 85,
@@ -1194,6 +1225,233 @@ function orgEntity(
   };
 }
 
+// ============================================================================
+// Cấu hình có đủ và có thật sự được dùng không
+// ============================================================================
+
+/**
+ * Điểm mù cuối cùng của bộ theo dõi: **cấu hình**.
+ *
+ * Mười mục còn lại đều hỏi "hệ thống có đang chạy không". Không mục nào hỏi
+ * "kho này đã cấu hình đủ chưa, và giá trị người ta đặt có thật sự được dùng
+ * không". Ba kiểu hỏng dưới đây đều IM LẶNG — hệ thống chạy bình thường, số
+ * liệu vẫn ra, chỉ là không đúng ý người đặt:
+ *
+ *   1. THIẾU — ô để trống, hệ thống rơi về mặc định trong mã nguồn. Đo
+ *      25/09/2026: `return_retention_days` của CẢ HAI tổ chức đều NULL, tức
+ *      con số 7 ngày đang chạy không phải ai đặt.
+ *   2. BỊ KẸP — đặt 600 giây nhưng tầng video kéo về 180. Kho Betacom Demo
+ *      đang vậy. Mã nguồn có `console.warn` nhưng không ai đọc log máy chủ.
+ *   3. ĐÁNH NHAU — hạn lưu thấp hơn sàn 7 ngày của bộ giữ ổ đĩa.
+ *
+ * Và một kiểu thứ tư không phải cấu hình nhưng cùng tính chất im lặng:
+ * **lệch giờ máy kho**. Hệ thống CÓ đo (`time_drift_seconds` gửi kèm mỗi nhịp
+ * tim, lưu vào `warehouse_agents`) nhưng trước mục này thì không ai nhìn con
+ * số đó.
+ *
+ * Mỗi vấn đề đều kèm câu "cần làm" — luật của module: thêm mã lỗi mà không
+ * viết được việc cần làm thì không được thêm.
+ */
+export async function checkConfiguration(
+  admin: Admin,
+  _now: Date,
+  preloaded?: MonitoringScope,
+): Promise<SystemCheck> {
+  const key = CHECK_KEYS.config;
+  const scope = preloaded ?? (await loadMonitoringScope(admin));
+
+  if (scope.orgIds.length === 0) {
+    return {
+      key,
+      status: "unknown",
+      unknownKind: "structural",
+      value: "không có tổ chức nào theo dõi",
+      message: "Không tổ chức nào bật monitoring_enabled — không có cấu hình nào để kiểm.",
+      entities: [],
+    };
+  }
+
+  const cfg = CHECK_CONFIG.config;
+
+  const [orgsRes, whRes, agentsRes] = await Promise.all([
+    admin
+      .from("organizations")
+      .select("id, retention_days, return_retention_days")
+      .in("id", scope.orgIds)
+      .abortSignal(queryTimeout()),
+    admin
+      .from("warehouses")
+      .select("id, code, organization_id, packing_timing_config")
+      .in("organization_id", scope.orgIds)
+      .eq("status", "active")
+      .abortSignal(queryTimeout()),
+    admin
+      .from("warehouse_agents")
+      .select("code, organization_id, time_drift_seconds")
+      .in("organization_id", scope.orgIds)
+      .eq("status", "active")
+      .abortSignal(queryTimeout()),
+  ]);
+  if (orgsRes.error) throw new Error(orgsRes.error.message);
+  if (whRes.error) throw new Error(whRes.error.message);
+  if (agentsRes.error) throw new Error(agentsRes.error.message);
+
+  const orgById = new Map<string, ConfigOrgRow>();
+  for (const o of (orgsRes.data as ConfigOrgRow[] | null) ?? []) orgById.set(o.id, o);
+
+  const whByOrg = new Map<string, ConfigWarehouseRow[]>();
+  for (const w of (whRes.data as ConfigWarehouseRow[] | null) ?? []) {
+    const list = whByOrg.get(w.organization_id) ?? [];
+    list.push(w);
+    whByOrg.set(w.organization_id, list);
+  }
+
+  const agentsByOrg = new Map<string, ConfigAgentRow[]>();
+  for (const a of (agentsRes.data as ConfigAgentRow[] | null) ?? []) {
+    const list = agentsByOrg.get(a.organization_id) ?? [];
+    list.push(a);
+    agentsByOrg.set(a.organization_id, list);
+  }
+
+  const entities: CheckEntity[] = scope.orgIds.map((orgId) => {
+    const problems = collectConfigProblems({
+      org: orgById.get(orgId),
+      warehouses: whByOrg.get(orgId) ?? [],
+      agents: agentsByOrg.get(orgId) ?? [],
+      cfg,
+    });
+
+    if (problems.length === 0) {
+      return orgEntity(orgId, "Cấu hình", "ok", "Đủ và đang có tác dụng.", { count: 0 });
+    }
+    // Mục xấu nhất quyết định trạng thái; gộp mọi câu để người trực đọc một
+    // lượt thay vì mở từng tổ chức ra xem.
+    const worst: CheckStatus = problems.some((p) => p.status === "crit") ? "crit" : "warn";
+    return orgEntity(orgId, "Cấu hình", worst, problems.map((p) => p.detail).join(" "), {
+      count: problems.length,
+      action: problems.map((p) => p.action).join(" "),
+    });
+  });
+
+  const bad = entities.filter((e) => e.status !== "ok");
+  if (bad.length === 0) {
+    return {
+      key,
+      status: "ok",
+      value: `${entities.length}/${entities.length} tổ chức đủ cấu hình`,
+      message: "Mọi tổ chức đã đặt đủ cấu hình, và không giá trị nào bị kẹp hay đánh nhau.",
+      entities,
+    };
+  }
+  const worst: CheckStatus = bad.some((e) => e.status === "crit") ? "crit" : "warn";
+  const total = bad.reduce((sum, e) => sum + (e.count ?? 0), 0);
+  return {
+    key,
+    status: worst,
+    value: `${total} mục ở ${bad.length}/${entities.length} tổ chức`,
+    message: bad
+      .map((e) => `${scope.orgNameById.get(e.orgId) ?? e.orgId}: ${e.detail}`)
+      .join(" | "),
+    entities,
+  };
+}
+
+interface ConfigOrgRow {
+  id: string;
+  retention_days: number | null;
+  return_retention_days: number | null;
+}
+interface ConfigWarehouseRow {
+  id: string;
+  code: string;
+  organization_id: string;
+  packing_timing_config: Record<string, unknown> | null;
+}
+interface ConfigAgentRow {
+  code: string;
+  organization_id: string;
+  time_drift_seconds: number | null;
+}
+interface ConfigProblem {
+  status: CheckStatus;
+  detail: string;
+  action: string;
+}
+
+/**
+ * Tách khỏi `checkConfiguration` để mỗi luật kiểm được riêng bằng test
+ * thuần, không cần dựng client Supabase giả.
+ */
+export function collectConfigProblems(input: {
+  org?: ConfigOrgRow;
+  warehouses: ConfigWarehouseRow[];
+  agents: ConfigAgentRow[];
+  cfg: typeof CHECK_CONFIG.config;
+}): ConfigProblem[] {
+  const { org, warehouses, agents, cfg } = input;
+  const problems: ConfigProblem[] = [];
+
+  // (1) THIẾU — ô để trống, đang chạy bằng mặc định trong mã nguồn.
+  if (org && org.retention_days === null) {
+    problems.push({
+      // crit chứ không warn: hạn lưu NULL thì agent không ghi cache, và
+      // script dọn ổ máy kho fail-loud rồi KHÔNG chạy. Ổ đầy dần cho tới
+      // lúc hỏng ghi hình — mất bằng chứng thật, không phải phiền phức.
+      status: "crit",
+      detail: "Chưa đặt thời gian lưu video — script dọn ổ đĩa máy kho sẽ không chạy.",
+      action: "Vào Cấu hình kho → mục Thời gian lưu video, điền số ngày.",
+    });
+  }
+  if (org && org.return_retention_days === null) {
+    problems.push({
+      status: "warn",
+      detail: "Chưa đặt thời gian lưu video hàng hoàn — đang chạy mặc định 7 ngày.",
+      action: "Vào Cấu hình kho → ô Số ngày giữ video hàng hoàn, điền số ngày.",
+    });
+  }
+
+  // (3) ĐÁNH NHAU — hạn lưu thấp hơn sàn của bộ giữ ổ đĩa trên máy kho.
+  if (org && org.retention_days !== null && org.retention_days < cfg.minRetentionDays) {
+    problems.push({
+      status: "warn",
+      detail:
+        `Thời gian lưu video đặt ${org.retention_days} ngày, thấp hơn sàn ` +
+        `${cfg.minRetentionDays} ngày của bộ giữ ổ đĩa — máy kho sẽ không xoá xuống dưới sàn.`,
+      action:
+        `Nâng thời gian lưu video lên ít nhất ${cfg.minRetentionDays} ngày, ` +
+        `hoặc chấp nhận con số đang đặt không có tác dụng.`,
+    });
+  }
+
+  // (2) BỊ KẸP — đặt một đằng, tầng dưới dùng một nẻo, và không báo ai.
+  for (const w of warehouses) {
+    const raw = Number((w.packing_timing_config ?? {}).max_order_seconds);
+    if (!Number.isFinite(raw) || raw <= ORDER_HARD_LIMIT_SECONDS) continue;
+    problems.push({
+      status: "warn",
+      detail:
+        `Kho ${w.code}: thời gian tối đa mỗi đơn đặt ${raw}s nhưng video và tự dừng đơn ` +
+        `chỉ tới ${ORDER_HARD_LIMIT_SECONDS}s.`,
+      action:
+        `Hạ về ${ORDER_HARD_LIMIT_SECONDS}s cho khớp, hoặc chấp nhận hai tầng khác nhau ` +
+        `(${raw}s chỉ còn dùng để đánh dấu đơn bất thường).`,
+    });
+  }
+
+  // (4) LỆCH GIỜ — không phải cấu hình, nhưng cùng tính chất im lặng.
+  for (const a of agents) {
+    const drift = Number(a.time_drift_seconds);
+    if (!Number.isFinite(drift) || drift < cfg.driftWarnSeconds) continue;
+    problems.push({
+      status: drift >= cfg.driftCritSeconds ? "crit" : "warn",
+      detail: `Máy kho ${a.code} lệch giờ ${drift}s so với máy chủ — mọi clip của kho này lệch bấy nhiêu.`,
+      action: "Bật đồng bộ giờ (NTP) trên máy kho, rồi khởi động lại dịch vụ BetacomAgent.",
+    });
+  }
+
+  return problems;
+}
+
 /**
  * "Kho đóng gói đơn bao lâu SAU KHI segment cuối rơi xuống đĩa."
  *
@@ -1809,7 +2067,7 @@ export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemS
       return fn(admin);
     });
 
-  const [cron, cronOrphan, agent, camera, recording, clips, unmapped, vps] =
+  const [cron, cronOrphan, agent, camera, recording, clips, unmapped, vps, config] =
     await Promise.all([
       needAdmin(CHECK_KEYS.cronCleanup, (a) => checkCronCleanup(a, now)),
       needAdmin(CHECK_KEYS.cronOrphanSegments, (a) => checkCronOrphanSegments(a, now)),
@@ -1825,6 +2083,7 @@ export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemS
       safeCheck(CHECK_KEYS.vps, () =>
         checkVpsResources({ now, os: deps.os, statfs: deps.statfs, path: deps.path }),
       ),
+      needAdmin(CHECK_KEYS.config, (a) => checkConfiguration(a, now, scope ?? undefined)),
     ]);
 
   return {
@@ -1840,6 +2099,7 @@ export async function runSystemChecks(deps: RunChecksDeps = {}): Promise<SystemS
       vps,
       checkStorageUsage(),
       checkWarehouseDisk(),
+      config,
     ],
     scope,
   };

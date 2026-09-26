@@ -875,7 +875,7 @@ test("dung lượng Storage: unknown vì thiếu MẪU SỐ, không bịa số t
 // Toàn loạt
 // ═══════════════════════════════════════════════════════════════════════
 
-test("runSystemChecks: luôn trả đủ 11 mục, đúng thứ tự cố định", async () => {
+test("runSystemChecks: luôn trả đủ 12 mục, đúng thứ tự cố định", async () => {
   const { checks, scope } = await runSystemChecks({
     client: fakeDb(BOOM) as never,
     now: NOW,
@@ -898,6 +898,7 @@ test("runSystemChecks: luôn trả đủ 11 mục, đúng thứ tự cố địn
       CHECK_KEYS.vps,
       CHECK_KEYS.storage,
       CHECK_KEYS.warehouseDisk,
+      CHECK_KEYS.config,
     ],
   );
   // Hỏng TOÀN BỘ nguồn dữ liệu vẫn phải trả về đủ mục, không ném.

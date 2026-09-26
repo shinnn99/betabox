@@ -121,6 +121,7 @@ const LABELS: Record<string, string> = {
   vps_resources: "Ổ đĩa + RAM VPS",
   storage_usage: "Dung lượng Storage",
   warehouse_disk: "Ổ đĩa máy kho",
+  config_health: "Cấu hình",
 };
 
 const HERO_ICON: Record<string, typeof Building2> = {
