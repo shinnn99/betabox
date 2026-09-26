@@ -5,6 +5,13 @@ import {
   MAX_CLIP_DURATION_SECONDS,
 } from "@/lib/order-proof/clip-window";
 import { evaluateOpenSegments } from "@/lib/order-proof/open-segment-verdict";
+import {
+  FALLBACK_BEFORE_NEXT,
+  FALLBACK_DEFAULT_POST,
+  FALLBACK_PRE,
+  readTimingConfig,
+  type TimingTriple,
+} from "@/lib/order-proof/timing-config";
 
 // Resolves the clip window for one packing_event ("scan A") according
 // to warehouse business rules:
@@ -85,10 +92,6 @@ export interface SessionEndInfo {
   ended_at: string;
 }
 
-const FALLBACK_PRE = 10;
-const FALLBACK_BEFORE_NEXT = 2;
-const FALLBACK_DEFAULT_POST = 60;
-
 /**
  * Sàn/trần/buffer của cửa sổ clip nằm ở clip-window.ts — dùng chung với
  * bộ ước lượng dung lượng proof.
@@ -115,67 +118,6 @@ const FALLBACK_DEFAULT_POST = 60;
  * Pre-roll `video_pre_seconds` nằm TRƯỚC scanned_at nên tổng độ dài file
  * mp4 có thể lớn hơn MAX một chút (VD 10 phút 10s với pre 10s).
  */
-
-// Hard ceilings to defend against a typo / wrong unit in
-// warehouses.packing_timing_config (e.g. someone enters minutes instead
-// of seconds and we end up cutting an hour-long clip). The numbers are
-// intentionally generous — they exist to catch obvious misconfiguration,
-// not to enforce a business policy.
-const MAX_PRE = 120; // 2 minutes
-const MAX_BEFORE_NEXT = 60; // 1 minute
-const MAX_DEFAULT_POST = 600; // 10 minutes
-
-interface TimingTriple {
-  pre: number;
-  beforeNext: number;
-  defaultPost: number;
-}
-
-function readTimingConfig(cfg: unknown): TimingTriple {
-  const out: TimingTriple = {
-    pre: FALLBACK_PRE,
-    beforeNext: FALLBACK_BEFORE_NEXT,
-    defaultPost: FALLBACK_DEFAULT_POST,
-  };
-  if (!cfg || typeof cfg !== "object") return out;
-  const c = cfg as Record<string, unknown>;
-  const pre = Number(c.video_pre_seconds);
-  const beforeNext = Number(c.video_before_next_seconds);
-  const post = Number(c.video_default_post_seconds);
-  // Clamp + log when a config value was over the safety ceiling. Silent
-  // clamping makes "why is my 30-minute window only 10 minutes?" hard to
-  // debug — the warn line is the breadcrumb that points at the wrong
-  // packing_timing_config row.
-  if (Number.isFinite(pre) && pre >= 0) {
-    if (pre > MAX_PRE) {
-      console.warn(
-        `[clip-resolver] packing_timing_config.video_pre_seconds=${pre} ` +
-          `exceeds MAX_PRE=${MAX_PRE}s — clamping. Check the warehouse config.`,
-      );
-    }
-    out.pre = Math.min(pre, MAX_PRE);
-  }
-  // before_next can legitimately be 0 (cut exactly to the next scan).
-  if (Number.isFinite(beforeNext) && beforeNext >= 0) {
-    if (beforeNext > MAX_BEFORE_NEXT) {
-      console.warn(
-        `[clip-resolver] packing_timing_config.video_before_next_seconds=${beforeNext} ` +
-          `exceeds MAX_BEFORE_NEXT=${MAX_BEFORE_NEXT}s — clamping. Check the warehouse config.`,
-      );
-    }
-    out.beforeNext = Math.min(beforeNext, MAX_BEFORE_NEXT);
-  }
-  if (Number.isFinite(post) && post > 0) {
-    if (post > MAX_DEFAULT_POST) {
-      console.warn(
-        `[clip-resolver] packing_timing_config.video_default_post_seconds=${post} ` +
-          `exceeds MAX_DEFAULT_POST=${MAX_DEFAULT_POST}s — clamping. Check the warehouse config.`,
-      );
-    }
-    out.defaultPost = Math.min(post, MAX_DEFAULT_POST);
-  }
-  return out;
-}
 
 interface PackingEventInput {
   id: string;

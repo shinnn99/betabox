@@ -7,10 +7,13 @@ import {
   SYSTEM_JOB_CLOSE_ORPHAN_SEGMENTS,
   errorMessage,
 } from "@/lib/system/job-log";
-// Trần kỹ thuật mà `max_order_seconds` của kho bị kẹp vào. Đọc từ nguồn
-// gốc chứ không chép lại con số: chép là hai chỗ lệch nhau rồi mục kiểm
-// báo sai đúng cái nó đi soi.
-import { ORDER_HARD_LIMIT_SECONDS } from "@/lib/station/order-timeout";
+// Phép giải "Đặt / Thực dùng": mục kiểm Cấu hình đọc kết quả của nó thay
+// vì tự tính — hai phép tính riêng cho cùng một câu hỏi thì sớm muộn lệch.
+import {
+  resolveOrgParams,
+  resolveWarehouseParams,
+  type EffectiveParam,
+} from "@/lib/config/effective";
 
 /**
  * Chín mục kiểm hạ tầng Betabox.
@@ -332,12 +335,6 @@ export const CHECK_CONFIG = {
      */
     driftWarnSeconds: 5,
     driftCritSeconds: 30,
-    /**
-     * Hạn lưu thấp hơn sàn của bộ giữ ổ đĩa (7 ngày) là hai cấu hình đánh
-     * nhau: một bên bảo "giữ N ngày", bên kia từ chối xoá đoạn trẻ hơn 7
-     * ngày. Người vận hành đặt số mà số đó không có tác dụng.
-     */
-    minRetentionDays: 7,
   },
 
   vps: {
@@ -1281,7 +1278,7 @@ export async function checkConfiguration(
       .abortSignal(queryTimeout()),
     admin
       .from("warehouses")
-      .select("id, code, organization_id, packing_timing_config")
+      .select("id, code, organization_id, packing_timing_config, session_fallback_seconds")
       .in("organization_id", scope.orgIds)
       .eq("status", "active")
       .abortSignal(queryTimeout()),
@@ -1366,6 +1363,7 @@ interface ConfigWarehouseRow {
   code: string;
   organization_id: string;
   packing_timing_config: Record<string, unknown> | null;
+  session_fallback_seconds: number | null;
 }
 interface ConfigAgentRow {
   code: string;
@@ -1379,8 +1377,35 @@ interface ConfigProblem {
 }
 
 /**
+ * Việc cần làm cho từng thông số bị kẹp. Thiếu khoá ở đây thì rơi về câu
+ * chung — nhưng câu chung kém hẳn, nên thêm thông số mới vào phép giải thì
+ * thêm luôn một dòng ở đây.
+ */
+const CLAMPED_ACTION: Record<string, (p: EffectiveParam) => string> = {
+  max_order_seconds: (p) =>
+    `Hạ về ${p.effective}s cho khớp, hoặc chấp nhận hai tầng khác nhau ` +
+    `(${p.set}s chỉ còn dùng để đánh dấu đơn bất thường).`,
+};
+
+/**
  * Tách khỏi `checkConfiguration` để mỗi luật kiểm được riêng bằng test
  * thuần, không cần dựng client Supabase giả.
+ *
+ * Từ đợt 2 (26/09/2026) hàm này KHÔNG TỰ TÍNH gì về cấu hình — nó chỉ đọc
+ * kết quả của phép giải "Đặt / Thực dùng" (`src/lib/config/effective.ts`).
+ * Bản đợt 1 tự so `max_order_seconds` với trần: tức là trang cấu hình và
+ * mục kiểm có hai phép tính riêng cho cùng một câu hỏi, sớm muộn sẽ lệch.
+ *
+ * Báo gì, im gì — ranh giới cố ý:
+ *   - BÁO: hạn lưu cấp tổ chức để trống / sai; mọi thông số kho BỊ KẸP;
+ *     lệch giờ máy kho.
+ *   - IM: thông số kho đang dùng MẶC ĐỊNH. Đó là thiết kế
+ *     (`resolve_packing_timing`: "kho lưu thiếu khoá tự nhận mặc định"),
+ *     báo cả nó là trang Cần chú ý ngập dòng vàng mà không ai cần làm gì.
+ *   - IM: `consequence` (ví dụ clip kiện hoàn bị cụt). Đó là giới hạn của
+ *     MÃ NGUỒN, giống hệt nhau ở mọi tổ chức, không sửa được bằng cấu hình
+ *     — báo cho người vận hành là bắt họ đi sửa thứ họ không sửa được.
+ *     Trang cấu hình vẫn hiện nó.
  */
 export function collectConfigProblems(input: {
   org?: ConfigOrgRow;
@@ -1391,54 +1416,56 @@ export function collectConfigProblems(input: {
   const { org, warehouses, agents, cfg } = input;
   const problems: ConfigProblem[] = [];
 
-  // (1) THIẾU — ô để trống, đang chạy bằng mặc định trong mã nguồn.
-  if (org && org.retention_days === null) {
-    problems.push({
-      // crit chứ không warn: hạn lưu NULL thì agent không ghi cache, và
-      // script dọn ổ máy kho fail-loud rồi KHÔNG chạy. Ổ đầy dần cho tới
-      // lúc hỏng ghi hình — mất bằng chứng thật, không phải phiền phức.
-      status: "crit",
-      detail: "Chưa đặt thời gian lưu video — script dọn ổ đĩa máy kho sẽ không chạy.",
-      action: "Vào Cấu hình kho → mục Thời gian lưu video, điền số ngày.",
-    });
-  }
-  if (org && org.return_retention_days === null) {
-    problems.push({
-      status: "warn",
-      detail: "Chưa đặt thời gian lưu video hàng hoàn — đang chạy mặc định 7 ngày.",
-      action: "Vào Cấu hình kho → ô Số ngày giữ video hàng hoàn, điền số ngày.",
-    });
-  }
-
-  // (3) ĐÁNH NHAU — hạn lưu thấp hơn sàn của bộ giữ ổ đĩa trên máy kho.
-  if (org && org.retention_days !== null && org.retention_days < cfg.minRetentionDays) {
-    problems.push({
-      status: "warn",
-      detail:
-        `Thời gian lưu video đặt ${org.retention_days} ngày, thấp hơn sàn ` +
-        `${cfg.minRetentionDays} ngày của bộ giữ ổ đĩa — máy kho sẽ không xoá xuống dưới sàn.`,
-      action:
-        `Nâng thời gian lưu video lên ít nhất ${cfg.minRetentionDays} ngày, ` +
-        `hoặc chấp nhận con số đang đặt không có tác dụng.`,
-    });
+  // (1) Cấp tổ chức. Kho đầu tiên làm chỗ dự phòng cho hạn lưu hàng hoàn —
+  // đúng như route retention-plan.
+  if (org) {
+    for (const p of resolveOrgParams(org, warehouses[0]?.packing_timing_config ?? null)) {
+      if (p.source === "set") continue;
+      if (p.key === "retention_days") {
+        problems.push({
+          // crit chứ không warn: hạn lưu trống thì agent không ghi cache và
+          // script dọn ổ máy kho fail-loud rồi KHÔNG chạy. Ổ đầy dần tới lúc
+          // hỏng ghi hình — mất bằng chứng thật, không phải phiền phức.
+          status: "crit",
+          detail: `${p.label}: ${p.reason}`,
+          action: "Vào Cấu hình kho → mục Thời gian lưu video, điền số ngày.",
+        });
+      } else if (p.key === "return_retention_days") {
+        problems.push({
+          status: "warn",
+          detail: `${p.label}: ${p.reason}`,
+          action: "Vào Cấu hình kho → ô Số ngày giữ video hàng hoàn, điền số ngày.",
+        });
+      }
+    }
   }
 
-  // (2) BỊ KẸP — đặt một đằng, tầng dưới dùng một nẻo, và không báo ai.
+  // (2) Cấp kho: chỉ báo thông số BỊ KẸP — đặt một đằng, chạy một nẻo, và
+  // không ai được báo. Bản đợt 1 chỉ soi `max_order_seconds`; giờ mọi thông
+  // số trong phép giải đều được soi mà không phải viết thêm luật.
   for (const w of warehouses) {
-    const raw = Number((w.packing_timing_config ?? {}).max_order_seconds);
-    if (!Number.isFinite(raw) || raw <= ORDER_HARD_LIMIT_SECONDS) continue;
-    problems.push({
-      status: "warn",
-      detail:
-        `Kho ${w.code}: thời gian tối đa mỗi đơn đặt ${raw}s nhưng video và tự dừng đơn ` +
-        `chỉ tới ${ORDER_HARD_LIMIT_SECONDS}s.`,
-      action:
-        `Hạ về ${ORDER_HARD_LIMIT_SECONDS}s cho khớp, hoặc chấp nhận hai tầng khác nhau ` +
-        `(${raw}s chỉ còn dùng để đánh dấu đơn bất thường).`,
-    });
+    for (const p of resolveWarehouseParams(w)) {
+      if (p.source !== "clamped") continue;
+      problems.push({
+        status: "warn",
+        detail:
+          `Kho ${w.code}: ${p.label.toLowerCase()} đặt ${p.set}${p.unit === "giây" ? "s" : " ngày"} ` +
+          `nhưng hệ thống dùng ${p.effective}${p.unit === "giây" ? "s" : " ngày"}. ${p.reason}`,
+        action:
+          CLAMPED_ACTION[p.key]?.(p) ??
+          `Sửa ${p.label.toLowerCase()} của kho ${w.code} về trong khoảng cho phép, ` +
+            `hoặc chấp nhận con số đang đặt không có tác dụng.`,
+      });
+    }
   }
 
-  // (4) LỆCH GIỜ — không phải cấu hình, nhưng cùng tính chất im lặng.
+  // (3) Lệch giờ máy kho — không phải cấu hình, nhưng cùng tính chất im lặng.
+  //
+  // Bản đợt 1 còn một luật "hạn lưu thấp hơn sàn 7 ngày của bộ giữ ổ đĩa".
+  // ĐÃ GỠ: ràng buộc CHECK trên database chặn `retention_days` ngoài 7–365
+  // từ migration 20260722120000, nên luật đó không bao giờ chạy được — mã
+  // chết đánh lừa người đọc sau. Khi sàn ổ đĩa thành cấu hình đặt được
+  // (đợt 6), mâu thuẫn này mới có thật; thêm lại lúc đó.
   for (const a of agents) {
     const drift = Number(a.time_drift_seconds);
     if (!Number.isFinite(drift) || drift < cfg.driftWarnSeconds) continue;

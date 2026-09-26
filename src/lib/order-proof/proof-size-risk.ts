@@ -1,6 +1,7 @@
 import "server-only";
 import type { createAdminClient } from "@/lib/supabase/admin";
 import { computeFinalizedClipWindow } from "@/lib/order-proof/clip-window";
+import { readTimingConfig } from "@/lib/order-proof/timing-config";
 import {
   estimateProofSize,
   percentile95BytesPerSecond,
@@ -115,15 +116,13 @@ export async function buildProofSizeRisks(params: {
     .select("id, packing_timing_config")
     .in("id", warehouseIds.length > 0 ? warehouseIds : ["00000000-0000-0000-0000-000000000000"]);
 
+  // Đọc qua đúng hàm máy cắt clip dùng. Trước 26/09/2026 chỗ này tự đọc lại,
+  // cùng mặc định nhưng KHÔNG kẹp trần — đặt pre 300s thì clip thật cắt 120s
+  // mà cảnh báo dung lượng tính 300s.
   const timingByWarehouse = new Map<string, { pre: number; defaultPost: number }>();
   for (const w of warehouses ?? []) {
-    const cfg = w.packing_timing_config as Record<string, unknown> | null;
-    const pre = Number(cfg?.video_pre_seconds);
-    const post = Number(cfg?.video_default_post_seconds);
-    timingByWarehouse.set(w.id as string, {
-      pre: Number.isFinite(pre) && pre >= 0 ? pre : 10,
-      defaultPost: Number.isFinite(post) && post > 0 ? post : 60,
-    });
+    const { pre, defaultPost } = readTimingConfig(w.packing_timing_config);
+    timingByWarehouse.set(w.id as string, { pre, defaultPost });
   }
 
   // 3) Bitrate p95 gần đây per camera — dùng để sàng, và làm fallback

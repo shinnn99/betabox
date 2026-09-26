@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePlatformRole } from "@/lib/supabase/guard";
+import { resolveOrgParams, resolveWarehouseParams } from "@/lib/config/effective";
 
 export const runtime = "nodejs";
 
@@ -48,7 +49,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
   ] = await Promise.all([
     admin
       .from("organizations")
-      .select("id, name, slug, status, created_at, updated_at, logo_url, retention_days")
+      .select("id, name, slug, status, created_at, updated_at, logo_url, retention_days, return_retention_days")
       .eq("id", orgId)
       .maybeSingle(),
     admin
@@ -61,7 +62,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
     // ở sidebar Cấu hình). Chỉ đếm 'enabled=true AND url<>null'.
     admin
       .from("warehouses")
-      .select("id, notify_lark_webhook_url, notify_lark_enabled")
+      .select("id, code, name, status, notify_lark_webhook_url, notify_lark_enabled, packing_timing_config, session_fallback_seconds")
       .eq("organization_id", orgId),
     admin
       .from("cameras")
@@ -256,6 +257,7 @@ export async function GET(_req: Request, ctx: RouteContext) {
     last_activity_at: lastActivityAt,
     config: {
       webhooks_configured: webhooksConfigured,
+      params: buildConfigParams(org, warehousesRes.data ?? []),
     },
     recent: {
       last_order: lastOrderRes.data
@@ -309,4 +311,36 @@ export async function GET(_req: Request, ctx: RouteContext) {
       created_at: a.created_at,
     })),
   });
+}
+
+/**
+ * Bảng "Đặt / Thực dùng" cho tab Cấu hình.
+ *
+ * Mọi con số đi qua phép giải ở `src/lib/config/effective.ts` — trang này
+ * không tự tính gì. Kho dự phòng cho hạn lưu hàng hoàn là kho ĐẦU TIÊN trong
+ * danh sách, không lọc trạng thái, đúng như route `retention-plan` chọn;
+ * lọc khác đi là hai bên ra hai con số.
+ */
+function buildConfigParams(
+  org: { retention_days: number | null; return_retention_days: number | null },
+  warehouses: Array<{
+    id: string;
+    code: string | null;
+    name: string | null;
+    status: string | null;
+    packing_timing_config: unknown;
+    session_fallback_seconds: number | null;
+  }>,
+) {
+  return {
+    org: resolveOrgParams(org, warehouses[0]?.packing_timing_config ?? null),
+    warehouses: warehouses
+      .filter((w) => w.status === "active")
+      .map((w) => ({
+        id: w.id,
+        code: w.code,
+        name: w.name,
+        params: resolveWarehouseParams(w),
+      })),
+  };
 }

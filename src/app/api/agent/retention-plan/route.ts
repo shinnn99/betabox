@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { readAgentHeaders, verifyAgentRequest } from "@/lib/warehouse/agent-auth";
 import { AGENT_API_PATHS } from "@/lib/warehouse/agent-api-paths";
 import { recordAgentSigVersion } from "@/lib/warehouse/agent-sig-telemetry";
+import { resolveReturnRetentionDays } from "@/lib/config/return-retention";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -82,13 +83,12 @@ export async function POST(req: Request) {
       .eq("organization_id", agent.organization_id)
       .limit(1),
   ]);
-  const cfg = (warehouses?.[0]?.packing_timing_config ?? null) as Record<string, unknown> | null;
-  const orgDays = Number(org?.return_retention_days);
-  const rawDays = Number.isFinite(orgDays) && orgDays > 0
-    ? orgDays
-    : Number(cfg?.return_segment_retention_days);
-  const returnRetentionDays =
-    Number.isFinite(rawDays) && rawDays >= 1 && rawDays <= 365 ? Math.floor(rawDays) : 7;
+  // Cùng hàm với phép giải "Đặt / Thực dùng" — con số hiện trên platform và
+  // con số máy kho nhận được phải là một, không phải hai nơi tự tính.
+  const returnRetentionDays = resolveReturnRetentionDays(
+    org?.return_retention_days,
+    warehouses?.[0]?.packing_timing_config,
+  ).days;
 
   // Chỉ trả file đã đủ già để sắp bị xoá; danh sách ngắn thì cache nhẹ và
   // script chạy nhanh. Lùi thêm một ngày để không phụ thuộc giờ chạy.

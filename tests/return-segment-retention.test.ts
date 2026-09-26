@@ -69,7 +69,11 @@ test("route danh sách hàng hoàn có ký HMAC, phân loại và chặn trần"
   const source = readFileSync("src/app/api/agent/retention-plan/route.ts", "utf8");
   assert.ok(source.includes("verifyAgentRequest"), "route agent phải xác thực HMAC");
   assert.ok(source.includes("classify_return_segments"), "phải phân loại trước khi trả");
-  assert.ok(source.includes("return_segment_retention_days"), "phải đọc số ngày từ cấu hình kho");
+  // Từ 26/09/2026 phép tính số ngày nằm ở một hàm dùng chung với phép giải
+  // "Đặt / Thực dùng" — route chỉ gọi hàm, module mới là nơi đọc khoá kho.
+  assert.ok(source.includes("resolveReturnRetentionDays("), "route phải gọi hàm dùng chung, không tự tính");
+  const shared = readFileSync("src/lib/config/return-retention.ts", "utf8");
+  assert.ok(shared.includes("return_segment_retention_days"), "phải đọc số ngày từ cấu hình kho");
   assert.ok(source.includes('.eq("retention_class", "return_short")'), "chỉ trả file đã đánh dấu");
   assert.ok(source.includes("MAX_FILES"), "phải có trần số file mỗi lượt");
 

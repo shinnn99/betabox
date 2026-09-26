@@ -71,9 +71,12 @@ function hasEq(ops: Op[], col: string, val?: unknown): boolean {
 
 /** Ba tổ chức, cả ba theo dõi 24/7 để ca này chỉ nói về chuyện nhiều kho. */
 const ORGS = [
-  { id: "org-a", name: "Kho Đại Kim" },
-  { id: "org-b", name: "Kho Cầu Giấy" },
-  { id: "org-c", name: "Kho Long Biên" },
+  // Đủ cấu hình hạn lưu: các bài ở đây kiểm sự cố AGENT/CAMERA. Tổ chức giả
+  // mà thiếu hạn lưu thì mục kiểm Cấu hình (26/09/2026) báo crit đúng luật,
+  // lẫn vào danh sách sự cố và làm hỏng bài đang kiểm thứ khác.
+  { id: "org-a", name: "Kho Đại Kim", retention_days: 30, return_retention_days: 7 },
+  { id: "org-b", name: "Kho Cầu Giấy", retention_days: 30, return_retention_days: 7 },
+  { id: "org-c", name: "Kho Long Biên", retention_days: 30, return_retention_days: 7 },
 ];
 
 interface World {
@@ -86,7 +89,7 @@ interface World {
     last_probe_at: string | null;
     probe_consecutive_fails: number;
   }>;
-  orgs?: Array<{ id: string; name: string }>;
+  orgs?: Array<{ id: string; name: string; retention_days?: number | null; return_retention_days?: number | null }>;
   warehouses?: Array<{ organization_id: string; name: string }>;
   /** Mốc segment gần nhất, theo org. Thiếu key = kho chưa ghi gì. */
   recordingEndedAt?: Record<string, string>;

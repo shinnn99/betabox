@@ -29,6 +29,7 @@ const kho = (code: string, maxOrderSeconds?: number) => ({
   code,
   organization_id: "org-1",
   packing_timing_config: maxOrderSeconds === undefined ? null : { max_order_seconds: maxOrderSeconds },
+  session_fallback_seconds: 30,
 });
 const may = (code: string, drift: number | null) => ({
   code,
@@ -59,7 +60,7 @@ test("thiếu thời gian lưu video là CRIT, không phải warn", () => {
   });
   assert.equal(problems.length, 1);
   assert.equal(problems[0].status, "crit");
-  assert.match(problems[0].detail, /script dọn ổ đĩa máy kho sẽ không chạy/);
+  assert.match(problems[0].detail, /script dọn ổ đĩa sẽ không chạy/);
 });
 
 test("thiếu hạn lưu hàng hoàn là warn, và nói rõ đang chạy bằng gì", () => {
@@ -106,15 +107,21 @@ test("đặt đúng bằng trần thì KHÔNG kêu", () => {
   );
 });
 
-test("hạn lưu thấp hơn sàn ổ đĩa là hai cấu hình đánh nhau", () => {
-  const problems = collectConfigProblems({
-    org: org(3, 7),
-    warehouses: [],
-    agents: [],
-    cfg,
-  });
-  assert.equal(problems.length, 1);
-  assert.match(problems[0].detail, /thấp hơn sàn/);
+test("luật 'hạn lưu thấp hơn sàn ổ đĩa' đã gỡ vì database chặn trước", () => {
+  // Bản đợt 1 có luật này, nhưng nó KHÔNG BAO GIỜ chạy được: ràng buộc
+  // CHECK trên database chặn retention_days ngoài 7–365. Mã chết đánh lừa
+  // người đọc sau, nên gỡ. Bài này canh cả hai phía: ai gỡ ràng buộc CHECK
+  // thì phải thêm lại luật, vì lúc đó mâu thuẫn mới có thật.
+  const mig = readFileSync("supabase/migrations/20260722120000_organizations_retention_days.sql", "utf8");
+  assert.ok(
+    mig.includes("CHECK (retention_days IS NULL OR (retention_days >= 7 AND retention_days <= 365))"),
+    "ràng buộc CHECK đổi rồi — hạn lưu dưới 7 ngày giờ có thể xảy ra, phải thêm lại luật",
+  );
+  // Soi đúng dấu vết của luật chứ không soi chữ: ghi chú giải thích vì sao
+  // gỡ vẫn được phép nhắc tới nó.
+  const src = readFileSync("src/lib/system/checks.ts", "utf8");
+  assert.ok(!src.includes("minRetentionDays"), "ngưỡng của luật chết vẫn còn trong cấu hình");
+  assert.ok(!src.includes("org.retention_days < "), "phép so của luật chết vẫn còn trong mã");
 });
 
 test("lệch giờ máy kho: warn từ 5 giây, crit từ 30 giây", () => {
