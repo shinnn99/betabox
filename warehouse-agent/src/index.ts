@@ -690,6 +690,12 @@ async function main(): Promise<void> {
         // stderr ffmpeg có thể in URL RTSP kèm tài khoản camera — che trước khi gửi.
         last_stderr: maskRtspUrl((r.lastStderr ?? "").slice(-300)),
       }));
+      const trigger =
+        command.payload.trigger && typeof command.payload.trigger === "object"
+          ? (command.payload.trigger as Record<string, unknown>)
+          : null;
+      const targetId = typeof trigger?.target_id === "string" ? trigger.target_id : null;
+      const recentProblems = remoteLogger.recent().map(maskRtspUrl);
       const r = await reportCommandResult({
         backendUrl: config.backendUrl,
         agentCode: config.agentCode,
@@ -697,6 +703,22 @@ async function main(): Promise<void> {
         commandId: command.id,
         status: "done",
         result: {
+          // Lệnh tự động sau một event UI lỗi mang trigger đã được cloud bóc an
+          // toàn. Trả nguyên correlation để platform ghép đúng thao tác -> kết quả.
+          trigger,
+          focus: trigger
+            ? {
+                target_type: trigger.target_type ?? null,
+                target_id: targetId,
+                recordings:
+                  trigger.target_type === "camera" && targetId
+                    ? recordings.filter((recording) => recording.camera_id === targetId)
+                    : recordings,
+                recent_problems: targetId
+                  ? recentProblems.filter((line) => line.includes(targetId)).slice(-20)
+                  : recentProblems.slice(-20),
+              }
+            : null,
           collected_at: new Date().toISOString(),
           node: process.version,
           platform: `${process.platform} ${process.arch}`,
@@ -709,7 +731,7 @@ async function main(): Promise<void> {
           encoding_busy: encodeGate.isBusy(),
           in_flight_commands: inFlightCommandIds.size,
           runtime_tuning: { ...tuning },
-          recent_problems: remoteLogger.recent().map(maskRtspUrl),
+          recent_problems: recentProblems,
         },
       });
       if (!r.ok) {

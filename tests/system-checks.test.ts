@@ -746,7 +746,12 @@ test("ghi hình bắt được ca mà heartbeat + probe cùng xanh", async () =>
 // ═══════════════════════════════════════════════════════════════════════
 
 function clipDb(
-  rows: Array<{ organization_id?: string; error_message: string | null }>,
+  rows: Array<{
+    organization_id?: string;
+    packing_event_id?: string | null;
+    status?: string;
+    error_message: string | null;
+  }>,
   scope: ScopeOpts = {},
 ): Resolver {
   const full = rows.map((r) => ({ organization_id: ORG, ...r }));
@@ -762,7 +767,7 @@ test("clip: ca ok — không clip nào lỗi trong 24 giờ", async () => {
   assert.equal(c.status, "ok");
 });
 
-test("clip: một clip lỗi → warn, và nêu lý do đầu tiên", async () => {
+test("clip: một clip lỗi → warn, và nêu lý do đầu tiên BẰNG TIẾNG VIỆT", async () => {
   const c = await runOne(
     CHECK_KEYS.clipFailures,
     clipDb([{ error_message: "ffmpeg exit 1: moov atom not found" }]),
@@ -770,7 +775,53 @@ test("clip: một clip lỗi → warn, và nêu lý do đầu tiên", async () =
   assert.equal(c.status, "warn");
   const entity = (c.entities ?? []).find((e) => e.orgId === ORG)!;
   assert.equal(entity.count, 1);
-  assert.match(entity.detail, /moov atom not found/);
+  // Chủ dự án 26/09/2026: lỗi chỉ hiện câu tiếng Việt, không lộ chuỗi kỹ
+  // thuật — kể cả trên trang Sự cố của platform.
+  assert.match(entity.detail, /lý do đầu: Máy kho không tạo được file video/);
+  assert.doesNotMatch(entity.detail, /moov atom|ffmpeg/);
+});
+
+test("clip: đơn đã Tạo lại ra video → KHÔNG còn là đơn lỗi (ảnh trang Sự cố 26/09)", async () => {
+  // Đơn Đại Kim: lần cắt 14:19 lỗi proof_clip_too_large, 15:37 bấm Tạo lại ra
+  // clip hai góc 49 MB — sự cố "1 clip lỗi" vẫn mở cả ngày.
+  const failed = [
+    { organization_id: ORG, packing_event_id: "pe-da-cuu", status: "failed", error_message: "proof_clip_too_large: 96.6MB vượt trần upload 90.0MB" },
+    { organization_id: ORG, packing_event_id: "pe-van-loi", status: "failed", error_message: "upload_put_failed[timeout]: timeout after 600000ms" },
+  ];
+  const ready = [{ packing_event_id: "pe-da-cuu", status: "ready" }];
+  const resolver: Resolver = withScope((table, ops) => {
+    if (table !== "order_proof_clips") return { data: [], error: null };
+    const statusEq = ops.find((o) => o.method === "eq" && o.args[0] === "status")?.args[1];
+    return { data: statusEq === "ready" ? ready : failed, error: null };
+  });
+  const c = await runOne(CHECK_KEYS.clipFailures, resolver);
+  const entity = (c.entities ?? []).find((e) => e.orgId === ORG)!;
+  assert.equal(entity.count, 1, "chỉ còn đơn chưa có video");
+  assert.match(entity.detail, /mạng của kho chậm/);
+  assert.doesNotMatch(entity.detail, /quá dung lượng/);
+});
+
+test("clip: nhiều lần thử lỗi của CÙNG một đơn là một đơn; lỗi tạm 'Segment cuối chưa đóng' không tính", async () => {
+  const c = await runOne(
+    CHECK_KEYS.clipFailures,
+    clipDb([
+      { packing_event_id: "pe-1", error_message: "compose_failed: ffmpeg exited 1" },
+      { packing_event_id: "pe-1", error_message: "compose_failed: ffmpeg exited 1" },
+      { packing_event_id: "pe-2", error_message: "Segment cuối chưa đóng, thử lại sau vài giây." },
+    ]),
+  );
+  const entity = (c.entities ?? []).find((e) => e.orgId === ORG)!;
+  assert.equal(entity.count, 1);
+  assert.equal(c.status, "warn");
+});
+
+test("clip: hàng trả về thiếu cột status KHÔNG được coi là đã có video", async () => {
+  // Nhầm chiều này là giấu một đơn không có bằng chứng.
+  const c = await runOne(
+    CHECK_KEYS.clipFailures,
+    clipDb([{ packing_event_id: "pe-1", error_message: "read_tmp_failed: ENOENT" }]),
+  );
+  assert.equal(c.status, "warn");
 });
 
 test("clip: từ 5 lỗi trở lên → crit, đọc là hỏng hệ thống chứ không phải ca lẻ", async () => {

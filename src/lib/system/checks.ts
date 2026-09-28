@@ -4,6 +4,8 @@ import { statfs } from "node:fs/promises";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isMissingColumnError } from "@/lib/supabase/missing-column";
 import { getClipMaxSeconds } from "@/lib/config/template-store";
+import { clipErrorText } from "@/lib/order-proof/clip-error-text";
+import { isTransientSegmentFailure } from "@/lib/order-proof/transient-failure";
 import {
   LATEST_AGENT_VERSION,
   compareVersions,
@@ -1795,14 +1797,48 @@ export async function checkRecordingFreshness(
 
 interface ClipRow {
   organization_id: string;
+  packing_event_id?: string | null;
   error_message: string | null;
 }
 
 /**
- * Đếm clip `status = 'failed'` trong 24 giờ gần nhất, theo từng kho.
+ * Đơn trong danh sách đã có clip `ready` — tức lần cắt lỗi đã được cứu
+ * (bấm Tạo lại thành công, hoặc clip cũ vẫn xem được).
  *
- * Đây là mục duy nhất đo thứ KHÁCH nhìn thấy: một clip lỗi là một đơn hàng
+ * Lọc lại `status` ở phía này chứ không chỉ tin bộ lọc câu truy vấn: hàng trả
+ * về thiếu cột status thì KHÔNG được coi là "đã có video" — nhầm chiều đó là
+ * giấu một đơn không có bằng chứng.
+ */
+async function ordersWithReadyClip(admin: Admin, rows: ClipRow[]): Promise<Set<string>> {
+  const ids = [...new Set(rows.map((r) => r.packing_event_id).filter((v): v is string => !!v))];
+  if (ids.length === 0) return new Set();
+  const { data, error } = await admin
+    .from("order_proof_clips")
+    .select("packing_event_id, status")
+    .eq("status", "ready")
+    .in("packing_event_id", ids)
+    .abortSignal(queryTimeout());
+  if (error) throw new Error(error.message);
+  const ready = new Set<string>();
+  for (const r of (data ?? []) as Array<{ packing_event_id?: string | null; status?: string }>) {
+    if (r.status === "ready" && r.packing_event_id) ready.add(r.packing_event_id);
+  }
+  return ready;
+}
+
+/**
+ * Đếm ĐƠN có clip cắt lỗi trong 24 giờ gần nhất mà vẫn chưa có video, theo
+ * từng kho.
+ *
+ * Đây là mục duy nhất đo thứ KHÁCH nhìn thấy: một đơn cắt lỗi là một đơn hàng
  * không có bằng chứng. Mọi mục khác đo hạ tầng và chỉ suy ra hậu quả.
+ *
+ * Không tính (26/09/2026 — ảnh trang Sự cố: đơn Đại Kim đã bấm Tạo lại ra
+ * video 49 MB mà sự cố "1 clip lỗi" vẫn mở, kèm nguyên mã lỗi kỹ thuật):
+ *   - đơn đã có clip `ready` — lỗi đã được cứu, đơn có bằng chứng;
+ *   - dòng lỗi tạm thời "Segment cuối chưa đóng" — tự cắt lại được;
+ *   - nhiều lần thử lỗi của CÙNG một đơn — đếm một đơn.
+ * Lý do hiện bằng câu tiếng Việt (`clipErrorText`), chuỗi gốc vẫn ở database.
  *
  * KHÔNG lọc theo giờ vận hành: clip sinh lỗi lúc 2 giờ sáng vẫn là một đơn
  * hàng hỏng vào sáng hôm sau. Khác hẳn heartbeat/probe — hai thứ đó chỉ có
@@ -1831,7 +1867,7 @@ export async function checkClipFailures(
   const since = new Date(now.getTime() - windowHours * 3_600_000).toISOString();
   const { data, error } = await admin
     .from("order_proof_clips")
-    .select("organization_id, error_message")
+    .select("organization_id, packing_event_id, error_message")
     .eq("status", "failed")
     .gte("created_at", since)
     .in("organization_id", scope.orgIds)
@@ -1839,41 +1875,48 @@ export async function checkClipFailures(
     .abortSignal(queryTimeout());
   if (error) throw new Error(error.message);
 
-  const rows = (data as ClipRow[] | null) ?? [];
-  const capped = rows.length >= CHECK_CONFIG.clipFailures.fetchLimit;
+  const fetched = (data as ClipRow[] | null) ?? [];
+  const capped = fetched.length >= CHECK_CONFIG.clipFailures.fetchLimit;
+  const rescued = await ordersWithReadyClip(admin, fetched);
 
-  const byOrg = new Map<string, ClipRow[]>();
-  for (const r of rows) {
-    const list = byOrg.get(r.organization_id) ?? [];
-    list.push(r);
-    byOrg.set(r.organization_id, list);
-  }
+  // Theo kho: tập ĐƠN còn lỗi (hàng thiếu mã đơn đếm riêng từng hàng) + lý do
+  // đầu tiên có chữ.
+  const byOrg = new Map<string, { orders: Set<string>; reason: string | null }>();
+  fetched.forEach((r, i) => {
+    if (isTransientSegmentFailure(r.error_message)) return;
+    if (r.packing_event_id && rescued.has(r.packing_event_id)) return;
+    const g = byOrg.get(r.organization_id) ?? { orders: new Set<string>(), reason: null };
+    g.orders.add(r.packing_event_id ?? `row:${i}`);
+    g.reason ??= r.error_message || null;
+    byOrg.set(r.organization_id, g);
+  });
 
   // Entity cho MỌI org, kể cả org 0 lỗi: bảng theo kho cần ô "0 clip" hiện
   // ra chứ không phải ô trống — trống thì đọc thành "chưa đo".
   const entities: CheckEntity[] = scope.orgIds.map((orgId) => {
-    const list = byOrg.get(orgId) ?? [];
-    const n = list.length;
-    if (n === 0) {
+    const g = byOrg.get(orgId);
+    const n = g?.orders.size ?? 0;
+    if (!g || n === 0) {
       return orgEntity(orgId, "Clip đơn hàng", "ok", `0 clip lỗi trong ${windowHours} giờ.`, {
         count: 0,
       });
     }
     // Lý do đầu tiên đủ để phân biệt "hỏng hàng loạt cùng một nguyên nhân"
     // với "vài ca lẻ" mà không phải mở log.
-    const reason = list.find((r) => r.error_message)?.error_message;
     const detail =
-      `${n} clip lỗi trong ${windowHours} giờ` + (reason ? ` — lý do đầu: ${reason}` : ".");
+      `${n} đơn chưa có video vì cắt clip lỗi trong ${windowHours} giờ` +
+      (g.reason ? ` — lý do đầu: ${clipErrorText(g.reason)}` : ".");
     const status: CheckStatus = n >= CHECK_CONFIG.clipFailures.critCount ? "crit" : "warn";
     return orgEntity(orgId, "Clip đơn hàng", status, detail, {
       count: n,
-      action: "Xem cột error_message của order_proof_clips; nếu cùng một lý do thì là lỗi hệ thống, không phải ca lẻ.",
+      action:
+        "Mở trang Video của shop (Truy cập hỗ trợ), lọc đơn lỗi và bấm Thử lại. Nhiều đơn cùng một lý do là lỗi hệ thống, không phải ca lẻ.",
     });
   });
 
   const crit = entities.filter((e) => e.status === "crit");
   const warn = entities.filter((e) => e.status === "warn");
-  const total = rows.length;
+  const total = [...byOrg.values()].reduce((sum, g) => sum + g.orders.size, 0);
   const totalLabel = capped ? `≥ ${total}` : `${total}`;
 
   if (crit.length > 0) {
@@ -1881,8 +1924,8 @@ export async function checkClipFailures(
     return {
       key,
       status: "crit",
-      value: `${totalLabel} clip lỗi / ${windowHours}h`,
-      message: `Kho có từ ${CHECK_CONFIG.clipFailures.critCount} clip lỗi trở lên trong ${windowHours} giờ: ${names}. Đây là hỏng hệ thống, không phải ca lẻ.`,
+      value: `${totalLabel} đơn lỗi clip / ${windowHours}h`,
+      message: `Kho có từ ${CHECK_CONFIG.clipFailures.critCount} đơn cắt clip lỗi trở lên trong ${windowHours} giờ: ${names}. Đây là hỏng hệ thống, không phải ca lẻ.`,
       entities,
     };
   }
@@ -1891,8 +1934,8 @@ export async function checkClipFailures(
     return {
       key,
       status: "warn",
-      value: `${totalLabel} clip lỗi / ${windowHours}h`,
-      message: `Có clip sinh lỗi trong ${windowHours} giờ ở kho: ${names}. Mỗi clip lỗi là một đơn hàng không có bằng chứng.`,
+      value: `${totalLabel} đơn lỗi clip / ${windowHours}h`,
+      message: `Có đơn cắt clip lỗi trong ${windowHours} giờ ở kho: ${names}. Mỗi đơn như vậy là một đơn hàng chưa có bằng chứng.`,
       entities,
     };
   }

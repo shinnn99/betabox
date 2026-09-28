@@ -1,6 +1,6 @@
 "use client";
 
-import { apiFetch } from "../../lib/api-fetch";
+import { apiFetch, reportEventFailure } from "../../lib/api-fetch";
 import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -61,6 +61,12 @@ export function CameraTestConnectionModal({
       const preTestedAt = camera.last_tested_at ?? null;
       const enqRes = await apiFetch(`/api/cameras/${camera.id}/test-connection`, {
         method: "POST",
+        diagnoseOnFailure: {
+          agentId: camera.agent_id,
+          eventName: "camera.test_connection.enqueue",
+          targetType: "camera",
+          targetId: camera.id,
+        },
       });
       if (!enqRes.ok) {
         const errJson = await enqRes.json().catch(() => ({}));
@@ -70,6 +76,8 @@ export function CameraTestConnectionModal({
         return;
       }
 
+      const enqueued = (await enqRes.json()) as { agent_id?: string };
+      const diagnosticAgentId = enqueued.agent_id ?? camera.agent_id;
       const POLL_INTERVAL_MS = 1500;
       const POLL_MAX_ATTEMPTS = 20;
       for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
@@ -94,6 +102,15 @@ export function CameraTestConnectionModal({
       }
       toast.error(
         "Chờ quá lâu chưa có kết quả từ agent. Agent có thể offline hoặc RTSP không tới được camera.",
+      );
+      void reportEventFailure(
+        {
+          agentId: diagnosticAgentId,
+          eventName: "camera.test_connection.timeout",
+          targetType: "camera",
+          targetId: camera.id,
+        },
+        { kind: "timeout" },
       );
     } finally {
       if (!cancelled.current) setBusy(false);

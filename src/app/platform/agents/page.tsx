@@ -104,6 +104,21 @@ export default function PlatformAgentsPage() {
     }
   };
 
+  const viewDiagnostics = async (agent: FleetAgentView) => {
+    setNotice("");
+    try {
+      const res = await fetch(`/api/platform/agents/${agent.id}/diagnostics`, { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok || !json.latest) {
+        setNotice(json.message ?? json.error ?? "Chưa có kết quả chẩn đoán.");
+        return;
+      }
+      setDiag({ ...json.latest, agentCode: agent.code });
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Lỗi mạng.");
+    }
+  };
+
   const outdated = data?.agents.filter((a) => a.status === "active" && a.outdated).length ?? 0;
 
   return (
@@ -154,6 +169,7 @@ export default function PlatformAgentsPage() {
               now={now}
               busyId={busyId}
               onDiagnose={(a) => void diagnose(a)}
+              onViewDiagnostics={(a) => void viewDiagnostics(a)}
             />
           )
         )}

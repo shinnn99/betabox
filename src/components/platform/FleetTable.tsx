@@ -26,6 +26,14 @@ export interface FleetAgentView {
   lastQrSuccessAt: string | null;
   capabilities: string[];
   openIncidents: { crit: number; warn: number };
+  latestDiagnostic: {
+    id: string;
+    status: string;
+    createdAt: string;
+    completedAt: string | null;
+    eventName: string | null;
+    automatic: boolean;
+  } | null;
 }
 
 /** Agent coi là "đang sống" nếu ping trong 5 phút — khớp reaper pg_cron. */
@@ -37,9 +45,10 @@ type Props = Readonly<{
   now: number;
   busyId: string | null;
   onDiagnose: (agent: FleetAgentView) => void;
+  onViewDiagnostics: (agent: FleetAgentView) => void;
 }>;
 
-export default function FleetTable({ agents, latestVersion, now, busyId, onDiagnose }: Props) {
+export default function FleetTable({ agents, latestVersion, now, busyId, onDiagnose, onViewDiagnostics }: Props) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
       <div className="overflow-x-auto">
@@ -58,7 +67,7 @@ export default function FleetTable({ agents, latestVersion, now, busyId, onDiagn
           </thead>
           <tbody className="divide-y divide-slate-100">
             {agents.map((a) => (
-              <FleetRow key={a.id} a={a} latestVersion={latestVersion} now={now} busy={busyId === a.id} disabled={busyId !== null} onDiagnose={onDiagnose} />
+              <FleetRow key={a.id} a={a} latestVersion={latestVersion} now={now} busy={busyId === a.id} disabled={busyId !== null} onDiagnose={onDiagnose} onViewDiagnostics={onViewDiagnostics} />
             ))}
           </tbody>
         </table>
@@ -74,6 +83,7 @@ function FleetRow({
   busy,
   disabled,
   onDiagnose,
+  onViewDiagnostics,
 }: Readonly<{
   a: FleetAgentView;
   latestVersion: string;
@@ -81,6 +91,7 @@ function FleetRow({
   busy: boolean;
   disabled: boolean;
   onDiagnose: Props["onDiagnose"];
+  onViewDiagnostics: Props["onViewDiagnostics"];
 }>) {
   const online = a.lastSeenAt !== null && now - Date.parse(a.lastSeenAt) <= ONLINE_MS;
   const canDiagnose = online && a.capabilities.includes("collect_diagnostics");
@@ -146,6 +157,16 @@ function FleetRow({
         )}
       </td>
       <td className="px-3 py-2 align-top text-right">
+        {a.latestDiagnostic && (
+          <button
+            type="button"
+            onClick={() => onViewDiagnostics(a)}
+            className="mb-1 h-7 px-2 rounded-lg border border-sky-200 bg-sky-50 text-xs text-sky-700 block ml-auto"
+            title={a.latestDiagnostic.eventName ?? "Chẩn đoán gần nhất"}
+          >
+            {a.latestDiagnostic.automatic ? "Xem quét sau lỗi" : "Xem lần quét trước"}
+          </button>
+        )}
         <button
           type="button"
           disabled={!canDiagnose || disabled}

@@ -315,6 +315,19 @@ export async function requirePermission(
   return ctx;
 }
 
+/**
+ * Chỉ yêu cầu một ngữ cảnh tổ chức đã xác thực, không yêu cầu quyền nghiệp vụ cụ thể.
+ *
+ * Dùng rất hẹp cho endpoint báo một thao tác UI đã mất phản hồi để xếp lệnh
+ * chẩn đoán CHỈ-ĐỌC. Endpoint đó còn tự kiểm agent thuộc đúng tổ chức và có
+ * capability phù hợp; không được dùng helper này cho route đọc/ghi dữ liệu khác.
+ */
+export async function requireOrganizationContext(
+  req: Request,
+): Promise<ApiContext | NextResponse> {
+  return readClaims(req.method);
+}
+
 // ============================================================================
 // requirePermissionStrict — Strict: re-check role từ DB. Dùng cho
 // create/update/delete nhạy.

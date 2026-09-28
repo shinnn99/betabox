@@ -30,6 +30,9 @@ tuần, 77% là nhiễu giải mã, 528 lần FATAL nằm im trong đó không a
 - **Lệnh Thu chẩn đoán** từ trang Đội agent: bản tự khai, tiến trình ghi,
   ổ đĩa, 50 dòng cảnh báo gần nhất. Tài khoản camera trong URL RTSP được
   che trước khi gửi.
+- **Chẩn đoán theo event lỗi:** UI không quét nền. Khi một event đã được đánh dấu
+  bị timeout / mất mạng / HTTP 4xx hoặc 5xx (gồm 422), agent mới nhận lệnh; kết quả mang nguyên
+  correlation + đối tượng lỗi và phần `focus` để platform ghép đúng lần bấm.
 - **Sửa lỗi MẤT dữ liệu trong hàng đợi gửi lại** (tìm ra 26/09 khi soát sự
   cố Đại Kim). Ba hàng đợi — lượt quét, báo đoạn video, kết quả cắt clip —
   đều đọc bản chụp, gửi (mạng nghẽn: vài phút), rồi ghi đè cả file: dòng nào

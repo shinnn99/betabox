@@ -1,5 +1,7 @@
 "use client";
 
+import { shouldDiagnoseHttpStatus, type EventFailureKind } from "@/lib/diagnostics/event-failure";
+
 // ============================================================================
 // apiFetch — Client wrapper cho fetch.
 //
@@ -29,16 +31,62 @@ function isWriteMethod(method: string | undefined): boolean {
   return m === "POST" || m === "PUT" || m === "PATCH" || m === "DELETE";
 }
 
+export interface FailureDiagnosticSpec {
+  agentId: string | null | undefined;
+  eventName: string;
+  targetType?: string;
+  targetId?: string;
+}
+
+export interface ApiFetchInit extends RequestInit {
+  /** Gửi khi request mất mạng, timeout hoặc nhận bất kỳ HTTP 4xx/5xx nào. */
+  diagnoseOnFailure?: FailureDiagnosticSpec;
+}
+
+/** Best-effort: không để lỗi của đường chẩn đoán che mất lỗi gốc trên UI. */
+export async function reportEventFailure(
+  spec: FailureDiagnosticSpec,
+  failure: { kind: EventFailureKind; httpStatus?: number; errorCode?: string },
+): Promise<boolean> {
+  if (!spec.agentId) return false;
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const renderOrgId = getRenderOrgIdFromDOM();
+  if (renderOrgId) headers.set(RENDER_ORG_ID_HEADER, renderOrgId);
+  try {
+    const res = await fetch("/api/event-diagnostics", {
+      method: "POST",
+      cache: "no-store",
+      headers,
+      body: JSON.stringify({
+        agent_id: spec.agentId,
+        event_name: spec.eventName,
+        target_type: spec.targetType ?? null,
+        target_id: spec.targetId ?? null,
+        failure_kind: failure.kind,
+        http_status: failure.httpStatus ?? null,
+        error_code: failure.errorCode ?? null,
+        occurred_at: new Date().toISOString(),
+        correlation_id: crypto.randomUUID(),
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function apiFetch(
   input: RequestInfo | URL,
-  init?: RequestInit,
+  init?: ApiFetchInit,
   // Legacy param: giữ signature để 51 chỗ gọi cũ không break. Bỏ qua giá trị.
   _legacyOrgId?: string | null
 ): Promise<Response> {
   void _legacyOrgId;
 
   const method = init?.method;
+  const diagnostic = init?.diagnoseOnFailure;
   const nextInit: RequestInit = init ? { ...init } : {};
+  delete (nextInit as ApiFetchInit).diagnoseOnFailure;
 
   if (isWriteMethod(method)) {
     const renderOrgId = getRenderOrgIdFromDOM();
@@ -49,7 +97,31 @@ export async function apiFetch(
     }
   }
 
-  const res = await fetch(input, nextInit);
+  let res: Response;
+  try {
+    res = await fetch(input, nextInit);
+  } catch (err) {
+    if (diagnostic) {
+      const timeout = err instanceof DOMException && err.name === "AbortError";
+      void reportEventFailure(diagnostic, { kind: timeout ? "timeout" : "network" });
+    }
+    throw err;
+  }
+
+  if (diagnostic && shouldDiagnoseHttpStatus(res.status)) {
+    let errorCode: string | undefined;
+    try {
+      const body = (await res.clone().json()) as { error?: unknown };
+      if (typeof body.error === "string") errorCode = body.error.slice(0, 80);
+    } catch {
+      // Body không phải JSON — status vẫn đủ để kích hoạt chẩn đoán.
+    }
+    void reportEventFailure(diagnostic, {
+      kind: res.status === 408 ? "timeout" : res.status >= 500 ? "http_5xx" : "http_4xx",
+      httpStatus: res.status,
+      errorCode,
+    });
+  }
 
   // 409 org_context_changed → cookie đã đổi ở tab khác, reload để đồng bộ.
   // Chỉ auto-reload khi status 409 + response error là org_context_changed

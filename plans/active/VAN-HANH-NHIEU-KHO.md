@@ -455,6 +455,10 @@ Kênh log thô vẫn giữ nhưng thành **kênh phụ**: có trần, lấy mẫ
 
 **Điều khiển từ xa** dùng lại `agent_commands` (đã ký HMAC, đã trả mã lỗi có cấu trúc): thêm `collect_diagnostics`, `restart_recording`, `resync_segments`. **Giới hạn:** lệnh chỉ chạy khi agent còn sống — agent chết thì vẫn phải có người tới kho.
 
+**Chẩn đoán sâu theo event — chỉ chạy sau lỗi, không polling từ UI** (chốt 28/09/2026): người dùng bấm button → event chạy bình thường thì dừng ở đó; khi event mất phản hồi do timeout / mất mạng hoặc trả bất kỳ HTTP 4xx/5xx nào (gồm 422), cloud mới xếp `collect_diagnostics` cho **đúng agent** và mang theo `event_name`, đối tượng, thời điểm, correlation id. Agent thu trạng thái tập trung vào đối tượng đó rồi trả qua `command-result`; trang Đội agent của platform hiện “Xem quét sau lỗi”. Không mở trang platform để quét toàn hệ thống và không dùng interval trình duyệt làm nguồn sự cố.
+
+Luồng này không thay thế phép canh **vắng mặt**: agent mất điện/chết hẳn thì không nhận được lệnh chẩn đoán, nên heartbeat/dead-man phía cloud vẫn là đường phát hiện duy nhất.
+
 **Con cảnh báo phải tự báo cái chết của mình.** Ba lớp: (1) dead-man switch bên ngoài — **bắt buộc**; (2) sổ tự kiểm: không có lần chạy `system-check` nào trong 1 giờ → mở sự cố `monitor_stale`; (3) "lần tự kiểm nền gần nhất" là **ô đỏ to** trên trang, không phải dòng chữ nhỏ.
 
 ## 4.7. Cấu hình: ba tầng, một phép giải
@@ -501,7 +505,7 @@ Cột **"anh/chị làm gì"** là phần cần người; còn lại tôi làm.
 | **5** | Cloud ghi lỗi lúc chạy (4.6c) + sửa nhãn *"Nguồn quét bị tắt ở bàn này"* | — | không | Quét bằng súng ở bàn đặt camera → nhật ký hiện đúng lý do, không còn "Mã sai" |
 | **6** | **Mẫu cấu hình nền tảng** sửa được + mở trần kỹ thuật thành cấu hình | Chốt bộ giá trị mẫu | không | Tạo tổ chức mới → tự có đủ cấu hình, không còn ô trống |
 | **7** | **MỘT bản agent**: bản tự khai + nhận cấu hình từ cloud + lệnh chẩn đoán, kèm **trang Đội agent**. Kèm **sửa clip kiện hoàn bị cụt** (xem 3.6) — agent trước, cloud sau | Cài agent mới lên máy kho, **rồi mới** cho nới trần kiện hoàn | **có** | Trang Đội agent hiện đúng phiên bản, đúng số camera đang ghi, đúng ổ còn mấy ngày; kiện hoàn 300s ra clip phủ đủ 300s và **dưới 90 MiB** |
-| **8** | Hạn lưu + gom nhiễu `agent_log_events`; định tuyến thông báo theo shop | — | không | `agent_log_events` một kho dưới 2.000 dòng/tuần |
+| **8** | Hạn lưu + gom nhiễu `agent_log_events`; định tuyến thông báo theo shop *(phần định tuyến TẠM HOÃN 26/09/2026 — chủ dự án: "lark tạm thời không động vào")* | — | không | `agent_log_events` một kho dưới 2.000 dòng/tuần |
 
 **Đợt 0–6 không đụng agent một dòng nào.** Muốn cắt bớt thì bỏ đợt 7: platform vẫn biết mọi thứ cloud nhìn thấy được, chỉ là sự cố thiết bị vẫn phải đọc log thô.
 

@@ -59,6 +59,8 @@ export interface Camera {
   last_probe_ok?: boolean | null;
   last_probe_latency_ms?: number | null;
   camera_online_state?: "online" | "offline" | "warehouse_disconnected" | "not_probed";
+  /** Agent đang quản lý camera; dùng để chẩn đoán đúng máy khi event UI mất phản hồi. */
+  agent_id?: string | null;
 }
 
 export interface RecordingSession {

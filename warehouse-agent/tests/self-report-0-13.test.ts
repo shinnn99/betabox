@@ -186,7 +186,8 @@ test("nhịp tim: bản tự khai hỏng không làm mất nhịp tim; gói ch�
   assert.ok(index.includes("selfReport: await collectSelfReport(),"));
   assert.ok(index.includes("[self-report] không dựng được bản tự khai"));
   assert.ok(index.includes("last_stderr: maskRtspUrl("));
-  assert.ok(index.includes("recent_problems: remoteLogger.recent().map(maskRtspUrl),"));
+  assert.ok(index.includes("const recentProblems = remoteLogger.recent().map(maskRtspUrl);"));
+  assert.ok(index.includes("recent_problems: recentProblems,"));
   const hb = readFileSync("src/heartbeat.ts", "utf8");
   assert.ok(hb.includes("if (params.selfReport) bodyObj.self_report = params.selfReport;"));
 });
