@@ -39,6 +39,18 @@ docs([Module]):     Cập nhật tài liệu
 
 <!-- Thêm các task mới ở ĐÂY (phía trên các task cũ hơn) -->
 
+### [BUILD-INSTALLER-0.13.1] - Bộ cài 0.13.1 + dọn hạn mức LFS
+
+- **Mục tiêu:** máy kho cài mới cần bộ cài mang bản sửa QR; bộ cài mới nhất còn đứng ở `v0.12.1`.
+- **Files tạo/sửa:** `warehouse-agent/releases/BetacomAgentSetup-v0.13.1.exe` (mới, LFS), `warehouse-agent/releases/.gitignore` (mới), `warehouse-agent/releases/README.md`, `change.md`. Không sửa mã nguồn agent.
+- **Kiểm 9 file nguồn khai trong `.iss` TRƯỚC khi đóng gói** (cọc "dist-exe là bản CŨ"): đều có thật, `dist-exe/betacom-agent.exe` đúng 68.339.989 byte = bản 0.13.1 đã verify ruột ở mục trên.
+- **Một lần compile HỎNG SUÝT LỌT:** lệnh đầu dùng `ls` để tìm `ISCC.exe` nên đường dẫn dính ký tự `*` ở cuối → shell báo "No such file" nhưng **exit code vẫn 0**, và `dist-installer/` có sẵn bộ cài cũ nên nhìn qua tưởng xong. Bắt được vì kiểm `ls dist-installer/*0.13.1*` không ra file. Chạy lại bằng đường dẫn tuyệt đối mới thật sự compile (200,9 s).
+- **Kết quả:** 155.164.406 byte, khớp cỡ bộ cài 0.12.1 (155.146.322). SHA256 `abf7bc3000087c78` giữ nguyên sau khi chép sang `releases/`, header `MZ`.
+- **Dọn hạn mức LFS — chạm trần:** thư mục `releases/` đã chiếm **969 MB / 1 GB** gói miễn phí GitHub; thêm 155 MB nữa là vượt, GitHub chặn push. Đã **bỏ theo dõi Git** (`git rm --cached`, KHÔNG xoá đĩa) 6 bản cũ: bộ cài 0.9.1 / 0.11.0 / 0.12.0 và file chạy 0.12.0 / 0.12.1 / 0.13.0. Đã xác nhận **cả 9 file vẫn còn nguyên trên đĩa** sau thao tác.
+- **Chốt quy ước** trong `.gitignore` + README: Git chỉ giữ bản ĐANG DÙNG và MỘT bản lùi (bộ cài 0.13.1 + 0.12.1; file chạy 0.13.1). Phát hành bản mới thì thêm bản cũ vào `.gitignore` rồi `git rm --cached`.
+- **Còn lại:** chưa chạy thử cài lên máy Windows sạch. Bộ cài dùng nguyên kịch bản `.iss` của 0.12.1 đã cài thật được, lần này chỉ đổi số phiên bản và file chạy bên trong.
+- **Trạng thái:** Đã hoàn thành.
+
 ### [MIGRATION-DONG-NO + AGENT-0.13.1] - Chạy 5 migration còn thiếu, dọn hết nợ track, dựng file chạy 0.13.1
 
 - **Mục tiêu:** đưa bản sửa QR lên máy kho được, và dọn nợ migration drift phát hiện lúc rà soát.
