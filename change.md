@@ -39,6 +39,29 @@ docs([Module]):     Cập nhật tài liệu
 
 <!-- Thêm các task mới ở ĐÂY (phía trên các task cũ hơn) -->
 
+### [MIGRATION-DONG-NO + AGENT-0.13.1] - Chạy 5 migration còn thiếu, dọn hết nợ track, dựng file chạy 0.13.1
+
+- **Mục tiêu:** đưa bản sửa QR lên máy kho được, và dọn nợ migration drift phát hiện lúc rà soát.
+- **Phát hiện khi soi DB thật (không tin danh sách file):** `supabase migration list` báo **8** migration chưa áp, nhưng soi từng đối tượng trong DB thì tình trạng lẫn lộn — 3 cái đã có hiệu lực mà chưa được track (paste tay qua SQL Editor), 5 cái thật sự chưa có. Nếu chạy `db push` mù thì áp cả 8, vượt xa phần được duyệt.
+- **Đã chạy 5 migration thật sự thiếu** (qua MCP `execute_sql`, từng cái một, verify sau mỗi cái):
+  - `20260926110000_scan_ignored_reason` — cột + CHECK + index một phần.
+  - `20260926120000_platform_config_template` — bảng một dòng, RLS bật, 0 policy (đúng thiết kế: chỉ service role).
+  - `20260926130000_agent_self_report` — 3 cột + mở loại lệnh `collect_diagnostics`.
+  - `20260926140000_late_scan_chronological` — thay `process_waybill_scan`, **sửa lỗi thời gian đóng đơn âm** ở Đại Kim.
+  - `20260926150000_agent_log_grouping_retention` — 4 cột, unique index, 2 hàm, pg_cron 20:40 UTC.
+- **Đã đánh dấu 4 migration có hiệu lực nhưng chưa track** (`reject_non_waybill_scans`, `fix_invalid_code_crash`, `warehouse_incidents`, `operations_report_rpcs`). Với `operations_report_rpcs` **không tin tên hàm**: kiểm nội dung 7 hàm có đủ `capped_timeout`, `percentile_cont`, `Asia/Ho_Chi_Minh`, `SECURITY DEFINER` rồi mới đánh dấu.
+- **Kết quả migration:** `supabase migration list` → **108 bản, 0 chưa áp, 0 mồ côi**. Hết nợ drift (cọc `project_migration_drift_bulk_2026_07_22`).
+- **Kiểm cách ly tenant sau khi thêm hàm:** 9 hàm `SECURITY DEFINER` mới (7 `ops_report_*` + 2 log) đều `anon=false, authenticated=false, service_role=true`. Không có hàm nào của đợt này nằm trong cảnh báo advisor.
+- **File chạy 0.13.1:** `npm run build:exe` sau khi xoá sạch `dist`/`dist-exe` (cọc "dist-exe là bản CŨ"). **Đã verify ruột file**: có `FAST_FORMATS`, `slowPhaseRunCount`, `SLOW_PHASE_INTERVAL_MS`, `forgetDecoderState`, chuỗi `0.13.1` (11 lần); **không còn** dấu vết `tryDenoise: true,` của đường một-pha cũ. 68.339.989 byte, SHA256 `febe0a4f9f6b1fc7`.
+- **Files tạo/sửa:** `warehouse-agent/releases/betacom-agent-0.13.1.exe` (mới, LFS), `warehouse-agent/releases/THAY-FILE-CHAY-0.13.1.md` (mới), `warehouse-agent/releases/README.md`, `change.md`.
+- **Rà soát lại toàn bộ:** root `pnpm test` **825/825**, agent `npm test` **258/258**, typecheck cả hai phía xanh.
+- **Còn lại / lưu ý:**
+  - **7 đơn vẫn có `work_duration_seconds` âm** — migration chặn đơn âm MỚI, không sửa dòng cũ (đúng như header file ghi). Cần chạy công cụ sửa dữ liệu riêng nếu muốn dọn.
+  - Chưa dựng **bộ cài** `BetacomAgentSetup-v0.13.1.exe`, mới có file chạy trần.
+  - Chưa thay file lên máy kho, chưa bấm đồng hồ trên camera thật.
+  - Advisor còn cảnh báo cũ không thuộc đợt này: 13 bảng RLS-không-policy (cố ý, service-role-only), 4 hàm `SECURITY DEFINER` gọi được bởi `anon`, leaked-password cần Pro plan.
+- **Trạng thái:** Đã hoàn thành (phần mã nguồn + database).
+
 ### [TEST-CRLF-FALSE-FAIL] - 5 bài test đỏ giả trên Windows do xuống dòng CRLF
 
 - **Triệu chứng:** `pnpm test` đỏ 5 bài với câu như "chưa đưa vào danh sách checks trả về", "chưa đăng ký vào runSystemChecks" — nghe như thiếu code, nhưng **mã nguồn hoàn toàn đúng**, dòng đó vẫn nằm đúng chỗ.
