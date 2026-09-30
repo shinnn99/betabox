@@ -127,12 +127,15 @@ test("mã khổ thường vẫn đọc được — không phá luồng đóng h
 
 test("cỡ khung bám theo camera, chỉ thu nhỏ khi vượt trần", () => {
   const cap = { width: QR_FRAME_WIDTH, height: QR_FRAME_HEIGHT };
-  // Camera 2K: đọc đúng cỡ gốc.
-  assert.deepEqual(fitWithinCap({ width: 2560, height: 1440 }, cap), { width: 2560, height: 1440 });
-  // Camera Full HD: KHÔNG phóng to lên cho bằng trần — phóng to chỉ tốn CPU.
+  // Camera Full HD: đọc đúng cỡ gốc (bằng trần, không thu không phóng).
   assert.deepEqual(fitWithinCap({ width: 1920, height: 1080 }, cap), { width: 1920, height: 1080 });
+  // Camera 720p: KHÔNG phóng to lên cho bằng trần — phóng to chỉ tốn CPU.
+  assert.deepEqual(fitWithinCap({ width: 1280, height: 720 }, cap), { width: 1280, height: 720 });
+  // Camera 2K: thu về vừa trần từ 30/09/2026 (trần hạ 2560 -> 1920, xem
+  // qr-frame-source.ts — 2560 vượt ngân sách 100ms mỗi khung).
+  assert.deepEqual(fitWithinCap({ width: 2560, height: 1440 }, cap), { width: 1920, height: 1080 });
   // Camera 4K: thu về vừa trần, giữ tỉ lệ.
-  assert.deepEqual(fitWithinCap({ width: 3840, height: 2160 }, cap), { width: 2560, height: 1440 });
+  assert.deepEqual(fitWithinCap({ width: 3840, height: 2160 }, cap), { width: 1920, height: 1080 });
   // Số đo hỏng: rơi về cỡ dự phòng thay vì dựng khung rỗng.
   assert.deepEqual(fitWithinCap({ width: 0, height: 0 }, cap), {
     width: QR_FALLBACK_WIDTH,

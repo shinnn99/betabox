@@ -4,6 +4,39 @@ Ghi từ 0.8.6 trở đi. Mỗi mục nêu: sửa gì, vì sao, và người đi
 
 ---
 
+## 0.13.1 — 2026-09-30
+
+**Quét mã nhanh trở lại: 189ms → 12ms mỗi khung. Không giảm khả năng đọc.**
+
+Từ bản 0.11.0 (24/09) nhân viên phải giơ nhãn rất lâu mới ăn. Nguyên nhân
+KHÔNG phải việc thêm mã vạch như tưởng ban đầu, mà là tổng của ba thay đổi
+trong cùng một bản: cỡ khung 640x360 → 2560x1440, 1 → 9 định dạng, và bốn
+cờ dò kỹ bật hết cùng lúc.
+
+Khung không có mã — chiếm khoảng 99% thời gian và là khung **tốn nhất**,
+vì không thấy mã thì máy phải soi cạn ảnh mới dám kết luận — mất 189ms,
+trong khi mỗi khung chỉ có 100ms. Máy đọc không kịp nên **vứt 2 trong 3
+khung**, mà luật xác nhận lại đòi hai khung liên tiếp cùng đọc ra một mã
+mới tính là quét xong.
+
+Con số biện minh cho bản 0.11.0 ("2560x1440 chỉ mất 31ms") đo sai hơn mười
+lần. Đo lại 30/09 bằng khung trống ở đúng cỡ thật.
+
+- **Đọc hai pha.** Pha nhanh chỉ tìm QR / DataMatrix / Code128 và không bật
+  cờ dò kỹ nào — nhãn giơ ngay ngắn trúng ngay tại đây, khoảng 12ms. Pha kỹ
+  (đủ 9 định dạng, đủ cờ) chỉ chạy khi pha nhanh không thấy gì, và tối đa
+  2 lần mỗi giây cho mỗi camera.
+- **Hạ trần cỡ khung 2560x1440 → 1920x1080.** Đây là mức sàn, không phải
+  chọn bừa: đo ở 1600x900 thì mã QR nhỏ trên nhãn TikTok mất luôn.
+- **Vẫn đọc được đủ như trước:** mã QR nhỏ 12mm, mã vạch Code128, và cả
+  những định dạng hiếm (Code39/Code93/ITF/Codabar) — pha kỹ vẫn gánh.
+
+**Người đi cài cần biết:** không có bước thủ công nào. Máy nào đã đặt tay
+`QR_FRAME_WIDTH`/`QR_FRAME_HEIGHT` trong `.env` thì giá trị đó vẫn được
+giữ; **đừng đặt dưới 1920x1080**, sẽ mất mã nhỏ.
+
+---
+
 ## 0.13.0 — 2026-09-26
 
 **Máy kho tự khai trạng thái lên hệ thống; clip kiện hoàn dài không còn bị từ chối.**

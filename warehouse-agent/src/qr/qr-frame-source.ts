@@ -12,14 +12,24 @@ import { tuning } from "../runtime-tuning";
  * mỗi ô vuông của mã. Không bộ giải mã nào đọc nổi.
  *
  * Giờ agent DÒ độ phân giải thật của camera (ffprobe) và đọc ở đúng cỡ đó,
- * chỉ thu nhỏ khi vượt trần dưới đây. Giải mã không phải chỗ tốn: đo trên
- * máy này, 1920x1080 mất 17ms, 2560x1440 mất 31ms cho mỗi khung.
+ * chỉ thu nhỏ khi vượt trần dưới đây.
+ *
+ * Trần từng đặt 2560x1440 kèm ghi chú "giải mã không phải chỗ tốn: 1920
+ * mất 17ms, 2560 mất 31ms". ĐO LẠI 30/09/2026 cho thấy con số đó sai hơn
+ * mười lần — khung TRỐNG (cảnh ~99% thời gian, và là khung đắt nhất vì bộ
+ * giải mã phải quét cạn ảnh mới dám kết luận) mất 166ms ở 2560x1440 và
+ * 91ms ở 1920x1080, trong khi ngân sách chỉ có 100ms mỗi khung.
+ *
+ * Hạ trần về 1920x1080. Đây là SÀN, không phải số chọn bừa: đo ở 1600x900
+ * thì mã TikTok 12mm không còn đọc được nữa — đúng lỗi mà bản 24/09 sinh
+ * ra để sửa. Cùng với bộ giải mã hai pha (xem qr-decoder.ts), khung trống
+ * giờ chỉ còn ~16ms.
  *
  * Hai hằng số này chỉ còn là TRẦN và là số dự phòng khi ffprobe không trả
  * lời. Đổi bằng biến môi trường — xem config.ts.
  */
-export const QR_FRAME_WIDTH = 2560;
-export const QR_FRAME_HEIGHT = 1440;
+export const QR_FRAME_WIDTH = 1920;
+export const QR_FRAME_HEIGHT = 1080;
 /** Dùng khi không dò được độ phân giải camera. */
 export const QR_FALLBACK_WIDTH = 1280;
 export const QR_FALLBACK_HEIGHT = 720;

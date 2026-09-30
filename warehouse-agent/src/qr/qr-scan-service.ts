@@ -1,7 +1,7 @@
 import type { CredentialItem } from "../commands";
 import { swallow } from "../fatal";
 import { relayPathName } from "../live/relay-hub";
-import { decodeGrayFrame } from "./qr-decoder";
+import { decodeGrayFrame, forgetDecoderState } from "./qr-decoder";
 import {
   QrFrameSource,
   QR_FALLBACK_HEIGHT,
@@ -58,9 +58,10 @@ interface QrTarget {
  * và nuốt mất lần thứ hai.
  *
  * Chi phí: mỗi luồng là một ffmpeg đọc 10 hình/giây ở cỡ khung hình cấu
- * hình được (mặc định 1280x720 xám từ 23/09/2026, xem qr-frame-source.ts)
- * cộng một lần giải mã mỗi hình. Chỉ bàn `scan_source = 'camera'` mới có
- * luồng; bàn dùng súng quét không tốn gì.
+ * hình được (trần mặc định 1920x1080 xám từ 30/09/2026, xem
+ * qr-frame-source.ts) cộng một lần giải mã mỗi hình — khoảng 12ms nhờ bộ
+ * giải mã hai pha (xem qr-decoder.ts). Chỉ bàn `scan_source = 'camera'`
+ * mới có luồng; bàn dùng súng quét không tốn gì.
  */
 export class QrScanService {
   private cameras: CredentialItem[] = [];
@@ -233,6 +234,9 @@ export class QrScanService {
     const target = this.targets.get(cameraId);
     if (!target) return;
     this.targets.delete(cameraId);
+    // Bỏ trạng thái hoãn pha kỹ, không thì Map cứ phình theo số camera đã
+    // từng đọc (camera rời bàn, đổi vị trí, bàn chuyển sang súng quét).
+    forgetDecoderState(cameraId);
     const source = target.source;
     target.source = null;
     if (source) await source.stop();
@@ -248,7 +252,7 @@ export class QrScanService {
     // khác bỏ khung hình.
     if (target.decoderBusy) return;
     target.decoderBusy = true;
-    void this.decode(frame, size.width, size.height)
+    void this.decode(frame, size.width, size.height, target.camera.camera_id)
       .then((decoded) => this.onDecoded(target, decoded, capturedAt))
       .catch((error) => {
         console.warn(

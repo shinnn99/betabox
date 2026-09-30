@@ -6,6 +6,24 @@ import type { Release } from "./types";
 
 export const GENERATED_RELEASES: Release[] = [
   {
+    "agentVersion": "0.13.1",
+    "date": "2026-09-30",
+    "title": "Quét mã nhanh trở lại",
+    "summary": "Từ bản cài ngày 24/09 — bản thêm khả năng đọc mã vạch — máy quét bằng camera trở nên chậm hẳn: nhân viên phải giơ nhãn lên và giữ yên khá lâu mã mới được nhận, trong khi trước đó gần như giơ lên là ăn ngay.",
+    "items": [
+      {
+        "tag": "Sửa lỗi",
+        "title": "Nhận mã nhanh như trước khi thêm mã vạch",
+        "detail": "Nguyên nhân không phải do thêm mã vạch như tưởng ban đầu, mà do bản 24/09 cùng lúc nâng độ nét ảnh đưa vào máy đọc lên quá cao. Mỗi giây camera gửi 10 ảnh, nhưng máy xử lý một ảnh còn không kịp trước khi ảnh sau tới, nên phần lớn ảnh bị bỏ qua — mà luật xác nhận lại đòi hai ảnh liên tiếp cùng đọc ra một mã mới tính là quét xong. Nay máy đọc theo hai bước: bước nhanh thử trước với những loại mã hay gặp nhất trên nhãn vận đơn, trúng ngay thì xong luôn; chỉ khi bước nhanh không thấy gì mới soi kỹ. Thời gian xử lý mỗi ảnh giảm từ khoảng 189 xuống còn khoảng 12 phần nghìn giây, nên không còn ảnh nào bị bỏ."
+      },
+      {
+        "tag": "Cải tiến",
+        "title": "Vẫn đọc được đúng những gì đang đọc được",
+        "detail": "Mã QR nhỏ trên nhãn TikTok, mã vạch trên nhãn J&T và các loại mã ít gặp đều vẫn đọc được như trước. Độ nét ảnh có hạ xuống một bậc, nhưng đã kiểm để chắc chắn dừng đúng ở mức vẫn đọc được mã nhỏ nhất đang dùng."
+      }
+    ]
+  },
+  {
     "agentVersion": "0.13.0",
     "date": "2026-09-26",
     "title": "Máy kho tự báo tình trạng, clip kiện hoàn quay đủ 5 phút",

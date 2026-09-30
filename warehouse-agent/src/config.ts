@@ -69,11 +69,15 @@ const EnvSchema = z.object({
    * Agent dò độ phân giải thật của camera rồi đọc ở ĐÚNG cỡ đó, chỉ thu
    * nhỏ khi vượt trần này. Trước đây ép cứng 640x360 nên mã QR nhỏ (nhãn
    * TikTok) mất hết chi tiết ngay từ agent, camera nét đến mấy cũng vô
-   * ích. Hạ trần xuống nếu máy kho yếu — đổi lại là mã nhỏ có thể không
-   * đọc được nữa.
+   * ích.
+   *
+   * Trần hạ 2560x1440 -> 1920x1080 ngày 30/09/2026: con số biện minh cho
+   * 2560 ("giải mã chỉ mất 31ms") đo sai hơn mười lần, thực tế 166ms mỗi
+   * khung trong khi ngân sách là 100ms. ĐỪNG hạ dưới 1920: đo ở 1600x900
+   * thì mã TikTok 12mm mất luôn.
    */
-  QR_FRAME_WIDTH: z.coerce.number().int().min(320).max(3840).default(2560),
-  QR_FRAME_HEIGHT: z.coerce.number().int().min(180).max(2160).default(1440),
+  QR_FRAME_WIDTH: z.coerce.number().int().min(320).max(3840).default(1920),
+  QR_FRAME_HEIGHT: z.coerce.number().int().min(180).max(2160).default(1080),
   /**
    * Đọc QR từ luồng nào của camera. `main` (mặc định) là luồng gốc, nét
    * nhất — cần cho mã nhỏ. `sub` là luồng phụ, nhẹ CPU nhưng camera thường
