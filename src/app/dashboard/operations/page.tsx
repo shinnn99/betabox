@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
-  CalendarDays,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -26,6 +25,8 @@ import {
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import StatCard from "@/components/StatCard";
 import StationLivePanel from "@/components/station/StationLivePanel";
+import DatePicker from "@/components/ui/DatePicker";
+import Select from "@/components/ui/Select";
 import { useToast } from "@/components/ui/Toast";
 import { formatDateKeyVn, shiftDateKey, vnDateKey } from "@/lib/time/vietnam";
 import { startVisibilityPolling } from "@/lib/polling/visibility-poller";
@@ -944,22 +945,22 @@ export default function OperationsPage() {
               </div>
               <div className="flex items-center gap-2">
                 {stations.length > 0 && (
-                  <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
-                    <span className="sr-only">Chọn bàn để xem camera trực tiếp</span>
-                    <select
+                  <div className="min-w-40">
+                    <Select
                       value={openStationId}
-                      onChange={(event) => setSelectedStationId(event.target.value)}
-                      className="min-w-40 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
-                      aria-label="Bàn đóng hàng"
-                    >
-                      <option value="">Chọn bàn để xem trực tiếp</option>
-                      {stations.map((station) => (
-                        <option key={station.station_id} value={station.station_id}>
-                          {station.station_code} · {station.station_name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                      onChange={setSelectedStationId}
+                      options={[
+                        { value: "", label: "Chọn bàn để xem trực tiếp" },
+                        ...stations.map((station) => ({
+                          value: station.station_id,
+                          label: `${station.station_code} · ${station.station_name}`,
+                        })),
+                      ]}
+                      size="sm"
+                      ariaLabel="Bàn đóng hàng"
+                      className="font-semibold"
+                    />
+                  </div>
                 )}
                 <WarehouseIcon className="h-4 w-4 text-slate-400" />
               </div>
@@ -1100,16 +1101,13 @@ export default function OperationsPage() {
                 >
                   <ChevronLeft className="h-3.5 w-3.5" />
                 </button>
-                <label className="inline-flex items-center gap-1.5 px-1.5 cursor-pointer">
-                  <CalendarDays className="h-3.5 w-3.5 text-slate-400" />
-                  <input
-                    type="date"
-                    value={dateKey}
-                    max={todayKey}
-                    onChange={(e) => goToDate(e.target.value)}
-                    className="text-xs font-semibold text-slate-700 bg-transparent outline-none cursor-pointer"
-                  />
-                </label>
+                <DatePicker
+                  value={dateKey}
+                  max={todayKey}
+                  onChange={goToDate}
+                  compact
+                  ariaLabel="Chọn ngày xem hoạt động"
+                />
                 <button
                   type="button"
                   onClick={() => goToDate(shiftDateKey(dateKey, 1))}

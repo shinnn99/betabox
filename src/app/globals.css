@@ -49,7 +49,6 @@ body {
 
 /* Mọi field nhập: ép chữ đen, nền trắng — chặn dark mode OS đè */
 input,
-select,
 textarea {
   color: #0f172a !important; /* slate-900 */
   background-color: #ffffff;
@@ -63,13 +62,8 @@ textarea::placeholder {
   opacity: 1 !important;
 }
 
-select option {
-  color: #0f172a;
-  background-color: #ffffff;
-}
 
 input:disabled,
-select:disabled,
 textarea:disabled {
   color: #64748b !important;
   -webkit-text-fill-color: #64748b;

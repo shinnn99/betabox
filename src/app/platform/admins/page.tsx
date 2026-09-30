@@ -626,19 +626,20 @@ function AddAdminModal({
             <label className="block text-sm font-medium text-slate-700 mb-1">
               Vai trò
             </label>
-            <select
+            <Select
               value={form.role}
-              onChange={(e) =>
+              onChange={(value) =>
                 setForm({
                   ...form,
-                  role: e.target.value as "platform_owner" | "platform_support",
+                  role: value as "platform_owner" | "platform_support",
                 })
               }
-              className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm bg-white"
-            >
-              <option value="platform_support">Hỗ trợ nền tảng</option>
-              <option value="platform_owner">Chủ nền tảng</option>
-            </select>
+              options={[
+                { value: "platform_support", label: "Hỗ trợ nền tảng" },
+                { value: "platform_owner", label: "Chủ nền tảng" },
+              ]}
+              ariaLabel="Vai trò quản trị nền tảng"
+            />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">

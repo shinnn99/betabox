@@ -220,7 +220,38 @@ export async function DELETE(req: Request, { params }: RouteContext) {
     .delete()
     .eq("id", id)
     .eq("organization_id", ctx.organizationId);
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  if (error) {
+    const raw = [error.message, error.details, error.hint].filter(Boolean).join(" ");
+    const isFkViolation = error.code === "23503" || /foreign key|violates/i.test(raw);
+
+    if (isFkViolation) {
+      console.error(
+        `[staff.delete] FK chặn xoá staff=${id} org=${ctx.organizationId} code=${error.code ?? "?"} message=${raw}`,
+      );
+
+      const hasWorkSessions = /staff_work_sessions|staff_work_sessions_staff_id_fkey/i.test(raw);
+      return NextResponse.json(
+        {
+          error: hasWorkSessions ? "staff_has_work_sessions" : "staff_has_references",
+          message: hasWorkSessions
+            ? `Không thể xoá nhân viên ${target.staff_code} — ${target.full_name} vì nhân viên này đã có dữ liệu ca làm việc. Hệ thống cần giữ lại lịch sử chấm công và đóng hàng. Hãy bấm Sửa và chuyển Trạng thái sang “Nghỉ việc” thay vì xoá.`
+            : `Không thể xoá nhân viên ${target.staff_code} — ${target.full_name} vì vẫn còn dữ liệu nghiệp vụ liên quan. Hãy bấm Sửa và chuyển Trạng thái sang “Nghỉ việc” để ngừng sử dụng nhân viên mà vẫn giữ lịch sử.`,
+        },
+        { status: 409 },
+      );
+    }
+
+    console.error(
+      `[staff.delete] thất bại staff=${id} org=${ctx.organizationId} code=${error.code ?? "?"} message=${raw}`,
+    );
+    return NextResponse.json(
+      {
+        error: "delete_failed",
+        message: "Không thể xoá nhân viên lúc này. Vui lòng thử lại; nếu lỗi vẫn tiếp diễn, hãy liên hệ kỹ thuật.",
+      },
+      { status: 400 },
+    );
+  }
 
   await audit({
     organizationId: ctx.organizationId,

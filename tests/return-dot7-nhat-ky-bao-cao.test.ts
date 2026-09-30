@@ -161,11 +161,43 @@ test("số kiện hoàn KHÔNG trộn vào sản lượng đóng hàng", () => {
   assert.ok(page.includes('title="Báo cáo đóng hàng theo nhân sự"'));
   assert.ok(page.includes('title="Báo cáo hoàn hàng theo nhân sự"'));
   assert.ok(page.includes("Tổng đơn hoàn"), "thẻ số có tổng đơn hoàn");
-  assert.ok(page.includes("Thời gian đóng hàng TB"), "đổi tên thời gian xử lý");
   assert.ok(!page.includes("ReturnsReportCard"), "bỏ khung Hàng hoàn cũ");
   // MỘT khung bảng cho cả hai luồng thì không bao giờ lệch cột.
   assert.equal(page.split("function StaffReportTable(").length - 1, 1);
   assert.equal(page.split("<StaffReportTable").length - 1, 2);
+
+  // Nguồn của hai luồng cũng phải tách: gộp ở SQL vẫn phải là hai truy vấn.
+  const ops = readFileSync("src/lib/reports/operations.ts", "utf8");
+  assert.ok(
+    ops.includes('callRpc<Row>("ops_report_staff"') &&
+      ops.includes('callRpc<Row>("ops_report_return_staff"'),
+    "hai luồng có truy vấn nhân sự riêng",
+  );
+  const sql = readFileSync(
+    "supabase/migrations/20260930100000_operations_report_rpcs.sql",
+    "utf8",
+  );
+  const returnFn = sql.slice(sql.indexOf("FUNCTION public.ops_report_return_staff("));
+  assert.ok(
+    returnFn.slice(0, returnFn.indexOf("$$;")).includes("pe.event_kind = 'return'"),
+    "hàm nhân sự luồng hoàn chỉ đếm event_kind='return'",
+  );
+});
+
+/**
+ * Trang báo cáo bản 30/09/2026 bỏ "thời gian TB" làm thước đo chính: 27% số
+ * đơn ở Đại Kim là capped_timeout (thời gian bị ép cứng), nên TB vừa che mất
+ * đuôi vừa không nói mẫu số. Thay bằng p50/p90 kèm "đo trên N% số đơn".
+ */
+test("số thời gian luôn đi kèm mẫu số, không dùng trung bình làm thước đo chính", () => {
+  const page = readFileSync("src/app/dashboard/reports/page.tsx", "utf8");
+  assert.ok(page.includes("Nhịp xử lý"), "ô nhịp thay ô thời gian TB");
+  assert.ok(page.includes("p50") && page.includes("p90"), "hiện cả p50 và p90");
+  assert.ok(page.includes("đo trên ${measuredPct}%"), "nói rõ mẫu số đo được");
+  assert.ok(
+    page.includes("Đơn hết giờ chờ"),
+    "capped_timeout thành chỉ số riêng, không bị lọc im lặng",
+  );
 });
 
 // ---------------------------------------------------------------------------

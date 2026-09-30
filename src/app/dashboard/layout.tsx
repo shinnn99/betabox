@@ -5,6 +5,7 @@ import { checkPlatformAdmin } from "@/lib/platform/admin-check";
 import { createClient } from "@/lib/supabase/server";
 import ImpersonateBanner from "@/components/platform/ImpersonateBanner";
 import ImpersonateWatcher from "@/components/platform/ImpersonateWatcher";
+import DashboardShell from "@/components/layout/DashboardShell";
 
 // Next 16 mặc định cố prerender shell client component tại build time,
 // mà Supabase client throw khi thiếu runtime env → build fail. force-dynamic
@@ -67,11 +68,8 @@ export default async function DashboardRouteLayout({
   return (
     <div
       data-render-org-id={orgId}
-      // Cờ server-render để DashboardLayout (client) biết có đang impersonate
-      // hay không mà KHÔNG phải poll endpoint. Đổi impersonate luôn kéo theo
-      // full reload (ImpersonateWatcher đường 3), nên giá trị nhúng ở đây
-      // không bao giờ cũ hơn màn hình đang hiển thị.
-      data-impersonating={orgInfo?.isImpersonating ? "1" : "0"}
+      // DashboardShell receives impersonation state directly from the server.
+      // No polling or corrective client render is needed.
       className="contents"
     >
       {orgInfo?.isImpersonating && (
@@ -80,7 +78,9 @@ export default async function DashboardRouteLayout({
           <ImpersonateWatcher renderOrgId={orgId} />
         </>
       )}
-      {children}
+      <DashboardShell isImpersonating={orgInfo?.isImpersonating === true}>
+        {children}
+      </DashboardShell>
     </div>
   );
 }

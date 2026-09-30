@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, RefreshCw, Siren } from "lucide-react";
 import PlatformLayout from "@/components/platform/PlatformLayout";
+import Select from "@/components/ui/Select";
 import { apiFetch } from "@/lib/api-fetch";
 import IncidentTable, { type IncidentActionKind, type IncidentItem } from "@/components/platform/IncidentTable";
 import { CHECK_LABELS } from "@/lib/system/check-labels";
@@ -195,23 +196,24 @@ export default function PlatformIncidentsPage() {
               </button>
             ))}
           </div>
-          <select
-            aria-label="Lọc theo shop"
+          <Select
+            ariaLabel="Lọc theo shop"
             value={org}
-            onChange={(e) => {
+            onChange={(value) => {
               setLoading(true);
-              setOrg(e.target.value);
+              setOrg(value);
             }}
-            className="h-9 px-2 rounded-lg border border-slate-200 bg-white text-sm"
-          >
-            <option value="">Mọi shop</option>
-            <option value="system">Hệ thống (VPS, cron)</option>
-            {(data?.orgs ?? []).map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.name}
-              </option>
-            ))}
-          </select>
+            options={[
+              { value: "", label: "Mọi shop" },
+              { value: "system", label: "Hệ thống (VPS, cron)" },
+              ...(data?.orgs ?? []).map((item) => ({
+                value: item.id,
+                label: item.name,
+              })),
+            ]}
+            size="sm"
+            className="w-56"
+          />
           <button
             type="button"
             onClick={() => void reload()}

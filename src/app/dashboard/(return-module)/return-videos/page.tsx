@@ -1156,13 +1156,8 @@ function ScanRowView({
   selected: boolean;
   onToggleSelect: (id: string) => void;
 }) {
-  // Hồ sơ đang chờ khiếu nại tô nền rose nhẹ — cùng cách bên đóng hàng
-  // tô "Đơn lỗi": việc cần làm phải nổi giữa danh sách.
-  const rowClass = needsClaim(scan)
-    ? "bg-rose-50/70 hover:bg-rose-100/60"
-    : "hover:bg-slate-50";
   return (
-    <tr className={`[&>td]:border-t [&>td]:border-slate-100 align-top ${rowClass}`}>
+    <tr className="[&>td]:border-t [&>td]:border-slate-100 align-top hover:bg-slate-50">
       <td className="px-3 py-2.5">
         <input
           type="checkbox"

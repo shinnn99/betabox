@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
+import Select from "@/components/ui/Select";
 import { useToast } from "@/components/ui/Toast";
 import { apiFetch } from "@/lib/api-fetch";
 
@@ -226,37 +227,34 @@ export default function StationAssignCell({
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-1.5">
-        <select
+        <Select
           value={pending?.stationId ?? currentStation?.station_id ?? ""}
           disabled={disabled}
-          onChange={(e) => onPickStation(e.target.value)}
-          onMouseDown={(e) => {
-            if (!readOnly) return;
-            e.preventDefault();
-            toast.error("Bạn không có quyền đổi bàn cho thiết bị.");
-          }}
-          onKeyDown={(e) => {
-            if (!readOnly) return;
-            e.preventDefault();
-            toast.error("Bạn không có quyền đổi bàn cho thiết bị.");
-          }}
-          className="h-7 max-w-[11rem] rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 outline-none disabled:bg-slate-50 focus:border-emerald-400"
-          aria-label="Bàn đang phục vụ"
-        >
-          <option value="">Chưa gắn</option>
-          {/* Người chỉ xem có thể không tải được danh sách bàn (không có quyền
-              xem bàn) — vẫn phải hiện đúng bàn đang gắn, không rơi về "Chưa gắn". */}
-          {currentStation && !stations.some((s) => s.id === currentStation.station_id) && (
-            <option value={currentStation.station_id}>
-              {currentStation.station_code} · {currentStation.station_name}
-            </option>
-          )}
-          {stations.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.code} · {s.name}
-            </option>
-          ))}
-        </select>
+          readOnly={readOnly}
+          onReadOnlyClick={() =>
+            toast.error("Bạn không có quyền đổi bàn cho thiết bị.")
+          }
+          onChange={onPickStation}
+          options={[
+            { value: "", label: "Chưa gắn" },
+            ...(currentStation &&
+            !stations.some((s) => s.id === currentStation.station_id)
+              ? [
+                  {
+                    value: currentStation.station_id,
+                    label: `${currentStation.station_code} · ${currentStation.station_name}`,
+                  },
+                ]
+              : []),
+            ...stations.map((station) => ({
+              value: station.id,
+              label: `${station.code} · ${station.name}`,
+            })),
+          ]}
+          size="xs"
+          className="max-w-[11rem] font-medium"
+          ariaLabel="Bàn đang phục vụ"
+        />
         {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />}
       </div>
 

@@ -980,30 +980,31 @@ function DiscoverTab({
               Mạng đang quét
             </span>
             {!customMode && (
-              <select
+              <Select
                 value={pickedCidr}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v === "__custom") {
+                onChange={(value) => {
+                  if (value === "__custom") {
                     setCustomMode(true);
                     setCustomCidr(pickedCidr || "");
                   } else {
-                    setPickedCidr(v);
+                    setPickedCidr(value);
                   }
                 }}
-                title={pickedCidr || undefined}
-                className="h-9 px-2 rounded-lg border border-slate-200 text-xs bg-white flex-1 min-w-0"
-              >
-                {visibleCandidates.length === 0 && (
-                  <option value="">Tự động phát hiện</option>
-                )}
-                {visibleCandidates.map((c) => (
-                  <option key={c.cidr} value={c.cidr} title={c.cidr}>
-                    {interfaceLabel(c)} · {friendlySubnet(c.cidr)}
-                  </option>
-                ))}
-                <option value="__custom">Quét mạng khác...</option>
-              </select>
+                options={[
+                  ...(visibleCandidates.length === 0
+                    ? [{ value: "", label: "Tự động phát hiện" }]
+                    : []),
+                  ...visibleCandidates.map((candidate) => ({
+                    value: candidate.cidr,
+                    label: `${interfaceLabel(candidate)} · ${friendlySubnet(candidate.cidr)}`,
+                    hint: candidate.cidr,
+                  })),
+                  { value: "__custom", label: "Quét mạng khác..." },
+                ]}
+                size="sm"
+                ariaLabel="Mạng đang quét"
+                className="min-w-0 flex-1"
+              />
             )}
             {customMode && (
               <input
@@ -1622,25 +1623,25 @@ function DiscoveredDeviceForm({
         hint="Chọn path phổ biến hoặc tự nhập."
       >
         <div className="flex gap-2">
-          <select
+          <Select
             value={
               device.suggested_rtsp_paths.includes(form.rtsp_path)
                 ? form.rtsp_path
                 : "__custom"
             }
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v !== "__custom") setForm({ ...form, rtsp_path: v });
+            onChange={(value) => {
+              if (value !== "__custom") setForm({ ...form, rtsp_path: value });
             }}
-            className="h-10 px-3 rounded-xl border border-slate-200 text-sm bg-white min-w-[180px]"
-          >
-            {device.suggested_rtsp_paths.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-            <option value="__custom">Tuỳ chỉnh...</option>
-          </select>
+            options={[
+              ...device.suggested_rtsp_paths.map((path) => ({
+                value: path,
+                label: path,
+              })),
+              { value: "__custom", label: "Tuỳ chỉnh..." },
+            ]}
+            ariaLabel="RTSP path gợi ý"
+            className="min-w-[180px]"
+          />
           <input
             required
             value={form.rtsp_path}

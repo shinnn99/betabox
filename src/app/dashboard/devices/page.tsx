@@ -11,9 +11,11 @@ import {
 } from "react";
 import {
   Armchair,
+  ArrowUpDown,
   Cctv,
   ChevronRight,
   Circle,
+  CircleMinus,
   Cpu,
   HardDrive,
   Info,
@@ -24,6 +26,7 @@ import {
   Plug,
   PlugZap,
   Plus,
+  QrCode,
   RefreshCw,
   Save,
   ScanLine,
@@ -51,7 +54,7 @@ import {
   type AgentRow,
   type DeviceIdentity,
 } from "@/components/warehouse-config/DevicesTab";
-import StationAssignCell from "@/components/devices/StationAssignCell";
+import { ROLE_LABEL } from "@/components/devices/StationAssignCell";
 import { deniedClass, usePageGuard } from "@/lib/useGuard";
 
 interface DeviceStation {
@@ -340,7 +343,10 @@ function DevicesPage() {
   const [tab, setTab] = useState<TabKey>(initialTab);
   const [q, setQ] = useState("");
   const [showPicker, setShowPicker] = useState(false);
-  const [assignTarget, setAssignTarget] = useState<Device | null>(null);
+  const [assignmentAction, setAssignmentAction] = useState<{
+    device: Device;
+    mode: "station" | "role";
+  } | null>(null);
 
   // Camera nao dang chiem vi tri nao o ban nao — de o chon ban canh bao
   // truoc khi day mot camera dang lam viec ra khoi cho cua no.
@@ -563,6 +569,34 @@ function DevicesPage() {
     void load();
   };
 
+  const toggleStationScanSource = async (
+    camera: CameraDevice,
+    currentSource: Station["scan_source"],
+  ) => {
+    const currentStation = camera.current_station;
+    if (!currentStation) return;
+    const next = currentSource === "camera" ? "scanner" : "camera";
+    try {
+      const res = await apiFetch(`/api/packing-stations/${currentStation.station_id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scan_source: next }),
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.message ?? json.error ?? "Không đổi được nguồn quét.");
+      }
+      toast.success(
+        next === "camera"
+          ? `${currentStation.station_code} giờ đọc mã bằng camera này.`
+          : `${currentStation.station_code} đã chuyển về đọc mã bằng máy quét.`,
+      );
+      void load();
+    } catch (error) {
+      toast.error((error as Error).message);
+    }
+  };
+
   return (
     <DashboardLayout
       pageTitle="Thiết bị kho"
@@ -627,18 +661,23 @@ function DevicesPage() {
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm">
-          <div>
-            <table className="w-full text-sm table-fixed">
-              <thead className="bg-slate-50/60">
-                <tr className="text-left text-[11px] tracking-wider text-slate-500">
-                  <th className="px-4 py-3 font-semibold">Thiết bị</th>
-                  <th className="px-4 py-3 font-semibold w-24 whitespace-nowrap">Loại</th>
-                  <th className="px-4 py-3 font-semibold">Bàn đang phục vụ</th>
-                  <th className="px-4 py-3 font-semibold w-36 whitespace-nowrap">Kết nối</th>
-                  <th className="px-4 py-3 font-semibold w-36 whitespace-nowrap">Trạng thái</th>
-                  <th className="px-4 py-3 font-semibold w-32 whitespace-nowrap">Cập nhật</th>
-                  <th className="px-2 py-3 font-semibold w-24 text-center whitespace-nowrap">
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1060px] table-fixed text-sm">
+              <thead className="bg-slate-50/80">
+                <tr className="text-left text-xs font-semibold text-slate-500">
+                  <th className="w-[22%] px-5 py-3.5">
+                    <span className="inline-flex items-center gap-1.5">
+                      Thiết bị
+                      <ArrowUpDown className="h-3.5 w-3.5 text-slate-400" />
+                    </span>
+                  </th>
+                  <th className="w-[12%] px-4 py-3.5 whitespace-nowrap">Phân loại</th>
+                  <th className="w-[20%] px-4 py-3.5">Bàn / Vai trò</th>
+                  <th className="w-[12%] px-4 py-3.5 whitespace-nowrap">Kết nối</th>
+                  <th className="w-[13%] px-4 py-3.5 whitespace-nowrap">Hoạt động</th>
+                  <th className="w-[12%] px-4 py-3.5 whitespace-nowrap">Cập nhật</th>
+                  <th className="w-[9%] px-3 py-3.5 text-center whitespace-nowrap">
                     Hành động
                   </th>
                 </tr>
@@ -646,15 +685,15 @@ function DevicesPage() {
               <tbody>
                 {loading && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-10 text-center text-slate-400">
-                      <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
+                    <td colSpan={7} className="px-4 py-12 text-center text-slate-400">
+                      <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
                       Đang tải...
                     </td>
                   </tr>
                 )}
                 {!loading && filtered.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-10 text-center text-slate-400 text-sm">
+                    <td colSpan={7} className="px-4 py-12 text-center text-sm text-slate-400">
                       {devices.length === 0
                         ? allow.add
                           ? 'Chưa có thiết bị nào. Nhấn "Thêm thiết bị" để bắt đầu.'
@@ -667,70 +706,116 @@ function DevicesPage() {
                   const conn = connectionBadge(d);
                   const ConnIcon = conn.icon;
                   const stt = statusLabel(d);
+                  const station = d.current_station
+                    ? stations.find((item) => item.id === d.current_station?.station_id)
+                    : null;
+                  const currentScanSource = station?.scan_source ?? null;
+                  const role = d.current_station?.role ?? null;
                   return (
                     <tr
                       key={d.kind === "camera" ? `c_${d.id}` : `s_${d.id}`}
-                      className="border-t border-slate-100 align-middle hover:bg-slate-50/40"
+                      className="border-t border-slate-100 align-middle transition-colors hover:bg-slate-50/50"
                     >
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          {d.kind === "camera" ? (
-                            <Cctv className="h-4 w-4 text-slate-400" />
-                          ) : (
-                            <ScanLine className="h-4 w-4 text-slate-400" />
-                          )}
+                      <td className="px-5 py-3.5">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <span
+                            className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                              d.kind === "camera"
+                                ? "bg-slate-100 text-slate-600"
+                                : "bg-emerald-50 text-emerald-600"
+                            }`}
+                          >
+                            {d.kind === "camera" ? (
+                              <Cctv className="h-5 w-5" />
+                            ) : (
+                              <ScanLine className="h-5 w-5" />
+                            )}
+                          </span>
                           <div className="min-w-0">
-                            <p className="font-mono font-semibold text-slate-800">
-                              {d.kind === "camera"
-                                ? d.camera_code
-                                : d.device_code}
+                            <p className="truncate font-mono text-[13px] font-bold text-slate-800">
+                              {d.kind === "camera" ? d.camera_code : d.device_code}
                             </p>
-                            <p className="text-[11px] text-slate-500 truncate">
-                              {d.name}
-                            </p>
+                            <p className="mt-0.5 truncate text-xs text-slate-500">{d.name}</p>
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-slate-700 whitespace-nowrap">
-                        {d.kind === "camera" ? "Camera" : "Máy quét"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <StationAssignCell
-                          deviceId={
-                            d.kind === "camera" ? d.station_device_id : d.id
-                          }
-                          isCamera={d.kind === "camera"}
-                          cameraId={d.kind === "camera" ? d.id : undefined}
-                          currentStation={d.current_station}
-                          currentRole={d.current_station?.role ?? null}
-                          stations={stations}
-                          occupants={cameraOccupants}
-                          onSaved={load}
-                          readOnly={!allow.assign}
-                        />
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap">
+                      <td className="px-4 py-3.5 whitespace-nowrap">
                         <span
-                          className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded whitespace-nowrap ${conn.cls}`}
+                          className={`inline-flex rounded-md px-2.5 py-1 text-[11px] font-semibold ${
+                            d.kind === "camera"
+                              ? "bg-slate-100 text-slate-600"
+                              : "bg-emerald-50 text-emerald-700"
+                          }`}
                         >
-                          <ConnIcon className="h-3 w-3" />
+                          {d.kind === "camera" ? "Camera" : "Máy quét"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        {d.current_station ? (
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-bold text-slate-800">
+                              {d.current_station.station_code}
+                              <span className="font-medium text-slate-500">
+                                {" "}· {d.current_station.station_name}
+                              </span>
+                            </p>
+                            <p
+                              className={`mt-1 flex items-center gap-1.5 truncate text-[11px] ${
+                                d.kind === "camera" && role === "proof_qr"
+                                  ? "text-emerald-600"
+                                  : "text-slate-500"
+                              }`}
+                            >
+                              {d.kind === "camera" ? (
+                                role === "proof_qr" ? (
+                                  <QrCode className="h-3.5 w-3.5 shrink-0" />
+                                ) : (
+                                  <Cctv className="h-3.5 w-3.5 shrink-0" />
+                                )
+                              ) : (
+                                <Plug className="h-3.5 w-3.5 shrink-0" />
+                              )}
+                              <span className="truncate">
+                                {d.kind === "camera"
+                                  ? role === "proof_qr"
+                                    ? currentScanSource === "camera"
+                                      ? "Đang đọc mã QR"
+                                      : "Quét QR · chỉ ghi hình"
+                                    : role
+                                      ? ROLE_LABEL[role]
+                                      : "Chưa đặt vai trò"
+                                  : d.current_station.station_name}
+                              </span>
+                            </p>
+                          </div>
+                        ) : (
+                          <div>
+                            <p className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                              <CircleMinus className="h-4 w-4 text-slate-400" />
+                              Chưa gán
+                            </p>
+                            <p className="mt-1 pl-[22px] text-[11px] text-slate-400">Chưa gán bàn</p>
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3.5 whitespace-nowrap">
+                        <span className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-semibold ${conn.cls}`}>
+                          <ConnIcon className="h-3.5 w-3.5" />
                           {conn.label}
                         </span>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded whitespace-nowrap ${stt.cls}`}
-                        >
+                      <td className="px-4 py-3.5 whitespace-nowrap">
+                        <span className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-semibold ${stt.cls}`}>
                           {d.kind === "camera" && d.recording?.is_recording && (
                             <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
+                          )}
+                          {d.kind === "scanner" && (
+                            <Link2 className="h-3.5 w-3.5" />
                           )}
                           {stt.label}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
-                        {/* Camera mất kết nối: `updated_at` đổi MỖI LẦN agent thử kết nối
-                            (ghi kết quả probe), nên "29s trước" trông như vừa kết nối
-                            được. Chủ dự án hỏi 26/09/2026 về dahua_01 đã tháo từ lâu. */}
+                      <td className="px-4 py-3.5 text-xs text-slate-500 whitespace-nowrap">
                         {d.kind === "camera" && d.camera_online_state === "offline" ? (
                           <span
                             className="text-rose-600"
@@ -747,7 +832,7 @@ function DevicesPage() {
                           formatRelative(d.updated_at)
                         )}
                       </td>
-                      <td className="px-2 py-3 text-center whitespace-nowrap">
+                      <td className="px-3 py-3.5 text-center whitespace-nowrap">
                         <DeviceActionMenu
                           device={d}
                           allow={allow}
@@ -760,12 +845,7 @@ function DevicesPage() {
                           recBusy={!!recBusy[d.id]}
                           onToggleRecording={() => {
                             if (d.kind !== "camera") return;
-                            // can_stop, KHÔNG phải is_recording: session
-                            // 'error' còn mở vẫn phải đi nhánh stop.
-                            toggleRecording(
-                              d,
-                              d.recording?.can_stop ? "stop" : "start",
-                            );
+                            toggleRecording(d, d.recording?.can_stop ? "stop" : "start");
                           }}
                           onTestConnection={() => setTestingCameraId(d.id)}
                           onEdit={() =>
@@ -773,7 +853,24 @@ function DevicesPage() {
                               ? setEditingCameraId(d.id)
                               : setScannerDetailId(d.id)
                           }
-                          onAssignStation={() => setAssignTarget(d)}
+                          // Không còn ô chọn inline dùng readOnly={!allow.assign}; mọi thay đổi
+                          // bàn/vai trò đều đi qua menu và guard quyền tại thời điểm bấm.
+                          onAssignStation={() =>
+                            setAssignmentAction({ device: d, mode: "station" })
+                          }
+                          onChangeRole={
+                            d.kind === "camera" && d.current_station
+                              ? () => setAssignmentAction({ device: d, mode: "role" })
+                              : undefined
+                          }
+                          scanSource={currentScanSource}
+                          onToggleScanSource={
+                            d.kind === "camera" &&
+                            d.current_station &&
+                            role === "proof_qr"
+                              ? () => void toggleStationScanSource(d, currentScanSource)
+                              : undefined
+                          }
                           onDelete={
                             d.kind === "scanner" && virtualScannerLocked(d, stations)
                               ? undefined
@@ -812,13 +909,15 @@ function DevicesPage() {
         />
       )}
 
-      {assignTarget && (
+      {assignmentAction && (
         <AssignStationDialog
-          device={assignTarget}
+          device={assignmentAction.device}
+          mode={assignmentAction.mode}
           stations={stations}
-          onClose={() => setAssignTarget(null)}
+          occupants={cameraOccupants}
+          onClose={() => setAssignmentAction(null)}
           onSaved={() => {
-            setAssignTarget(null);
+            setAssignmentAction(null);
             void load();
           }}
         />
@@ -1088,12 +1187,21 @@ function AddDeviceModal({
 
 function AssignStationDialog({
   device,
+  mode,
   stations,
+  occupants,
   onClose,
   onSaved,
 }: {
   device: Device;
+  mode: "station" | "role";
   stations: Station[];
+  occupants: Array<{
+    cameraId: string;
+    cameraCode: string;
+    stationId: string;
+    role: "proof_primary" | "proof_qr" | null;
+  }>;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -1113,6 +1221,18 @@ function AssignStationDialog({
 
   const deviceId =
     device.kind === "camera" ? device.station_device_id : device.id;
+  const selectedStation = stations.find((station) => station.id === stationId);
+  const otherCameras =
+    device.kind === "camera"
+      ? occupants.filter(
+          (occupant) =>
+            occupant.stationId === stationId && occupant.cameraId !== device.id,
+        )
+      : [];
+  const replacedCamera = otherCameras.find((occupant) => occupant.role === role);
+  const needsRolePicker =
+    device.kind === "camera" &&
+    (mode === "role" || !device.current_station?.role);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1128,38 +1248,40 @@ function AssignStationDialog({
     setErr(null);
     try {
       if (device.kind === "camera") {
-        // Vai tro luon duoc ghi ro. Truoc day bo trong = "khong phai camera
-        // chinh", ma cho khac lai doc thieu vai tro thanh proof_primary —
-        // nen camera QR sua xong la thanh camera toan canh, im lang.
         const currentRole = device.current_station?.role ?? null;
         if (role !== currentRole) {
-          // apiFetch: lệnh GHI phải mang x-render-org-id (sự cố 2026-09-16).
-          const res = await apiFetch(`/api/station-devices/${deviceId}`, {
+          const roleRes = await apiFetch(`/api/station-devices/${deviceId}`, {
             method: "PATCH",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               config_json: { camera_id: device.id, role },
             }),
           });
-          if (!res.ok) {
-            const j = await res.json().catch(() => ({}));
-            throw new Error(j.message ?? "Không cập nhật được vai trò.");
+          if (!roleRes.ok) {
+            const json = await roleRes.json().catch(() => ({}));
+            throw new Error(json.message ?? "Không cập nhật được chức năng camera.");
           }
         }
       }
-      const res = await apiFetch("/api/station-device-assignments", {
+
+      const assignmentRes = await apiFetch("/api/station-device-assignments", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ device_id: deviceId, station_id: stationId }),
       });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.message ?? "Gán bàn thất bại.");
+      if (!assignmentRes.ok) {
+        const json = await assignmentRes.json().catch(() => ({}));
+        throw new Error(json.message ?? "Gán bàn thất bại.");
       }
-      toast.success("Đã gán bàn.");
+
+      toast.success(
+        mode === "role"
+          ? `Đã đổi chức năng camera thành ${ROLE_LABEL[role]}.`
+          : `Đã gán thiết bị vào ${selectedStation?.code ?? "bàn đã chọn"}.`,
+      );
       onSaved();
-    } catch (e2) {
-      setErr((e2 as Error).message);
+    } catch (error) {
+      setErr((error as Error).message);
     } finally {
       setSaving(false);
     }
@@ -1168,6 +1290,7 @@ function AssignStationDialog({
   const unassign = async () => {
     if (!deviceId || !device.current_station) return;
     setSaving(true);
+    setErr(null);
     try {
       const res = await apiFetch("/api/station-device-assignments", {
         method: "DELETE",
@@ -1175,13 +1298,13 @@ function AssignStationDialog({
         body: JSON.stringify({ device_id: deviceId }),
       });
       if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.message ?? "Bỏ gán thất bại.");
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.message ?? "Bỏ gán thất bại.");
       }
-      toast.success("Đã bỏ gán.");
+      toast.success("Đã bỏ gán khỏi bàn.");
       onSaved();
-    } catch (e2) {
-      setErr((e2 as Error).message);
+    } catch (error) {
+      setErr((error as Error).message);
     } finally {
       setSaving(false);
     }
@@ -1189,80 +1312,124 @@ function AssignStationDialog({
 
   return (
     <Modal
-      title={device.current_station ? "Đổi bàn" : "Gán bàn"}
+      title={
+        mode === "role"
+          ? "Đổi chức năng camera"
+          : device.current_station
+            ? "Đổi bàn"
+            : "Gán bàn"
+      }
       onClose={onClose}
       size="md"
     >
-      <form onSubmit={submit} className="space-y-3">
-        <p className="text-xs text-slate-500">
-          Thiết bị:{" "}
-          <span className="font-mono font-semibold text-slate-700">
-            {device.kind === "camera" ? device.camera_code : device.device_code}
-          </span>{" "}
-          · {device.name}
-        </p>
-        <div>
-          <label className="text-xs text-slate-600 font-medium">Bàn</label>
-          <Select
-            value={stationId}
-            onChange={setStationId}
-            options={stations.map((s) => ({
-              value: s.id,
-              label: `${s.code} · ${s.name}`,
-            }))}
-            placeholder="Chọn bàn..."
-          />
+      <form onSubmit={submit} className="space-y-4">
+        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+            Thiết bị
+          </p>
+          <p className="mt-1 text-sm font-semibold text-slate-800">
+            <span className="font-mono">
+              {device.kind === "camera" ? device.camera_code : device.device_code}
+            </span>
+            <span className="font-normal text-slate-500"> · {device.name}</span>
+          </p>
         </div>
-        {device.kind === "camera" && (
-          <div className="space-y-1.5">
-            <p className="text-[11px] font-semibold text-slate-600">
-              Vị trí camera tại bàn
+
+        {mode === "station" ? (
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold text-slate-600">Bàn</label>
+            <Select
+              value={stationId}
+              onChange={setStationId}
+              options={stations.map((station) => ({
+                value: station.id,
+                label: `${station.code} · ${station.name}`,
+              }))}
+              placeholder="Chọn bàn..."
+            />
+          </div>
+        ) : (
+          <div>
+            <p className="text-xs font-semibold text-slate-600">Bàn hiện tại</p>
+            <p className="mt-1 text-sm text-slate-700">
+              {device.current_station?.station_code} · {device.current_station?.station_name}
             </p>
-            {/* Hai lựa chọn tách bạch. Trước đây chỉ có một ô tích "camera
-                chính": bỏ tích nghĩa là KHÔNG có vai trò, mà chỗ khác lại
-                đọc thiếu vai trò thành camera toàn cảnh — nên không có cách
-                nào khai báo camera quét QR ở đây. */}
-            {(
-              [
-                {
-                  value: "proof_primary" as const,
-                  label: "Camera chính (toàn cảnh)",
-                  hint: "Dùng làm hình nền của clip bằng chứng.",
-                },
-                {
-                  value: "proof_qr" as const,
-                  label: "Camera quét QR",
-                  hint: "Đọc mã vận đơn và chèn vào góc clip.",
-                },
-              ]
-            ).map((opt) => (
-              <label
-                key={opt.value}
-                className="flex items-start gap-2 text-xs text-slate-700 cursor-pointer"
-                title={opt.hint}
-              >
-                <input
-                  type="checkbox"
-                  checked={role === opt.value}
-                  onChange={() => setRole(opt.value)}
-                  className="mt-0.5 h-4 w-4 rounded border-slate-300"
-                />
-                <span>
-                  {opt.label}
-                  <span className="block text-[11px] text-slate-400">{opt.hint}</span>
-                </span>
-              </label>
-            ))}
           </div>
         )}
+
+        {needsRolePicker && (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-slate-600">Chức năng camera</p>
+            <div className="grid grid-cols-2 gap-2">
+              {(
+                [
+                  {
+                    value: "proof_primary" as const,
+                    label: "Toàn cảnh",
+                    hint: "Ghi hình tổng thể bàn đóng hàng.",
+                    icon: Cctv,
+                  },
+                  {
+                    value: "proof_qr" as const,
+                    label: "Đọc mã QR",
+                    hint: "Ghi cận mã và có thể dùng để quét mã.",
+                    icon: QrCode,
+                  },
+                ]
+              ).map((option) => {
+                const RoleIcon = option.icon;
+                const active = role === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setRole(option.value)}
+                    className={`rounded-xl border p-3 text-left transition-colors ${
+                      active
+                        ? "border-emerald-400 bg-emerald-50 ring-2 ring-emerald-100"
+                        : "border-slate-200 bg-white hover:border-slate-300"
+                    }`}
+                  >
+                    <span className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                      <RoleIcon className={`h-4 w-4 ${active ? "text-emerald-600" : "text-slate-400"}`} />
+                      {option.label}
+                    </span>
+                    <span className="mt-1 block text-[11px] leading-4 text-slate-500">
+                      {option.hint}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {device.kind === "camera" && stationId && replacedCamera && (
+          <div className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+            <Info className="mt-0.5 h-4 w-4 shrink-0" />
+            <p>
+              Vị trí <b>{ROLE_LABEL[role]}</b> tại bàn này đang thuộc về{" "}
+              <b>{replacedCamera.cameraCode}</b>. Khi lưu, camera đó sẽ được đưa về
+              trạng thái chưa gán bàn.
+            </p>
+          </div>
+        )}
+
+        {device.kind === "camera" && stationId && otherCameras.length >= 2 && !replacedCamera && (
+          <div className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+            <Info className="mt-0.5 h-4 w-4 shrink-0" />
+            <p>Bàn này đã có đủ hai camera. Hãy kiểm tra lại chức năng trước khi lưu.</p>
+          </div>
+        )}
+
         {err && <p className="text-sm text-rose-600">{err}</p>}
-        <div className="flex justify-end gap-2 pt-2">
-          {device.current_station && (
+        <div className="flex justify-end gap-2 pt-1">
+          {mode === "station" && device.current_station && (
             <button
               type="button"
               onClick={unassign}
               disabled={saving}
-              className="h-9 px-3 rounded-xl text-sm text-rose-600 hover:bg-rose-50"
+              className="mr-auto h-9 rounded-xl px-3 text-sm text-rose-600 hover:bg-rose-50 disabled:opacity-50"
             >
               Bỏ gán
             </button>
@@ -1271,17 +1438,17 @@ function AssignStationDialog({
             type="button"
             onClick={onClose}
             disabled={saving}
-            className="h-9 px-4 rounded-xl border border-slate-200 text-sm"
+            className="h-9 rounded-xl border border-slate-200 px-4 text-sm text-slate-600 hover:bg-slate-50"
           >
             Huỷ
           </button>
           <button
             type="submit"
             disabled={saving}
-            className="h-9 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-2"
+            className="inline-flex h-9 items-center gap-2 rounded-xl bg-emerald-500 px-4 text-sm font-semibold text-white hover:bg-emerald-600 disabled:opacity-50"
           >
             {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-            Lưu
+            {mode === "role" ? "Lưu chức năng" : "Lưu thay đổi"}
           </button>
         </div>
       </form>
@@ -1750,6 +1917,9 @@ function DeviceActionMenu({
   onTestConnection,
   onEdit,
   onAssignStation,
+  onChangeRole,
+  scanSource,
+  onToggleScanSource,
   onDelete,
 }: {
   device: Device;
@@ -1763,23 +1933,24 @@ function DeviceActionMenu({
   onTestConnection: () => void;
   onEdit: () => void;
   onAssignStation: () => void;
+  onChangeRole?: () => void;
+  scanSource: Station["scan_source"];
+  onToggleScanSource?: () => void;
   onDelete?: () => void;
 }) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
 
-  // Compute portal position so the menu escapes the table's overflow-y-auto
-  // scroll container. Flip upwards when there is not enough space below.
   useEffect(() => {
     if (!isOpen || !btnRef.current) return;
     const rect = btnRef.current.getBoundingClientRect();
-    const MENU_WIDTH = 208;
-    const MENU_HEIGHT_EST = 260;
+    const menuWidth = 224;
+    const menuHeightEstimate = 360;
     const spaceBelow = window.innerHeight - rect.bottom;
-    const openUp = spaceBelow < MENU_HEIGHT_EST && rect.top > MENU_HEIGHT_EST;
-    const top = openUp ? rect.top - MENU_HEIGHT_EST - 4 : rect.bottom + 4;
-    const left = Math.max(8, rect.right - MENU_WIDTH);
+    const openUp = spaceBelow < menuHeightEstimate && rect.top > menuHeightEstimate;
+    const top = openUp ? rect.top - menuHeightEstimate - 4 : rect.bottom + 4;
+    const left = Math.max(8, rect.right - menuWidth);
     setPos({ top, left });
   }, [isOpen]);
 
@@ -1797,25 +1968,10 @@ function DeviceActionMenu({
 
   const isCamera = device.kind === "camera";
   const isRecording = isCamera && device.recording?.is_recording;
-  // Nút dừng bám vào "còn session chưa đóng", không bám vào "cloud thấy
-  // đang ghi". Camera tạm ngưng / offline / session 'error' mà agent vẫn
-  // giữ desired đều phải dừng được — nếu không thì người dùng mất quyền
-  // điều khiển qua sản phẩm và chỉ còn đường sửa DB tay.
   const canStop = isCamera && !!device.recording?.can_stop;
-  // Chặn "Bắt đầu ghi" khi agent kho hoặc camera không sẵn sàng: enqueue
-  // vẫn được nhưng người dùng tưởng đã ghi mà thực tế chưa. Sản phẩm bằng
-  // chứng — thà chặn cứng buộc user Test kết nối trước còn hơn Start vào
-  // camera chết rồi tưởng đang ghi.
-  // Với "Dừng ghi" thì cho phép enqueue kể cả agent offline: agent lên
-  // lại sẽ nhận command và dừng.
   const agentOnline =
     isCamera && device.camera_online_state !== "warehouse_disconnected";
-  // Camera phải Online mới cho Start. offline / not_probed / warehouse_disconnected
-  // đều chặn. Đang recording thì cho Stop bất kể trạng thái.
   const cameraOnline = isCamera && device.camera_online_state === "online";
-  // Dừng: luôn cho phép khi còn session mở (kể cả camera Offline / tạm
-  // ngưng / agent mất kết nối — agent lên lại sẽ nhận command).
-  // Bắt đầu: giữ nguyên điều kiện chặt như cũ.
   const canRecord =
     isCamera &&
     (canStop ||
@@ -1826,96 +1982,139 @@ function DeviceActionMenu({
     fn();
   };
 
+  const itemClass =
+    "flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50";
+
   return (
     <>
       <button
         ref={btnRef}
         onClick={onToggle}
-        className="h-8 w-8 rounded-lg text-slate-500 hover:bg-slate-100 inline-flex items-center justify-center"
-        aria-label="Hành động"
+        className={`inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 ${
+          isOpen ? "bg-slate-100 text-slate-700" : ""
+        }`}
+        aria-label="Mở danh sách hành động"
+        aria-expanded={isOpen}
       >
         <MoreVertical className="h-4 w-4" />
       </button>
-      {isOpen && pos && typeof document !== "undefined" &&
+      {isOpen &&
+        pos &&
+        typeof document !== "undefined" &&
         createPortal(
           <div
             ref={menuRef}
             style={{ position: "fixed", top: pos.top, left: pos.left }}
-            className="z-50 w-52 rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left text-sm"
+            className="z-50 w-56 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 text-left shadow-xl"
           >
-          {isCamera && (
-            <>
+            {isCamera && (
+              <>
+                <button
+                  onClick={() =>
+                    run(
+                      guard(
+                        allow.record,
+                        canStop ? "dừng ghi" : "bắt đầu ghi",
+                        onToggleRecording,
+                      ),
+                    )
+                  }
+                  disabled={allow.record && (recBusy || !canRecord)}
+                  className={`${itemClass} disabled:cursor-not-allowed disabled:opacity-40 ${
+                    canStop ? "text-rose-600" : "text-emerald-600"
+                  }${deniedClass(allow.record)}`}
+                  title={
+                    allow.record && !canRecord
+                      ? device.status !== "active"
+                        ? "Camera đang tạm ngưng — hãy đổi trạng thái trước khi ghi."
+                        : !agentOnline
+                          ? "Agent kho mất kết nối — không thể bắt đầu ghi mới."
+                          : "Camera chưa Online — hãy test kết nối trước khi ghi."
+                      : undefined
+                  }
+                >
+                  {recBusy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Circle className={`h-4 w-4 ${canStop ? "fill-current" : ""}`} />
+                  )}
+                  <span className="font-semibold">
+                    {canStop ? "Dừng ghi" : "Bắt đầu ghi"}
+                  </span>
+                </button>
+                <button
+                  onClick={() =>
+                    run(guard(allow.test, "test kết nối camera", onTestConnection))
+                  }
+                  className={`${itemClass}${deniedClass(allow.test)}`}
+                >
+                  <PlugZap className="h-4 w-4 text-slate-400" />
+                  Test kết nối
+                </button>
+              </>
+            )}
+
+            <button
+              onClick={() => run(guard(allow.edit, "chỉnh sửa thiết bị", onEdit))}
+              className={`${itemClass}${deniedClass(allow.edit)}`}
+            >
+              <Pencil className="h-4 w-4 text-slate-400" />
+              Chỉnh sửa thiết bị
+            </button>
+
+            <div className="my-1 border-t border-slate-100" />
+            <p className="px-3 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+              Bàn & chức năng
+            </p>
+            <button
+              onClick={() =>
+                run(guard(allow.assign, "đổi bàn cho thiết bị", onAssignStation))
+              }
+              className={`${itemClass}${deniedClass(allow.assign)}`}
+            >
+              <Armchair className="h-4 w-4 text-slate-400" />
+              {device.current_station ? "Đổi bàn" : "Gán bàn"}
+            </button>
+            {onChangeRole && (
               <button
                 onClick={() =>
-                  run(guard(allow.record, canStop ? "dừng ghi" : "bắt đầu ghi", onToggleRecording))
+                  run(guard(allow.assign, "đổi chức năng camera", onChangeRole))
                 }
-                disabled={allow.record && (recBusy || !canRecord)}
-                className={`w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed ${
-                  canStop ? "text-rose-600" : "text-emerald-600"
-                }${deniedClass(allow.record)}`}
-                title={
-                  allow.record && !canRecord
-                    ? isCamera && device.status !== "active"
-                      ? "Camera đang Tạm ngưng — chỉnh sửa và đổi Trạng thái sang Đang hoạt động."
-                      : !agentOnline
-                        ? "Agent kho mất kết nối — không thể bắt đầu ghi mới."
-                        : "Camera chưa Online — Test kết nối trước khi ghi."
-                    : undefined
-                }
+                className={`${itemClass}${deniedClass(allow.assign)}`}
               >
-                {recBusy ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Circle
-                    className={`h-3.5 w-3.5 ${canStop ? "fill-current" : ""}`}
-                  />
-                )}
-                <span className="font-semibold">
-                  {canStop ? "Dừng ghi" : "Bắt đầu ghi"}
-                </span>
+                <RefreshCw className="h-4 w-4 text-slate-400" />
+                Đổi chức năng
               </button>
+            )}
+            {onToggleScanSource && (
               <button
-                onClick={() => run(guard(allow.test, "test kết nối camera", onTestConnection))}
-                className={`w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 text-slate-700${deniedClass(allow.test)}`}
+                onClick={() =>
+                  run(guard(allow.assign, "đổi nguồn đọc mã", onToggleScanSource))
+                }
+                className={`${itemClass}${deniedClass(allow.assign)}`}
               >
-                <PlugZap className="h-3.5 w-3.5" />
-                Test kết nối
+                <QrCode className="h-4 w-4 text-slate-400" />
+                {scanSource === "camera"
+                  ? "Chuyển về máy quét"
+                  : "Dùng camera quét mã"}
               </button>
-            </>
-          )}
-          <button
-            onClick={() => run(guard(allow.edit, "chỉnh sửa thiết bị", onEdit))}
-            className={`w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 text-slate-700${deniedClass(allow.edit)}`}
-          >
-            <Pencil className="h-3.5 w-3.5" />
-            Chỉnh sửa
-          </button>
-          <div className="my-1 border-t border-slate-100" />
-          <button
-            onClick={() => run(guard(allow.assign, "đổi bàn cho thiết bị", onAssignStation))}
-            className={`w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 text-slate-700${deniedClass(allow.assign)}`}
-          >
-            <Link2 className="h-3.5 w-3.5" />
-            {device.current_station ? "Đổi bàn" : "Gán bàn"}
-          </button>
-          {onDelete ? (
-            <button
-              onClick={() => run(guard(allow.remove, "xoá thiết bị", onDelete))}
-              className={`w-full flex items-center gap-2 px-3 py-2 hover:bg-rose-50 text-rose-600${deniedClass(allow.remove)}`}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              {/* Máy quét chỉ được chuyển vào lưu trữ, camera mới xoá thật —
-                  nhãn phải nói đúng việc sắp xảy ra. */}
-              {device.kind === "scanner" ? "Lưu trữ" : "Xoá"}
-            </button>
-          ) : (
-            // Nút bị rút thì phải nói vì sao. Menu cụt lủn không lời giải
-            // thích đọc thành "hệ thống lỗi", và người dùng đi tìm nhầm chỗ.
-            <p className="px-3 py-2 text-[11px] leading-snug text-slate-400 max-w-[15rem]">
-              Bàn đang đọc mã bằng camera nên máy quét ảo này phải giữ. Đổi nguồn
-              đọc mã của bàn sang súng quét thì hệ thống tự gỡ.
-            </p>
-          )}
+            )}
+
+            <div className="my-1 border-t border-slate-100" />
+            {onDelete ? (
+              <button
+                onClick={() => run(guard(allow.remove, "xoá thiết bị", onDelete))}
+                className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm text-rose-600 hover:bg-rose-50${deniedClass(allow.remove)}`}
+              >
+                <Trash2 className="h-4 w-4" />
+                {device.kind === "scanner" ? "Lưu trữ" : "Xoá thiết bị"}
+              </button>
+            ) : (
+              <p className="max-w-[15rem] px-3 py-2 text-[11px] leading-snug text-slate-400">
+                Bàn đang đọc mã bằng camera nên máy quét ảo này phải giữ. Đổi nguồn
+                đọc mã của bàn sang máy quét thì hệ thống tự gỡ.
+              </p>
+            )}
           </div>,
           document.body,
         )}

@@ -26,9 +26,13 @@ interface SelectProps {
   options: SelectOption[];
   placeholder?: string;
   disabled?: boolean;
+  /** Keeps the trigger visible but blocks opening, useful for permission-gated fields. */
+  readOnly?: boolean;
+  /** Called when a read-only trigger is pressed. */
+  onReadOnlyClick?: () => void;
   className?: string;
-  /** "md" = h-10 (default, matches inputs), "sm" = h-9, "lg" = h-11. */
-  size?: "sm" | "md" | "lg";
+  /** Consistent control heights across dense tables, filters, and forms. */
+  size?: "xs" | "sm" | "md" | "lg";
   /** Optional leading icon rendered inside the trigger, before the label. */
   leadingIcon?: ReactNode;
   /** Optional label rendered above the trigger (used outside <Field>). */
@@ -36,14 +40,22 @@ interface SelectProps {
 }
 
 const SIZE_CLASS: Record<NonNullable<SelectProps["size"]>, string> = {
+  xs: "h-8",
   sm: "h-9",
   md: "h-10",
   lg: "h-11",
 };
 
+const TRIGGER_TEXT_CLASS: Record<NonNullable<SelectProps["size"]>, string> = {
+  xs: "text-xs",
+  sm: "text-sm",
+  md: "text-sm",
+  lg: "text-sm",
+};
+
 /**
- * Accessible single-select dropdown. Drop-in replacement for <select>: same
- * value/onChange contract, no extra wiring. Renders the menu in a portal so
+ * Accessible single-select dropdown. Drop-in replacement for native dropdowns:
+ * same value/onChange contract, no extra wiring. Renders the menu in a portal so
  * it isn't clipped by scrollable modals.
  */
 export default function Select({
@@ -52,6 +64,8 @@ export default function Select({
   options,
   placeholder = "Chọn...",
   disabled = false,
+  readOnly = false,
+  onReadOnlyClick,
   className = "",
   size = "md",
   leadingIcon,
@@ -69,8 +83,10 @@ export default function Select({
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const [popoverRect, setPopoverRect] = useState<{
     left: number;
-    top: number;
+    top?: number;
+    bottom?: number;
     width: number;
+    maxHeight: number;
   } | null>(null);
 
   const selectedIndex = options.findIndex((o) => o.value === value);
@@ -78,9 +94,13 @@ export default function Select({
 
   const openMenu = useCallback(() => {
     if (disabled) return;
+    if (readOnly) {
+      onReadOnlyClick?.();
+      return;
+    }
     setHighlight(selectedIndex >= 0 ? selectedIndex : 0);
     setOpen(true);
-  }, [disabled, selectedIndex]);
+  }, [disabled, onReadOnlyClick, readOnly, selectedIndex]);
 
   const closeMenu = useCallback(() => setOpen(false), []);
 
@@ -92,10 +112,24 @@ export default function Select({
       const el = triggerRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
+      const gap = 4;
+      const viewportPadding = 8;
+      const menuMaxHeight = 384;
+      const spaceBelow = window.innerHeight - r.bottom - gap - viewportPadding;
+      const spaceAbove = r.top - gap - viewportPadding;
+      const openUp = spaceBelow < 192 && spaceAbove > spaceBelow;
+      const availableHeight = Math.max(96, openUp ? spaceAbove : spaceBelow);
+      const left = Math.min(
+        Math.max(viewportPadding, r.left),
+        Math.max(viewportPadding, window.innerWidth - r.width - viewportPadding),
+      );
       setPopoverRect({
-        left: r.left + window.scrollX,
-        top: r.bottom + window.scrollY + 4,
+        left,
+        ...(openUp
+          ? { bottom: window.innerHeight - r.top + gap }
+          : { top: r.bottom + gap }),
         width: r.width,
+        maxHeight: Math.min(menuMaxHeight, availableHeight),
       });
     };
     updateRect();
@@ -149,6 +183,13 @@ export default function Select({
 
   const handleTriggerKey = (e: React.KeyboardEvent<HTMLButtonElement>) => {
     if (disabled) return;
+    if (readOnly) {
+      if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        onReadOnlyClick?.();
+      }
+      return;
+    }
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       if (!open) {
@@ -185,8 +226,11 @@ export default function Select({
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
         aria-label={ariaLabel}
-        className={`w-full ${SIZE_CLASS[size]} ${leadingIcon ? "pl-9" : "pl-3"} pr-9 rounded-xl border border-slate-200 bg-white text-left text-sm text-slate-800 inline-flex items-center justify-between gap-2 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 transition-colors relative ${
-          disabled ? "opacity-60 cursor-not-allowed bg-slate-50" : "cursor-pointer"
+        aria-disabled={disabled || readOnly}
+        className={`w-full ${SIZE_CLASS[size]} ${leadingIcon ? "pl-9" : "pl-3"} pr-9 rounded-xl border border-slate-200 bg-white text-left ${TRIGGER_TEXT_CLASS[size]} text-slate-800 inline-flex items-center justify-between gap-2 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 transition-colors relative ${
+          disabled || readOnly
+            ? "opacity-60 cursor-not-allowed bg-slate-50"
+            : "cursor-pointer"
         } ${className}`}
       >
         {leadingIcon && (
@@ -215,13 +259,15 @@ export default function Select({
               role="listbox"
               id={listboxId}
               style={{
-                position: "absolute",
+                position: "fixed",
                 left: popoverRect.left,
                 top: popoverRect.top,
+                bottom: popoverRect.bottom,
                 width: popoverRect.width,
+                maxHeight: popoverRect.maxHeight,
                 zIndex: 200,
               }}
-              className="bg-white rounded-xl border border-slate-200 shadow-lg max-h-96 overflow-y-auto py-1"
+              className="overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-lg"
             >
               {options.length === 0 ? (
                 <p className="px-3 py-2 text-xs text-slate-400">

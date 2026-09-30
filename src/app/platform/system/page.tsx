@@ -24,6 +24,7 @@ import {
   XCircle,
 } from "lucide-react";
 import PlatformLayout from "@/components/platform/PlatformLayout";
+import Select from "@/components/ui/Select";
 import { ago, formatVn } from "@/lib/format/time-vn";
 import IncidentLedgerPanel, { type LedgerView } from "@/components/platform/IncidentLedgerPanel";
 import { CHECK_LABELS } from "@/lib/system/check-labels";
@@ -511,17 +512,20 @@ export default function SystemStatusPage() {
                       className="h-9 pl-9 pr-3 w-56 rounded-xl border border-slate-200 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
                     />
                   </div>
-                  <select
+                  <Select
                     value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value as "all" | CheckStatus)}
-                    className="h-9 px-3 rounded-xl border border-slate-200 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-slate-200"
-                  >
-                    <option value="all">Tất cả trạng thái</option>
-                    <option value="crit">Nghiêm trọng</option>
-                    <option value="warn">Cảnh báo</option>
-                    <option value="unknown">Chưa rõ</option>
-                    <option value="ok">Bình thường</option>
-                  </select>
+                    onChange={(value) => setStatusFilter(value as "all" | CheckStatus)}
+                    options={[
+                      { value: "all", label: "Tất cả trạng thái" },
+                      { value: "crit", label: "Nghiêm trọng" },
+                      { value: "warn", label: "Cảnh báo" },
+                      { value: "unknown", label: "Chưa rõ" },
+                      { value: "ok", label: "Bình thường" },
+                    ]}
+                    size="sm"
+                    ariaLabel="Lọc trạng thái kho"
+                    className="w-44"
+                  />
                 </div>
               </div>
 

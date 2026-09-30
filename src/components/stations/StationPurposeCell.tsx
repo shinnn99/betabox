@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
+import Select from "@/components/ui/Select";
 import { useToast } from "@/components/ui/Toast";
 import { deniedClass } from "@/lib/useGuard";
 import { apiFetch } from "@/lib/api-fetch";
@@ -71,26 +72,22 @@ export default function StationPurposeCell({
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-1.5">
-        <select
+        <Select
           value={current}
           disabled={busy}
-          onChange={(e) => onPick(e.target.value)}
-          onMouseDown={(e) => {
-            if (allowed) return;
-            e.preventDefault();
-            toast.error("Bạn không có quyền đổi chế độ bàn.");
-          }}
-          onKeyDown={(e) => {
-            if (allowed) return;
-            e.preventDefault();
-            toast.error("Bạn không có quyền đổi chế độ bàn.");
-          }}
-          aria-label={`Chế độ bàn ${station.code}`}
-          className={`h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 outline-none focus:border-emerald-400 disabled:bg-slate-50${deniedClass(allowed)}`}
-        >
-          <option value="outbound">Đóng hàng</option>
-          <option value="return">Chuyên nhận hoàn</option>
-        </select>
+          readOnly={!allowed}
+          onReadOnlyClick={() =>
+            toast.error("Bạn không có quyền đổi chế độ bàn.")
+          }
+          onChange={onPick}
+          options={[
+            { value: "outbound", label: "Đóng hàng" },
+            { value: "return", label: "Chuyên nhận hoàn" },
+          ]}
+          size="xs"
+          ariaLabel={`Chế độ bàn ${station.code}`}
+          className={`w-40 font-medium${deniedClass(allowed)}`}
+        />
         {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />}
       </div>
 
