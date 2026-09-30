@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readSource } from "./read-source";
 import { findSameDayOutboundOrder, vnBusinessDate, vnClock } from "@/lib/warehouse/same-day-order";
 import { describeOrphanScan, ORPHAN_PENDING_MS } from "@/lib/warehouse/live/activity";
 import {
@@ -77,7 +77,7 @@ test("tìm đơn cùng ngày: đọc lỗi → coi như chưa có (thà lưu th�
 });
 
 test("route quét: mã trùng từ nguồn đang tắt → báo trùng và dừng TRƯỚC khi ghi lượt quét thô", () => {
-  const src = readFileSync("src/app/api/warehouse/scans/route.ts", "utf8");
+  const src = readSource("src/app/api/warehouse/scans/route.ts");
   const dup = src.indexOf('if (scanSourceDisabled && scanType === "waybill") {');
   const insert = src.indexOf('admin.from("warehouse_scan_raw_events").insert(row)');
   assert.ok(dup > 0 && insert > dup, "nhánh trùng phải đứng trước câu ghi lượt quét thô");
@@ -110,17 +110,17 @@ test("mồ côi chưa có đơn: có lý do → nói lý do; mới tới → đa
 });
 
 test("nhật ký tra đơn theo mã cho lượt mồ côi; hai trang có nhãn cho loại mới", () => {
-  const src = readFileSync("src/lib/warehouse/live/activity.ts", "utf8");
+  const src = readSource("src/lib/warehouse/live/activity.ts");
   assert.ok(src.includes('.in("waybill_code", orphanCodes)'));
   for (const page of ["src/app/dashboard/operations/page.tsx", "src/app/dashboard/(return-module)/returns/page.tsx"]) {
-    assert.ok(readFileSync(page, "utf8").includes('waybill_unprocessed: "Không tạo đơn"'), page);
+    assert.ok(readSource(page).includes('waybill_unprocessed: "Không tạo đơn"'), page);
   }
 });
 
 // ── Lượt quét tới muộn: đặt theo giờ quét ──────────────────────────────
 
 test("migration sắp lượt quét theo thời gian: tìm đơn trước / sau KHÔNG giới hạn thời gian (đơn mở từ hôm trước)", () => {
-  const sql = readFileSync("supabase/migrations/20260926140000_late_scan_chronological.sql", "utf8");
+  const sql = readSource("supabase/migrations/20260926140000_late_scan_chronological.sql");
   assert.ok(!/interval '12 hours'/.test(sql), "giới hạn 12 giờ làm mở đơn thứ hai → vi phạm uniq_open_packing_per_station");
   assert.ok(sql.includes("and pe.scanned_at > v_raw.scanned_at\n    order by pe.scanned_at asc"));
   assert.ok(sql.includes("and pe.scanned_at <= v_raw.scanned_at\n      and pe.raw_event_id <> p_raw_event_id\n    order by pe.scanned_at desc"));
@@ -176,7 +176,7 @@ test("lỗi 'Segment cuối chưa đóng' cũ là tạm thời — mở xem thì
   assert.equal(isTransientSegmentFailure("Segment cuối chưa đóng, thử lại sau vài giây."), true);
   assert.equal(isTransientSegmentFailure("Video đã quá hạn lưu trữ."), false);
   assert.equal(isTransientSegmentFailure(null), false);
-  const src = readFileSync("src/app/api/order-proof/[pe_id]/watch/route.ts", "utf8");
+  const src = readSource("src/app/api/order-proof/[pe_id]/watch/route.ts");
   assert.ok(src.includes("if (latestFailedRow && !isTransientSegmentFailure(latestFailedRow.error_message)) {"));
   const waiting = src.indexOf('if (!cutResult.ok && cutResult.reason === "segment_still_open") {');
   const insertFailed = src.indexOf('status: "failed",\n        error_message: userMessage,');
@@ -186,7 +186,7 @@ test("lỗi 'Segment cuối chưa đóng' cũ là tạm thời — mở xem thì
 // ── Dung lượng clip: đúng đường cắt thật ───────────────────────────────
 
 test("bitrate nén lại phía cloud KHỚP agent (bitrate.ts)", () => {
-  const agent = readFileSync("warehouse-agent/src/compose/bitrate.ts", "utf8");
+  const agent = readSource("warehouse-agent/src/compose/bitrate.ts");
   assert.ok(agent.includes(`export const BASE_VIDEO_KBPS = ${BASE_VIDEO_KBPS};`));
   assert.ok(agent.includes(`export const MIN_VIDEO_KBPS = ${MIN_VIDEO_KBPS};`));
   assert.ok(agent.includes(`export const SIZE_HEADROOM = ${SIZE_HEADROOM};`));
@@ -232,7 +232,7 @@ test("bàn một góc vượt ngưỡng nhưng agent nén lại được → con
 });
 
 test("bộ dựng cảnh báo: hai góc không đọc camera; một góc chỉ nén-lại khi agent có khả năng", () => {
-  const src = readFileSync("src/lib/order-proof/proof-size-risk.ts", "utf8");
+  const src = readSource("src/lib/order-proof/proof-size-risk.ts");
   assert.ok(src.includes("proof_qr_camera_id"));
   assert.ok(src.includes("if (isComposite(event)) return false;"), "hai góc không cần truy vấn segment");
   assert.ok(src.includes("refitCameras.has(cameraId)"));
@@ -308,7 +308,7 @@ test("không đọc được bảng phân công → giữ hành vi cũ (thà bá
 });
 
 test("trang Thiết bị: camera mất kết nối ghi 'Không kết nối được', không còn 'cập nhật 29s trước'", () => {
-  const page = readFileSync("src/app/dashboard/devices/page.tsx", "utf8");
+  const page = readSource("src/app/dashboard/devices/page.tsx");
   assert.ok(page.includes('d.kind === "camera" && d.camera_online_state === "offline"'));
   assert.ok(page.includes("Không kết nối được"));
   assert.ok(page.includes("chưa gắn bàn — lưu trữ nếu đã tháo"));

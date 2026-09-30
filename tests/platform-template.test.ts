@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readSource } from "./read-source";
 import {
   CLIP_MAX_SAFE_SECONDS,
   TEMPLATE_BOUNDS,
@@ -34,7 +34,7 @@ import { CHECK_CONFIG, collectConfigProblems } from "@/lib/system/checks";
 // ── Chạy migration không được đổi hành vi kho nào ──────────────────────
 
 test("giá trị ban đầu của migration = đúng mặc định đang chạy trong mã", () => {
-  const sql = readFileSync("supabase/migrations/20260926120000_platform_config_template.sql", "utf8");
+  const sql = readSource("supabase/migrations/20260926120000_platform_config_template.sql");
   for (const key of TEMPLATE_KEYS) {
     const m = sql.match(new RegExp(`${key}\\s+integer\\s+NOT NULL DEFAULT (\\d+)`));
     assert.ok(m, `migration thiếu cột ${key}`);
@@ -49,7 +49,7 @@ test("dự phòng trong mã = hằng số đang chạy (mất bảng mẫu khôn
 });
 
 test("khoảng của migration khớp khoảng trong mã", () => {
-  const sql = readFileSync("supabase/migrations/20260926120000_platform_config_template.sql", "utf8");
+  const sql = readSource("supabase/migrations/20260926120000_platform_config_template.sql");
   for (const key of TEMPLATE_KEYS) {
     const { min, max } = TEMPLATE_BOUNDS[key];
     if (key === "session_fallback_seconds") {
@@ -63,9 +63,9 @@ test("khoảng của migration khớp khoảng trong mã", () => {
 test(`trần clip ${CLIP_MAX_SAFE_SECONDS}s vừa ngưỡng tải lên của agent ở bitrate ghép clip, còn dư 10%`, () => {
   // Bitrate CƠ SỞ của bộ ghép (clip ngắn giữ nguyên mức này; từ 0.13.0 clip
   // dài tự hạ — nhưng trần 210 phải an toàn cả với agent cũ chưa biết hạ).
-  const bitrate = readFileSync("warehouse-agent/src/compose/bitrate.ts", "utf8");
+  const bitrate = readSource("warehouse-agent/src/compose/bitrate.ts");
   const kbps = Number(bitrate.match(/BASE_VIDEO_KBPS = (\d+);/)?.[1]);
-  const agentCfg = readFileSync("warehouse-agent/src/config.ts", "utf8");
+  const agentCfg = readSource("warehouse-agent/src/config.ts");
   assert.ok(agentCfg.includes(".default(90 * 1024 * 1024)"), "ngưỡng tải lên của agent đổi — tính lại trần");
   const uploadBytes = 90 * 1024 * 1024;
   const bytesAtCeiling = (CLIP_MAX_SAFE_SECONDS * kbps * 1000) / 8;
@@ -184,7 +184,7 @@ test("mọi nơi dùng trần đều đọc từ mẫu", () => {
     ["src/app/api/platform/config/route.ts", "resolveWarehouseParams(w, clipMax, returnClipByOrg.get(o.id) ?? clipMax)"],
     ["src/app/api/platform/orgs/[id]/route.ts", "resolveWarehouseParams(w, clipMaxSeconds, returnClipSeconds)"],
   ];
-  for (const [file, needle] of uses) assert.ok(readFileSync(file, "utf8").includes(needle), `${file}: ${needle}`);
+  for (const [file, needle] of uses) assert.ok(readSource(file).includes(needle), `${file}: ${needle}`);
 });
 
 // ── Đọc mẫu: không bao giờ ném, không bao giờ ô trống ──────────────────
@@ -265,17 +265,17 @@ test("kho mới: GỘP mẫu vào JSON mặc định của DB — giữ nguyên 
 
 test("ba chỗ tạo đều chép mẫu", () => {
   for (const p of ["src/app/api/platform/orgs/route.ts", "src/app/api/signup/route.ts"]) {
-    assert.ok(readFileSync(p, "utf8").includes(".insert({ name: orgName, slug, ...(await orgFieldsForNewOrg(admin)) })"), p);
+    assert.ok(readSource(p).includes(".insert({ name: orgName, slug, ...(await orgFieldsForNewOrg(admin)) })"), p);
   }
-  assert.ok(readFileSync("src/app/api/warehouses/route.ts", "utf8").includes("await seedNewWarehouse(admin, data)"));
+  assert.ok(readSource("src/app/api/warehouses/route.ts").includes("await seedNewWarehouse(admin, data)"));
 });
 
 test("API mẫu: owner mới sửa; điền ô trống có xem trước và audit từng tổ chức", () => {
-  const t = readFileSync("src/app/api/platform/config/template/route.ts", "utf8");
+  const t = readSource("src/app/api/platform/config/template/route.ts");
   assert.ok(t.includes('requirePlatformRole("platform_owner")'));
   assert.ok(t.includes("invalidateTemplateCache()"), "sửa trần phải có hiệu lực ngay, không chờ hết đệm");
   assert.ok(t.includes('action: "platform.config_template.update"'));
-  const a = readFileSync("src/app/api/platform/config/template/apply/route.ts", "utf8");
+  const a = readSource("src/app/api/platform/config/template/apply/route.ts");
   assert.ok(a.includes('requirePlatformRole("platform_owner")'));
   assert.ok(a.includes("dryRun"));
   assert.ok(a.includes(".is(key, null)"), "cột tổ chức chỉ ghi khi vẫn trống");

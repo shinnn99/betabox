@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readSource } from "./read-source";
 import { CHECK_CONFIG, CHECK_KEYS, collectConfigProblems } from "@/lib/system/checks";
 import { ORDER_HARD_LIMIT_SECONDS } from "@/lib/station/order-timeout";
 import { CHECK_LABELS } from "@/lib/system/check-labels";
@@ -113,14 +113,14 @@ test("luật 'hạn lưu thấp hơn sàn ổ đĩa' đã gỡ vì database ch�
   // CHECK trên database chặn retention_days ngoài 7–365. Mã chết đánh lừa
   // người đọc sau, nên gỡ. Bài này canh cả hai phía: ai gỡ ràng buộc CHECK
   // thì phải thêm lại luật, vì lúc đó mâu thuẫn mới có thật.
-  const mig = readFileSync("supabase/migrations/20260722120000_organizations_retention_days.sql", "utf8");
+  const mig = readSource("supabase/migrations/20260722120000_organizations_retention_days.sql");
   assert.ok(
     mig.includes("CHECK (retention_days IS NULL OR (retention_days >= 7 AND retention_days <= 365))"),
     "ràng buộc CHECK đổi rồi — hạn lưu dưới 7 ngày giờ có thể xảy ra, phải thêm lại luật",
   );
   // Soi đúng dấu vết của luật chứ không soi chữ: ghi chú giải thích vì sao
   // gỡ vẫn được phép nhắc tới nó.
-  const src = readFileSync("src/lib/system/checks.ts", "utf8");
+  const src = readSource("src/lib/system/checks.ts");
   assert.ok(!src.includes("minRetentionDays"), "ngưỡng của luật chết vẫn còn trong cấu hình");
   assert.ok(!src.includes("org.retention_days < "), "phép so của luật chết vẫn còn trong mã");
 });
@@ -156,7 +156,7 @@ test("mọi vấn đề đều phải kèm câu CẦN LÀM", () => {
 test("mục được đăng ký vào bộ kiểm và có nhãn trên trang", () => {
   // Viết hàm mà quên cắm vào runSystemChecks là mục không bao giờ chạy —
   // đúng kiểu lỗi im lặng mà chính mục này sinh ra để bắt.
-  const src = readFileSync("src/lib/system/checks.ts", "utf8");
+  const src = readSource("src/lib/system/checks.ts");
   assert.ok(
     src.includes("needAdmin(CHECK_KEYS.config, (a) => checkConfiguration(a, now, scope ?? undefined))"),
     "chưa đăng ký vào runSystemChecks",

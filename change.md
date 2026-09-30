@@ -39,6 +39,17 @@ docs([Module]):     Cập nhật tài liệu
 
 <!-- Thêm các task mới ở ĐÂY (phía trên các task cũ hơn) -->
 
+### [TEST-CRLF-FALSE-FAIL] - 5 bài test đỏ giả trên Windows do xuống dòng CRLF
+
+- **Triệu chứng:** `pnpm test` đỏ 5 bài với câu như "chưa đưa vào danh sách checks trả về", "chưa đăng ký vào runSystemChecks" — nghe như thiếu code, nhưng **mã nguồn hoàn toàn đúng**, dòng đó vẫn nằm đúng chỗ.
+- **Nguyên nhân gốc rễ:** các bài này soi nội dung file nguồn bằng chuỗi NHIỀU DÒNG có `\n` ở giữa (ví dụ `"      config,\n    ],"`). Trên Windows, Git checkout ra **CRLF** nên trong file thật đoạn đó là `\r\n` — chuỗi không khớp, test đỏ dù code đúng. Đã kiểm chứng bằng `node -e`: `raw có pattern: false`, `normalized có pattern: true`.
+- **Đã đối chứng là đỏ CÓ TỪ TRƯỚC:** stash toàn bộ việc đang làm rồi chạy lại tại commit trước — vẫn đỏ y hệt 5 bài. Không phải do phần sửa QR hay phần UI gây ra.
+- **Files tạo/sửa:** `tests/read-source.ts` (mới), `tests/config-health-check.test.ts`, `tests/incidents-ledger.test.ts`, `tests/platform-template.test.ts`, `tests/scan-incident-fixes.test.ts`, `change.md`.
+- **Cách sửa:** thêm `readSource()` — đọc file rồi chuẩn hoá `\r\n` → `\n`, thay cho `readFileSync(x, "utf8")` ở các bài soi nội dung mã nguồn. **Không sửa một dòng mã sản phẩm nào**, vì mã sản phẩm không sai.
+- **Kiểm không phải "sửa cho xanh":** thử xoá dòng `config,` khỏi chuỗi đã chuẩn hoá → vẫn trả `false`. Tức helper vẫn bắt được lỗi thật, chỉ bỏ đúng cái nhiễu CRLF.
+- **Kết quả kiểm tra:** `pnpm test` **825/825 xanh** (trước: 820/825), `pnpm typecheck` xanh.
+- **Trạng thái:** Đã hoàn thành.
+
 ### [QR-CHAM-SAU-BARCODE] - Quét mã chậm hẳn sau khi thêm mã vạch: 189ms → 12ms mỗi khung
 
 - **Triệu chứng người dùng báo:** từ khi thêm phần đọc mã vạch, hệ thống nhận diện QR mất rất nhiều thời gian; trước đó rất nhanh.

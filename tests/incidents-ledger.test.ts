@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readSource } from "./read-source";
 import {
   decideResolution,
   incidentCandidates,
@@ -289,7 +289,7 @@ test("đọc sổ khi chưa có bảng → nói thẳng là chưa chạy migrati
 // ── Dây nối ────────────────────────────────────────────────────────────
 
 test("route tự kiểm ghi sổ SAU khi gửi Lark — sổ hỏng không làm mất tin cảnh báo", () => {
-  const src = readFileSync("src/app/api/system/check/route.ts", "utf8");
+  const src = readSource("src/app/api/system/check/route.ts");
   const lark = src.indexOf("alert = await sendSystemAlert(");
   const ledger = src.indexOf("await syncIncidents(admin");
   assert.ok(lark > 0 && ledger > 0);
@@ -299,15 +299,15 @@ test("route tự kiểm ghi sổ SAU khi gửi Lark — sổ hỏng không làm 
 });
 
 test("trang Tình trạng chỉ ĐỌC sổ — mở trang không được ghi", () => {
-  const src = readFileSync("src/app/api/system/status/route.ts", "utf8");
+  const src = readSource("src/app/api/system/status/route.ts");
   assert.ok(src.includes("readOpenIncidents("));
   assert.ok(!src.includes("syncIncidents("), "route trạng thái mà ghi sổ thì mỗi người mở trang đẻ một lượt ghi");
-  const page = readFileSync("src/app/platform/system/page.tsx", "utf8");
+  const page = readSource("src/app/platform/system/page.tsx");
   assert.ok(page.includes("<IncidentLedgerPanel"), "trang phải hiện ô Sổ sự cố");
 });
 
 test("migration: một dòng đang mở mỗi sự cố, không mức unknown, không policy nào", () => {
-  const sql = readFileSync("supabase/migrations/20260926100000_warehouse_incidents.sql", "utf8");
+  const sql = readSource("supabase/migrations/20260926100000_warehouse_incidents.sql");
   assert.ok(sql.includes("ON public.warehouse_incidents (issue_key)\n  WHERE status IN ('open', 'acknowledged');"));
   assert.ok(sql.includes("CHECK (severity IN ('crit', 'warn'))"));
   assert.ok(sql.includes("ENABLE ROW LEVEL SECURITY"));
