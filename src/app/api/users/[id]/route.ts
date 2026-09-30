@@ -265,20 +265,6 @@ export async function DELETE(req: Request, { params }: RouteContext) {
   if (isError(ctx)) return ctx;
   const { id } = await params;
 
-  // Chốt thứ hai, độc lập với bảng quyền: CHỈ chủ sở hữu được xoá tài khoản
-  // (chủ dự án chốt 23/09/2026). Xoá là mất sạch hồ sơ khỏi database, không
-  // hoàn tác được — một dòng cấp nhầm trong role_permission_matrix không
-  // được phép mở cánh cửa này.
-  if (ctx.role !== "owner") {
-    return NextResponse.json(
-      {
-        error: "owner_only",
-        message: "Chỉ chủ sở hữu mới được xoá tài khoản người dùng.",
-      },
-      { status: 403 },
-    );
-  }
-
   if (id === ctx.userId) {
     return NextResponse.json(
       { error: "self_delete_forbidden", message: "Không thể tự xoá tài khoản mình." },
@@ -289,8 +275,9 @@ export async function DELETE(req: Request, { params }: RouteContext) {
   const target = await fetchTargetProfile(id, ctx.organizationId);
   if (!target) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
-  // Chống leo thang: actor không được xoá target rank >= mình (trừ owner).
-  // Admin không được xoá owner/admin khác.
+  // Chống leo thang: chỉ xoá được tài khoản có vai trò thấp hơn. Ma trận có
+  // thể cấp user.delete cho Trưởng kho, nhưng không thể dùng nó để xoá ngang
+  // cấp/cấp trên. Chủ sở hữu cuối cùng vẫn được chặn độc lập bên dưới.
   if (!canAssignRole(ctx.role, target.role as Role)) {
     return NextResponse.json(
       {

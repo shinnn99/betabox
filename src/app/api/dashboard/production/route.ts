@@ -46,7 +46,7 @@ function shortDateLabel(iso: string): string {
 }
 
 export async function GET(req: Request) {
-  const ctx = await requirePermission("report.view");
+  const ctx = await requirePermission("dashboard.view");
   if (isError(ctx)) return ctx;
 
   const url = new URL(req.url);

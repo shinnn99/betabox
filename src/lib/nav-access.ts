@@ -11,7 +11,7 @@ export type CanFn = (anyOf: string[]) => boolean;
 
 /** [href, cần ÍT NHẤT MỘT quyền trong danh sách] */
 export const NAV_ACCESS: ReadonlyArray<readonly [string, readonly string[]]> = [
-  ["/dashboard", ["report.view"]],
+  ["/dashboard", ["dashboard.view"]],
   ["/dashboard/operations", ["warehouse.view"]],
   ["/dashboard/videos", ["order_proof.view"]],
   ["/dashboard/returns", ["warehouse.view"]],

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requirePermission, isError } from "@/lib/supabase/guard";
+import { requireOrganizationContext, isError } from "@/lib/supabase/guard";
 
 // ============================================================================
 // GET /api/session-context — trả effective session context cho client.
@@ -9,22 +9,13 @@ import { requirePermission, isError } from "@/lib/supabase/guard";
 // JWT client-side không có organization_id (platform không có org). Client phải
 // đọc effective ctx từ server (qua guard 3 lớp) để biết org đang impersonate.
 //
-// Logic: gọi requirePermission với permission bất kỳ tenant có (ví dụ
-// "warehouse.view" — 6 roles đều có) để guard chạy đủ 3 lớp và trả ApiContext.
-// Nếu user không có permission (edge case) → fallback trả JWT thô.
+// Không mượn một quyền nghiệp vụ làm cửa xác thực: ma trận được chỉnh thủ
+// công nên không có mã nào chắc chắn mọi vai trò đều giữ. Route này chỉ trả
+// ngữ cảnh phiên; API nghiệp vụ vẫn tự kiểm permission riêng.
 // ============================================================================
-export async function GET() {
-  // requirePermission chạy readClaims → 3 lớp → trả ApiContext (org từ token
-  // nếu impersonate, hoặc org từ JWT nếu tenant thường).
-  const ctx = await requirePermission("warehouse.view");
-  if (isError(ctx)) {
-    // Nếu không có permission (user role thấp), thử permission phổ biến hơn
-    const ctx2 = await requirePermission("staff.view");
-    if (isError(ctx2)) {
-      return NextResponse.json({ error: "context_unavailable" }, { status: 403 });
-    }
-    return buildContextResponse(ctx2);
-  }
+export async function GET(req: Request) {
+  const ctx = await requireOrganizationContext(req);
+  if (isError(ctx)) return ctx;
   return buildContextResponse(ctx);
 }
 

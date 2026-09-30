@@ -146,7 +146,7 @@ function pctDelta(current: number, previous: number): number | null {
 }
 
 export async function GET() {
-  const ctx = await requirePermission("report.view");
+  const ctx = await requirePermission("dashboard.view");
   if (isError(ctx)) return ctx;
 
   const admin = createAdminClient();

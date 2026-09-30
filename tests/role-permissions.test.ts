@@ -21,6 +21,9 @@ function readSql(p: string): string {
 const MIGRATION = readSql(
   "supabase/migrations/20260921160000_role_permission_redesign.sql",
 );
+const FINAL_MIGRATION = readSql(
+  "supabase/migrations/20260930160000_platform_rbac_matrix.sql",
+);
 
 function sqlArray(name: string): string[] {
   const m = MIGRATION.match(new RegExp(`${name} text\\[\\] := ARRAY\\[([\\s\\S]*?)\\];`));
@@ -29,18 +32,18 @@ function sqlArray(name: string): string[] {
 }
 
 const SETUP = sqlArray("v_setup");
-// Viewer = tập gốc của migration phân quyền + phần thêm sau (Báo cáo, Thiết bị kho).
-const VIEWER_EXTRA_SQL = readSql(
-  "supabase/migrations/20260922100000_viewer_reports_devices.sql",
-);
-const VIEWER = [
-  ...sqlArray("v_viewer"),
-  ...[...VIEWER_EXTRA_SQL.matchAll(/\('viewer', '([a-z_.]+)'\)/g)].map((m) => m[1]),
-];
+function finalSqlArray(name: string): string[] {
+  const m = FINAL_MIGRATION.match(new RegExp(`${name} text\\[\\] := ARRAY\\[([\\s\\S]*?)\\];`));
+  assert.ok(m, `không thấy ${name} trong migration cuối`);
+  return [...m[1].matchAll(/'([a-z_.]+)'/g)].map((x) => x[1]);
+}
+const MANAGER = new Set(finalSqlArray("v_manager"));
+const PACKER = finalSqlArray("v_packer");
+const VIEWER = finalSqlArray("v_viewer");
 
 // Mọi mã quyền đang có (ảnh chụp production 21/09/2026) + mã mới.
 const ALL = [
-  "audit.view", "camera.archive", "camera.create", "camera.recording.control",
+  "audit.view", "dashboard.view", "camera.archive", "camera.create", "camera.recording.control",
   "camera.recording.view", "camera.test", "camera.update", "camera.view",
   "live.view_remote", "live.view_station", "order_proof.generate", "order_proof.view",
   "organization.update", "organization.view", "packing_station.archive",
@@ -54,11 +57,7 @@ const ALL = [
   "warehouse.update", "warehouse.view", "work_session.force_end", "return.operate",
 ];
 
-// Xoá tài khoản là của RIÊNG chủ sở hữu (chủ dự án chốt 23/09/2026) —
-// xem 20260923110000_only_owner_deletes_users.sql.
-const OWNER_ONLY = ["user.delete"];
-const ADMIN = new Set(ALL.filter((p) => !OWNER_ONLY.includes(p)));
-const MANAGER = new Set(ALL.filter((p) => !SETUP.includes(p) && !OWNER_ONLY.includes(p)));
+const ADMIN = new Set(ALL);
 const VIEWER_SET = new Set(VIEWER);
 const canFor = (set: Set<string>) => (anyOf: string[]) => anyOf.some((p) => set.has(p));
 // nav.ts kéo theo icon, không import được dưới react-server — đọc href từ nguồn.
@@ -83,20 +82,14 @@ test("nhóm setup đúng phạm vi đã chốt: camera, gán vào bàn, thiết 
   }
 });
 
-test("viewer: xem mọi trang trừ nhóm Quản lý hệ thống; không có quyền ghi nào", () => {
-  // "/dashboard/audit" và "/dashboard/settings/changelog" đã chuyển sang
-  // menu platform (25/09/2026) nên không còn trong MENU_HREFS của kho.
-  const MANAGE_SYSTEM = [
-    "/dashboard/users",
-    "/dashboard/settings/warehouse-config",
-  ];
-  assert.deepEqual(
-    visible(VIEWER_SET).sort(),
-    MENU_HREFS.filter((h) => !MANAGE_SYSTEM.includes(h)).sort(),
-  );
-  for (const h of MANAGE_SYSTEM) {
-    assert.ok(!visible(VIEWER_SET).includes(h), `viewer không được thấy ${h}`);
-  }
+test("viewer: chỉ xem tổng quan và bốn trang vận hành; không có quyền ghi", () => {
+  assert.deepEqual(visible(VIEWER_SET), [
+    "/dashboard",
+    "/dashboard/operations",
+    "/dashboard/videos",
+    "/dashboard/returns",
+    "/dashboard/return-videos",
+  ]);
   assert.ok(!VIEWER.includes("sensitive.view"), "viewer không xem thông tin nhạy cảm");
   assert.ok(VIEWER_SET.has("video.download"));
   assert.ok(VIEWER_SET.has("live.view_remote"), "xem được camera trực tiếp trên trang giám sát");
@@ -105,7 +98,7 @@ test("viewer: xem mọi trang trừ nhóm Quản lý hệ thống; không có qu
 });
 
 test("trang chủ bị cấm thì đưa tới trang đầu tiên được vào; viewer giờ vào được trang chủ", () => {
-  // Viewer có report.view (Báo cáo) nên Bảng điều khiển mở được.
+  // dashboard.view tách riêng report.view nên viewer mở tổng quan nhưng không mở báo cáo.
   assert.equal(canSeeHref(navHrefForPath("/dashboard")!, canFor(VIEWER_SET)), true);
   // Tài khoản chỉ có quyền video (không report.view) vẫn được đưa thẳng tới trang video.
   const videoOnly = canFor(new Set(["warehouse.view", "order_proof.view"]));
@@ -114,8 +107,10 @@ test("trang chủ bị cấm thì đưa tới trang đầu tiên được vào; 
   assert.equal(canSeeHref(navHrefForPath("/dashboard/users")!, canFor(VIEWER_SET)), false);
 });
 
-test("trưởng kho: thấy mọi trang; Thiết bị kho và Máy trạm kho chỉ xem", () => {
-  assert.deepEqual(MENU_HREFS.filter((h) => !visible(MANAGER).includes(h)), []);
+test("trưởng kho: xem mọi trang trừ Cấu hình kho; thiết bị chỉ xem", () => {
+  assert.deepEqual(MENU_HREFS.filter((h) => !visible(MANAGER).includes(h)), [
+    "/dashboard/settings/warehouse-config",
+  ]);
   assert.ok(!MANAGER.has("station_device.create"), "máy trạm: tạo / cấp secret / xoá bị chặn ở nút");
   // Viewer xem Thiết bị kho nhưng không có quyền setup nào (nút mờ, bấm chỉ báo).
   for (const p of SETUP) assert.ok(!VIEWER.includes(p), `viewer không được có ${p}`);
@@ -201,11 +196,13 @@ test("API setup camera / thiết bị / máy trạm đều đòi quyền nhóm s
   }
 });
 
-test("nhân sự kho: chỉ owner/admin/trưởng kho được ghi, vai trò khác chỉ xem", () => {
-  assert.ok(VIEWER.includes("staff.view"));
-  assert.deepEqual(VIEWER.filter((p) => p.startsWith("staff.") && p !== "staff.view"), []);
+test("nhân sự kho: trưởng kho chỉ xem; packer/viewer không vào trang", () => {
+  assert.ok(MANAGER.has("staff.view"));
+  assert.deepEqual([...MANAGER].filter((p) => p.startsWith("staff.") && p !== "staff.view"), []);
+  assert.deepEqual(VIEWER.filter((p) => p.startsWith("staff.")), []);
+  assert.deepEqual(PACKER.filter((p) => p.startsWith("staff.")), []);
   for (const p of ["staff.create", "staff.update", "staff.delete", "staff.invite", "staff.qr.regenerate"]) {
-    assert.ok(MANAGER.has(p), `trưởng kho phải có ${p}`);
+    assert.ok(!MANAGER.has(p), `trưởng kho chỉ xem, không được có ${p}`);
   }
   assert.ok(
     MIGRATION.includes("AND permission_code LIKE 'staff.%'\n    AND permission_code <> 'staff.view';"),
@@ -246,8 +243,9 @@ test("mọi vai trò có hai trang video minh chứng (xem + tải)", () => {
   for (const code of ["order_proof.view", "video.view", "video.download"]) {
     assert.ok(VIEWER.includes(code), `viewer thiếu ${code}`);
     assert.ok(MANAGER.has(code) && ADMIN.has(code), `admin/trưởng kho thiếu ${code}`);
+    assert.ok(PACKER.includes(code), `nhân viên đóng gói phải được cấp ${code}`);
     const tail = MIGRATION.slice(MIGRATION.indexOf("ARRAY['shift_leader', 'packer'] LOOP"));
-    assert.ok(tail.includes(`'${code}'`), `trưởng ca / nhân viên đóng gói phải được cấp ${code}`);
+    assert.ok(tail.includes(`'${code}'`), `trưởng ca phải được cấp ${code}`);
   }
   for (const href of ["/dashboard/videos", "/dashboard/return-videos"]) {
     assert.ok(canSeeHref(href, canFor(new Set(["order_proof.view"]))), `${href} chỉ cần order_proof.view`);
@@ -276,10 +274,9 @@ test("trưởng kho quản lý người dùng vai trò THẤP HƠN, không đụ
   for (const r of ["warehouse_manager", "admin", "owner"] as const) {
     assert.equal(canAssignRole("warehouse_manager", r), false, `trưởng kho không được đụng ${r}`);
   }
-  for (const p of ["user.view", "user.create", "user.update"]) {
+  for (const p of ["user.view", "user.create", "user.update", "user.delete"]) {
     assert.ok(MANAGER.has(p), `trưởng kho phải có ${p}`);
   }
-  assert.ok(!MANAGER.has("user.delete"), "nhưng xoá tài khoản thì không");
   // API sửa/xoá chặn theo cấp bậc của tài khoản ĐÍCH, không chỉ vai trò mới.
   const api = readFileSync("src/app/api/users/[id]/route.ts", "utf8");
   assert.equal((api.match(/canAssignRole\(ctx\.role, target\.role as Role\)/g) ?? []).length, 2);
@@ -290,10 +287,10 @@ test("trưởng kho quản lý người dùng vai trò THẤP HƠN, không đụ
   assert.ok(!page.includes("options={ROLE_OPTIONS.map"), "không được liệt kê vai trò cao hơn mình");
 });
 
-test("danh sách thiết bị cùng quyền với trang Thiết bị kho (viewer chỉ xem)", () => {
+test("danh sách thiết bị cùng quyền với trang Thiết bị kho (trưởng kho chỉ xem)", () => {
   const src = readFileSync("src/app/api/devices/route.ts", "utf8");
   assert.ok(src.includes('requirePermission("station_device.view")'));
-  assert.ok(VIEWER.includes("station_device.view"), "viewer xem được Thiết bị kho");
+  assert.ok(!VIEWER.includes("station_device.view"), "viewer không vào nhóm Quản lý kho");
   // Không tải được danh sách bàn vẫn phải hiện đúng bàn đang gắn.
   const cell = readFileSync("src/components/devices/StationAssignCell.tsx", "utf8");
   assert.ok(cell.includes("!stations.some((s) => s.id === currentStation.station_id)"));
@@ -395,27 +392,15 @@ test("API che thông tin nhạy cảm với người thiếu quyền", () => {
   assert.ok(read("src/app/dashboard/agents/page.tsx").includes('guard(allowSetup, "cấp secret mới cho máy trạm"'));
 });
 
-test("chỉ chủ sở hữu được xoá tài khoản, và xoá là xoá thật", () => {
-  const sql = readFileSync(
-    "supabase/migrations/20260923110000_only_owner_deletes_users.sql",
-    "utf8",
-  );
-  const flat = sql.split(/\s+/).join(" ");
-  assert.ok(
-    flat.includes(
-      "DELETE FROM public.role_permission_matrix WHERE permission_code = 'user.delete' AND role <> 'owner'",
-    ),
-    "migration thu quyền xoá về riêng owner",
-  );
-  assert.ok(flat.includes("VALUES ('owner', 'user.delete')"), "owner vẫn phải giữ quyền");
-
+test("xoá tài khoản theo ma trận nhưng luôn chặn leo thang, tự xoá và chủ cuối", () => {
+  assert.ok(MANAGER.has("user.delete"), "trưởng kho CRUD được tài khoản vai trò thấp hơn");
   const api = readFileSync("src/app/api/users/[id]/route.ts", "utf8");
-  assert.ok(api.includes('if (ctx.role !== "owner")'), "route chặn mọi vai trò khác owner");
-  assert.ok(api.includes("Chỉ chủ sở hữu mới được xoá tài khoản người dùng."));
-
-  // Chốt phải đứng TRƯỚC mọi thao tác chạm database.
   const body = api.slice(api.indexOf("export async function DELETE("));
-  assert.ok(body.indexOf('ctx.role !== "owner"') < body.indexOf("deleteUser(id)"));
+  assert.ok(body.includes('requirePermissionStrict("user.delete", req)'));
+  assert.ok(body.includes("canAssignRole(ctx.role, target.role as Role)"));
+  assert.ok(body.includes("self_delete_forbidden"));
+  assert.ok(body.includes("last_owner"));
+  assert.ok(body.indexOf("canAssignRole(ctx.role, target.role as Role)") < body.indexOf("deleteUser(id)"));
 
   // Xoá THẬT, không phải đánh dấu ngừng dùng.
   assert.ok(body.includes("admin.auth.admin.deleteUser(id)"));

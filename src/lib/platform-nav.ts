@@ -8,6 +8,7 @@ import {
   Server,
   Siren,
   SlidersHorizontal,
+  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 
@@ -30,6 +31,12 @@ export const PLATFORM_NAV: PlatformNavItem[] = [
     label: "Quản trị nền tảng",
     href: "/platform/admins",
     icon: Users,
+  },
+  {
+    id: "permissions",
+    label: "Phân quyền",
+    href: "/platform/permissions",
+    icon: ShieldCheck,
   },
   {
     id: "audit",

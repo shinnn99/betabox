@@ -318,9 +318,9 @@ export async function requirePermission(
 /**
  * Chỉ yêu cầu một ngữ cảnh tổ chức đã xác thực, không yêu cầu quyền nghiệp vụ cụ thể.
  *
- * Dùng rất hẹp cho endpoint báo một thao tác UI đã mất phản hồi để xếp lệnh
- * chẩn đoán CHỈ-ĐỌC. Endpoint đó còn tự kiểm agent thuộc đúng tổ chức và có
- * capability phù hợp; không được dùng helper này cho route đọc/ghi dữ liệu khác.
+ * Dùng cho endpoint ngữ cảnh phiên và các lệnh chẩn đoán chỉ-đọc vốn phải
+ * hoạt động ngay cả khi Platform đã thu hồi mọi quyền nghiệp vụ phổ biến của
+ * vai trò. Route đọc/ghi dữ liệu nghiệp vụ vẫn phải dùng requirePermission.
  */
 export async function requireOrganizationContext(
   req: Request,
