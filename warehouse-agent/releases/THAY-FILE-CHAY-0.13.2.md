@@ -1,32 +1,25 @@
-# Thay file chạy lên 0.13.1 — ĐÃ THAY BẰNG 0.13.2
+# Thay file chạy lên 0.13.2 (không cần bộ cài)
 
-> ## ⚠ Đừng làm theo file này. Dùng [THAY-FILE-CHAY-0.13.2.md](THAY-FILE-CHAY-0.13.2.md).
->
-> Bản 0.13.1 phát hành sáng 30/09/2026 rồi phát hiện ngay trong ngày là nó
-> dựng **trước** khi gộp nhánh `2-camera`, nên thiếu bản sửa kẹt đổi tên file
-> hàng đợi trên Windows. Phần quét mã của hai bản y hệt nhau.
->
-> File `betacom-agent-0.13.1.exe` đã bỏ khỏi Git (còn trên đĩa máy lập trình).
-> Giữ lại trang này để ai đã tải bản 0.13.1 biết vì sao cần nâng lên 0.13.2.
+Bản 0.13.2 chỉ đổi **một file chạy**: không thêm file mới, không đổi `.env`,
+không cần chạy migration. Thay thẳng file là đủ.
 
----
-
-# (Nội dung cũ) Thay file chạy lên 0.13.1
-
-Bản 0.13.1 chỉ đổi **một file chạy**: không thêm file mới, không đổi `.env`.
-Thay thẳng file là đủ.
-
-File: `betacom-agent-0.13.1.exe` (65 MB, lưu qua Git LFS).
+File: `betacom-agent-0.13.2.exe` (65 MB, lưu qua Git LFS).
 
 ```powershell
-git lfs pull --include "warehouse-agent/releases/betacom-agent-0.13.1.exe"
+git lfs pull --include "warehouse-agent/releases/betacom-agent-0.13.2.exe"
 ```
 
 Hoặc chép qua USB / ổ mạng từ máy lập trình.
 
+## Ai đã tải bản 0.13.1 thì THAY BẰNG BẢN NÀY
+
+Bản `0.13.1` phát hành cùng ngày nhưng dựng **trước** khi gộp nhánh, nên
+thiếu bản sửa kẹt đổi tên file hàng đợi. Phần quét mã của hai bản y hệt
+nhau; 0.13.2 có thêm bản sửa kia.
+
 ## Bản này sửa gì
 
-**Quét mã nhanh trở lại: 189ms → 12ms mỗi khung.**
+**1. Quét mã nhanh trở lại: 189ms → 12ms mỗi khung.**
 
 Từ bản 0.11.0 (24/09) nhân viên phải giơ nhãn rất lâu mới quét ăn. Nguyên
 nhân không phải việc thêm mã vạch, mà là bản đó cùng lúc nâng độ nét ảnh
@@ -38,10 +31,11 @@ Nay đọc hai pha (pha nhanh trước, chỉ soi kỹ khi pha nhanh không th�
 và hạ trần ảnh về 1920x1080. **Vẫn đọc được đúng như trước**: mã QR nhỏ
 nhãn TikTok, mã vạch Code128, và các loại mã ít gặp.
 
-## KHÔNG cần chạy migration
+**2. Đổi tên file hàng đợi không còn kẹt trên Windows.**
 
-Khác bản 0.13.0. Các migration cần thiết đã chạy xong trên hệ thống ngày
-30/09/2026 — máy kho chỉ cần thay file chạy.
+Phần mềm diệt virus hoặc trình lập chỉ mục của Windows đôi khi giữ file
+trong chốc lát, làm thao tác đổi tên hỏng và mất lượt ghi. Nay tự thử lại
+có giới hạn. Mất điện giữa chừng vẫn an toàn.
 
 ## Các bước trên máy kho
 
@@ -56,7 +50,7 @@ Copy-Item "C:\Program Files\BetacomAgent\betacom-agent.exe" `
           "C:\Program Files\BetacomAgent\betacom-agent-cu.exe" -Force
 
 # 3. Chép bản mới đè lên (sửa đường dẫn nguồn cho đúng chỗ bạn để file)
-Copy-Item "D:\betacom-agent-0.13.1.exe" `
+Copy-Item "D:\betacom-agent-0.13.2.exe" `
           "C:\Program Files\BetacomAgent\betacom-agent.exe" -Force
 
 # 4. Chạy lại
@@ -67,18 +61,9 @@ Get-Service BetacomAgent
 ## Kiểm lại ngay sau khi chạy
 
 Mở trang **Platform → Đội agent**, trong vòng 1 phút máy kho phải hiện
-phiên bản **0.13.1**.
+phiên bản **0.13.2**.
 
-Nếu trang vẫn hiện bản cũ, soi kích thước file cho chắc đã chép đè —
-
-```powershell
-(Get-Item "C:\Program Files\BetacomAgent\betacom-agent.exe").Length
-```
-
-- `68339989` → đang chạy 0.13.1.
-- `68310917` → vẫn là 0.13.0, chưa chép đè thành công.
-
-Rồi thử thật — đây là phần quan trọng nhất của bản này:
+Rồi thử thật — đây là phần quan trọng nhất:
 
 1. **Giơ nhãn lên camera QR ở bàn đóng hàng.** Mã phải được nhận gần như
    ngay khi nhãn vào khung hình, không còn phải giữ yên chờ vài giây.
@@ -94,8 +79,7 @@ Copy-Item "C:\Program Files\BetacomAgent\betacom-agent-cu.exe" `
 Start-Service BetacomAgent
 ```
 
-Lùi về 0.13.0 an toàn: không có thay đổi nào ở database hay giao thức, chỉ
-là quay lại cách đọc mã cũ (chậm).
+An toàn: không có thay đổi nào ở database hay giao thức.
 
 ## Nếu máy kho yếu, muốn nhẹ thêm
 
@@ -111,4 +95,4 @@ QR_FRAME_HEIGHT=900
 
 ## Bản này có gì
 
-Xem [../RELEASES.md](../RELEASES.md) mục 0.13.1.
+Xem [../RELEASES.md](../RELEASES.md) mục 0.13.2.

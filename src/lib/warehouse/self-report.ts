@@ -22,7 +22,7 @@ export const SELF_REPORT_VERSION = 1;
  * Phiên bản agent mới nhất đã phát hành. Trang Đội agent đánh dấu máy nào
  * thấp hơn. Phát hành bản mới thì sửa ở đây — cùng lúc với RELEASES.md.
  */
-export const LATEST_AGENT_VERSION = "0.13.1";
+export const LATEST_AGENT_VERSION = "0.13.2";
 
 /**
  * Khả năng agent tự khai. Cloud bật tính năng theo KHẢ NĂNG, không theo so

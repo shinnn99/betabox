@@ -8,4 +8,4 @@
  * installer/betacom-agent.iss, RELEASES.md, và LATEST_AGENT_VERSION phía
  * cloud (src/lib/warehouse/self-report.ts). Có test canh bốn chỗ đầu khớp nhau.
  */
-export const AGENT_VERSION = "0.13.1";
+export const AGENT_VERSION = "0.13.2";

@@ -4,7 +4,36 @@ Ghi từ 0.8.6 trở đi. Mỗi mục nêu: sửa gì, vì sao, và người đi
 
 ---
 
-## 0.13.1 — 2026-09-30
+## 0.13.2 — 2026-09-30
+
+**Gộp bản sửa quét mã chậm (0.13.1) với bản sửa kẹt đổi tên file hàng đợi.**
+
+Hai việc làm song song trên hai nhánh: sửa quét mã chậm (0.13.1, phát hành
+cùng ngày) và sửa lỗi đổi tên file hàng đợi bị kẹt trên Windows (nhánh
+`2-camera`, 28/09). File chạy 0.13.1 dựng TRƯỚC khi gộp nên **thiếu** bản
+sửa thứ hai.
+
+Bản 0.13.2 là bản đầu tiên có **cả hai**. Không thêm tính năng mới.
+
+- **Quét mã nhanh** (từ 0.13.1): giải mã hai pha + hạ trần cỡ khung về
+  1920x1080. 189ms → 12ms mỗi khung hình.
+- **Đổi tên file hàng đợi tự thử lại** (từ nhánh `2-camera`): gặp
+  `EPERM`/`EACCES`/`EBUSY` do phần mềm diệt virus hoặc trình lập chỉ mục
+  của Windows giữ file trong chốc lát thì thử lại có giới hạn, thay vì
+  hỏng luôn lượt ghi. Agent không xoá file hàng đợi trước khi đổi tên nên
+  mất điện giữa chừng vẫn an toàn.
+
+**Người đi cài cần biết:** ai đã tải file chạy `0.13.1` thì **thay bằng
+0.13.2** — 0.13.1 thiếu bản sửa đổi tên file. Không có bước thủ công nào
+khác, không cần chạy migration.
+
+---
+
+## 0.13.1 — 2026-09-30 (đã thay bằng 0.13.2)
+
+> **Đừng dùng bản này.** Phát hành rồi mới phát hiện nó dựng trước khi gộp
+> nhánh `2-camera`, nên thiếu bản sửa kẹt đổi tên file hàng đợi. Dùng
+> 0.13.2 — nội dung phần quét mã y hệt, cộng thêm bản sửa kia.
 
 **Quét mã nhanh trở lại: 189ms → 12ms mỗi khung. Không giảm khả năng đọc.**
 

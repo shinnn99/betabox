@@ -39,6 +39,21 @@ docs([Module]):     Cập nhật tài liệu
 
 <!-- Thêm các task mới ở ĐÂY (phía trên các task cũ hơn) -->
 
+### [GOM-VE-MAIN + AGENT-0.13.2] - Gộp nhánh `2-camera`, phát hành 0.13.2 thay 0.13.1
+
+- **Mục tiêu:** gom hết về `main`. Lúc `git fetch` phát hiện nhánh `2-camera` có commit `bee2158` của Huy (28/09, *retry locked queue renames on Windows*) chưa vào `main`.
+- **Việc dọn trước khi gộp:** `mediamtx.exe` lâu nay commit thẳng binary 56 MB trong khi `.gitattributes` đã có luật LFS cho `vendor/**/*.exe`. Đã commit riêng bước chuyển sang LFS pointer — **file trên đĩa không đổi** (vẫn header MZ, 56.032.256 byte), chỉ đổi cách Git lưu.
+- **Gộp:** tự động, `RELEASES.md` không xung đột (Huy thêm vào mục 0.13.0, tôi thêm mục 0.13.1 mới). **Đã kiểm cả hai nội dung còn nguyên** thay vì tin auto-merge.
+- **Phát hiện quan trọng — bản đã phát hành THIẾU fix:** file chạy và bộ cài `0.13.1` đã push lên GitHub được dựng **trước** khi gộp. Kiểm bằng dấu vết riêng `renameWithRetry` / `TRANSIENT_RENAME_CODES`: **0 lần** trong `.exe` đã phát hành. (Ban đầu định kiểm bằng `EPERM`/`EACCES`/`EBUSY` nhưng ba chuỗi đó có sẵn trong Node nội bộ — 24/9/5 lần — nên **không dùng làm bằng chứng được**.)
+- **Vì sao bump 0.13.2 chứ không ghi đè 0.13.1:** một số phiên bản phải ứng với đúng một ruột file. Để hai file khác nhau cùng mang nhãn `0.13.1` thì hai máy kho cùng báo một số mà chạy mã khác nhau — lỗi kiểu đó cực khó truy.
+- **Files tạo/sửa:** `warehouse-agent/releases/betacom-agent-0.13.2.exe` + `BetacomAgentSetup-v0.13.2.exe` (mới, LFS), `THAY-FILE-CHAY-0.13.2.md` (mới), `THAY-FILE-CHAY-0.13.1.md` (thêm cảnh báo đầu trang), `RELEASES.md`, `releases/README.md`, `releases/.gitignore`, `changelog/2026-09-30.md`, `src/lib/changelog/generated.ts`, bốn nơi phiên bản (`package.json`, `version.ts`, `.iss`, `self-report.ts`), `change.md`.
+- **Một bài guard bắt đúng chỗ khó thấy:** sau khi đổi nhãn mục changelog từ 0.13.1 sang 0.13.2, bài `changelog-page` vẫn đỏ — **không phải** vì thiếu mục cho `package.json`, mà vì một khẳng định KHÁC: bộ cài nào nằm trong `releases/` cũng phải có mục riêng, và bộ cài 0.13.1 **đã push lên GitHub tức đã tới tay người dùng**. Đã viết mục riêng cho 0.13.1 nói rõ "đã thay bằng 0.13.2" thay vì giấu đi. Ban đầu tôi đọc nhầm thông báo lỗi và sửa sai chỗ.
+- **Giữ lại `THAY-FILE-CHAY-0.13.1.md`:** lỡ xoá rồi khôi phục — bản 0.13.1 đã tới tay người dùng nên trang hướng dẫn của nó không được biến mất, chỉ thêm cảnh báo trỏ sang 0.13.2.
+- **Kết quả kiểm tra:** agent **261/261** (thêm 3 bài của Huy), root **825/825**, typecheck hai phía xanh. File chạy 0.13.2 verify ruột: có đủ `renameWithRetry`, `TRANSIENT_RENAME_CODES`, `FAST_FORMATS`, `slowPhaseRunCount`, nhãn `0.13.2` (7 lần), **không còn** nhãn `0.13.1`. Bộ cài 155.168.865 byte, SHA256 `3d5249433ae34da5`, header MZ.
+- **LFS:** bỏ theo dõi Git bộ cài + file chạy 0.13.1 (giữ trên đĩa) để không vượt hạn mức 1 GB.
+- **Còn lại:** chưa thử cài lên máy Windows sạch; chưa thay file lên máy kho; 7 đơn thời gian âm vẫn chưa sửa (cần chạy `scripts/fix-late-scan-timings.mjs`).
+- **Trạng thái:** Đã hoàn thành.
+
 ### [BUILD-INSTALLER-0.13.1] - Bộ cài 0.13.1 + dọn hạn mức LFS
 
 - **Mục tiêu:** máy kho cài mới cần bộ cài mang bản sửa QR; bộ cài mới nhất còn đứng ở `v0.12.1`.
