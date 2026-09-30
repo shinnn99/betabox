@@ -12,6 +12,11 @@ export interface PermissionDefinition {
   group: string;
   label: string;
   description: string;
+  /**
+   * Luôn bật cho MỌI vai trò, Platform không tắt được (chủ dự án chốt
+   * 30/09/2026: tất cả vai trò đều xem và tải video bằng chứng).
+   */
+  alwaysOn?: boolean;
 }
 
 export const RBAC_ROLES: readonly RbacRoleDefinition[] = [
@@ -54,12 +59,14 @@ export const PERMISSION_DEFINITIONS: readonly PermissionDefinition[] = [
 
   { code: "warehouse.view", group: "Vận hành kho", label: "Xem giám sát đóng/hoàn hàng", description: "Xem trạng thái vận hành, bàn và hoạt động trong kho." },
   { code: "order_proof.view", group: "Vận hành kho", label: "Xem bằng chứng giao/hoàn hàng", description: "Tra cứu và phát video bằng chứng." },
-  { code: "video.view", group: "Vận hành kho", label: "Phát video bằng chứng", description: "Phát video trong trình duyệt." },
-  { code: "video.download", group: "Vận hành kho", label: "Tải video bằng chứng", description: "Tải tệp video bằng chứng về máy." },
+  { code: "video.view", group: "Vận hành kho", label: "Phát video bằng chứng", description: "Phát video trong trình duyệt. Luôn bật cho mọi vai trò.", alwaysOn: true },
+  { code: "video.download", group: "Vận hành kho", label: "Tải video bằng chứng", description: "Tải tệp video bằng chứng về máy. Luôn bật cho mọi vai trò.", alwaysOn: true },
   { code: "order_proof.generate", group: "Vận hành kho", label: "Tạo lại và đánh dấu video", description: "Tạo lại clip hoặc đánh dấu đơn lỗi." },
   { code: "return.operate", group: "Vận hành kho", label: "Vận hành nhận hoàn", description: "Mở/đóng phiên nhận hoàn và cập nhật hồ sơ." },
   { code: "live.view_station", group: "Vận hành kho", label: "Xem trực tiếp bàn phụ trách", description: "Xem camera trực tiếp của bàn được phân công." },
   { code: "live.view_remote", group: "Vận hành kho", label: "Xem trực tiếp mọi bàn", description: "Xem camera trực tiếp từ xa trên toàn tổ chức." },
+  { code: "packing.manual_scan", group: "Vận hành kho", label: "Quét tay / HID", description: "Ghi lượt quét mã vận đơn từ trình duyệt khi không dùng máy trạm." },
+  { code: "work_session.force_end", group: "Vận hành kho", label: "Buộc kết thúc ca làm", description: "Đóng ca đang mở của nhân viên khi quên kết thúc ca." },
 
   { code: "organization.view", group: "Quản lý kho", label: "Xem thông tin tổ chức", description: "Xem hồ sơ tổ chức." },
   { code: "organization.update", group: "Quản lý kho", label: "Sửa thông tin tổ chức", description: "Cập nhật thông tin tổ chức." },
@@ -99,9 +106,18 @@ export const PERMISSION_DEFINITIONS: readonly PermissionDefinition[] = [
   { code: "user.create", group: "Quản lý hệ thống", label: "Thêm người dùng", description: "Tạo tài khoản có vai trò thấp hơn." },
   { code: "user.update", group: "Quản lý hệ thống", label: "Sửa, nâng/hạ vai trò người dùng", description: "Sửa và đổi vai trò tài khoản trong phạm vi cấp bậc." },
   { code: "user.delete", group: "Quản lý hệ thống", label: "Xóa người dùng", description: "Xóa tài khoản có vai trò thấp hơn; vẫn chặn tự xóa và chủ cuối." },
+
+  // Mã còn trong database nhưng không route/trang nào kiểm nữa. Giữ nhãn để
+  // Platform không phải đọc mã thô; bật/tắt không làm thay đổi hành vi.
+  { code: "audit.view", group: "Quyền cũ", label: "Xem nhật ký kiểm toán (cũ)", description: "Nhật ký đã chuyển sang Platform; mã này không còn mở trang nào." },
+  { code: "station.update", group: "Quyền cũ", label: "Sửa trạm (cũ)", description: "Đã thay bằng quyền Sửa bàn đóng hàng; không còn được kiểm." },
 ] as const;
 
 export const PERMISSION_CODES = new Set(PERMISSION_DEFINITIONS.map((permission) => permission.code));
+
+export const ALWAYS_ON_PERMISSION_CODES: readonly string[] = PERMISSION_DEFINITIONS
+  .filter((permission) => permission.alwaysOn)
+  .map((permission) => permission.code);
 
 export function permissionDefinition(code: string): PermissionDefinition {
   return PERMISSION_DEFINITIONS.find((permission) => permission.code === code) ?? {

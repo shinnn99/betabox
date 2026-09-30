@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
+import {
+  isError,
+  requirePermissionStrict,
+  roleHasPermission,
+} from "@/lib/supabase/guard";
+import { clipBucketValid, type ScanClipSummary } from "@/lib/order-proof/service";
 import { readAgentLiveness } from "@/lib/watch/agent-liveness";
 import { enqueueCutClip } from "@/lib/agent-commands/enqueue";
 import { evaluateProofClipGate } from "@/lib/order-proof/proof-clip-gate";
@@ -44,13 +49,12 @@ export async function POST(req: Request, ctx: RouteContext) {
     );
   }
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  }
+  // Cắt theo yêu cầu / thử lại clip lỗi là một phần của "xem video" — mọi
+  // vai trò xem được bằng chứng đều cần nó (clip chưa cắt hoặc đã hết hạn
+  // trên cloud chỉ xem được sau khi cắt). Guard chuẩn còn lo luôn ngữ cảnh
+  // tổ chức khi Platform đang xem hộ.
+  const auth = await requirePermissionStrict("order_proof.view", req);
+  if (isError(auth)) return auth;
 
   const admin = createAdminClient();
 
@@ -58,20 +62,10 @@ export async function POST(req: Request, ctx: RouteContext) {
     .from("packing_events")
     .select("id, organization_id, timing_status, status")
     .eq("id", packingEventId)
+    .eq("organization_id", auth.organizationId)
     .maybeSingle();
   if (!pe) {
     return NextResponse.json({ error: "packing_event_not_found" }, { status: 404 });
-  }
-  const { data: profile } = await admin
-    .from("user_profiles")
-    .select("organization_id")
-    .eq("id", user.id)
-    .maybeSingle();
-  if (!profile || profile.organization_id !== pe.organization_id) {
-    return NextResponse.json(
-      { error: "cross_org_access_denied" },
-      { status: 403 },
-    );
   }
 
   // 0) Proof integrity (2026-08-07): đơn chưa đóng thì KHÔNG cắt.
@@ -89,13 +83,31 @@ export async function POST(req: Request, ctx: RouteContext) {
   // 1) Tìm row ready hiện tại (nếu có) — làm replacesClipId cho generation mới.
   const { data: readyRow } = await admin
     .from("order_proof_clips")
-    .select("id")
+    .select("id, status, bucket_path, bucket_uploaded_at")
     .eq("packing_event_id", packingEventId)
     .eq("organization_id", pe.organization_id)
     .eq("status", "ready")
     .maybeSingle();
 
   const replacesClipId = readyRow?.id ?? null;
+
+  // Clip đang xem được trên cloud mà vẫn cắt lại = "Tạo lại" — thao tác ghi
+  // (đổi bằng chứng đang có), không còn là "xem". Vai trò chỉ-xem bị chặn.
+  if (
+    readyRow &&
+    clipBucketValid(readyRow as unknown as ScanClipSummary) &&
+    !auth.isPlatform &&
+    !(await roleHasPermission(auth.role, "order_proof.generate"))
+  ) {
+    return NextResponse.json(
+      {
+        error: "forbidden",
+        permission: "order_proof.generate",
+        message: "Bạn chỉ được xem video, không được tạo lại clip đang có.",
+      },
+      { status: 403 },
+    );
+  }
 
   // 2) Kiểm agent online. KHÔNG enqueue khi offline.
   const liveness = await readAgentLiveness(admin, pe.organization_id);

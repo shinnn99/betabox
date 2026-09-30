@@ -4,6 +4,10 @@ import { requirePermission, requirePermissionStrict, isError } from "@/lib/supab
 import { getScopedClient } from "@/lib/supabase/scoped-client";
 import { audit } from "@/lib/audit";
 import { canAssignRole, type Role } from "@/lib/auth";
+import {
+  listAssignableStations,
+  parseStationAssignment,
+} from "@/lib/users/station-assignment";
 
 const VALID_ROLES: Role[] = [
   "owner",
@@ -25,13 +29,14 @@ export async function GET() {
     role: Role;
     status: string;
     created_at: string;
+    station_id: string | null;
   };
 
   const scoped = await getScopedClient(ctx);
   const { data: dataRaw, error } = await scoped
     .select<UserRow>(
       "user_profiles",
-      "id, full_name, phone, role, status, created_at",
+      "id, full_name, phone, role, status, created_at, station_id",
     )
     .order("created_at", { ascending: false });
 
@@ -67,13 +72,17 @@ export async function GET() {
     }
   }
 
+  // Danh sách bàn đi kèm để form chọn "Bàn phụ trách" không phải đòi thêm
+  // quyền packing_station.view — ai quản lý người dùng là đủ.
+  const stations = await listAssignableStations(admin, ctx.organizationId);
+
   const users = data.map((u) => ({
     ...u,
     email: emails.get(u.id) ?? "",
     linked_staff: linkedStaff.get(u.id) ?? null,
   }));
 
-  return NextResponse.json({ users });
+  return NextResponse.json({ users, stations });
 }
 
 export async function POST(req: Request) {
@@ -111,6 +120,9 @@ export async function POST(req: Request) {
 
   const admin = createAdminClient();
 
+  const station = await parseStationAssignment(admin, ctx.organizationId, body);
+  if (station instanceof NextResponse) return station;
+
   const { data: created, error: createErr } = await admin.auth.admin.createUser({
     email,
     password,
@@ -129,6 +141,7 @@ export async function POST(req: Request) {
     role,
     full_name: fullName,
     phone,
+    station_id: station.value ?? null,
   });
 
   if (profileErr) {
@@ -143,7 +156,7 @@ export async function POST(req: Request) {
     action: "user.create",
     targetType: "user",
     targetId: created.user.id,
-    metadata: { email, role, full_name: fullName },
+    metadata: { email, role, full_name: fullName, station_id: station.value ?? null },
   });
 
   return NextResponse.json({ id: created.user.id, email }, { status: 201 });

@@ -1818,3 +1818,34 @@ docs([Module]):     Cập nhật tài liệu
 - **Giao diện:** bảng HTML semantic có caption/th theo scope, header + cột chức năng sticky, cuộn ngang, checkbox native, tìm kiếm, cấp/thu theo nhóm, trạng thái chưa lưu và thông báo live. Chủ sở hữu/Hỗ trợ nền tảng được phân biệt rõ quyền sửa.
 - **Migration:** `20260930160000_platform_rbac_matrix.sql` (CHƯA ÁP trong phiên mã nguồn này).
 - **Kiểm thử:** `tests/platform-rbac-matrix.test.ts` + cập nhật `tests/role-permissions.test.ts`; typecheck sạch; lint riêng các file thay đổi 0 lỗi/0 cảnh báo. Lint toàn repo còn lỗi tồn tại sẵn ở script và các component ngoài phạm vi.
+
+### [RBAC-REVIEW-30-09] - Rà soát phân quyền theo bảng chức năng 30/09 + giao diện ma trận Platform
+
+- **Trạng thái:** Đã hoàn thành (chưa commit).
+- **Nguồn yêu cầu:** chủ dự án 30/09/2026 — kiểm lại phân quyền có chạy đúng bảng "CHỨC NĂNG × VAI TRÒ" không, và trang Platform đã có ma trận RBAC như ảnh mẫu chưa.
+- **Đã kiểm trên DB (chỉ đọc):** migration `20260930160000_platform_rbac_matrix.sql` ĐÃ có hiệu lực trên production — Trưởng kho 18 quyền (chỉ xem + `user.*`), Nhân viên đóng gói 8, Quan sát viên 8, owner/admin 47. Khớp bảng chốt. Dòng "CHƯA ÁP" ở mục [RBAC-PLATFORM-MATRIX] đã lỗi thời.
+- **Giao diện ma trận theo ảnh mẫu:** đầu cột có icon + màu từng vai trò, khoá cho vai trò cố định, đếm `x/N`; nhóm quyền thu gọn/mở được, ô tổng nhóm đầy/một phần/trống; ô quyền là chấm tròn ✓/✕ (vẫn là checkbox native ẩn để dùng bàn phím và trình đọc màn hình); mô tả + mã quyền nằm trong biểu tượng ⓘ. Thêm nhãn tiếng Việt cho 3 mã còn trong DB nhưng thiếu nhãn (`work_session.force_end`, `audit.view`, `station.update`); hai mã cũ gom vào nhóm "Quyền cũ", thu gọn sẵn.
+- **Lỗ hổng vai trò chỉ-xem ghi được qua API (đã sửa):**
+  - `PATCH /api/returns/claims/[claimId]` đòi `order_proof.view` → đổi sang `return.operate`, cùng quyền với route bulk. UI chỉ dùng route bulk nên không đổi hành vi giao diện.
+  - `POST /api/order-proof/[pe_id]/watch/retry` không qua guard (chỉ kiểm đăng nhập + cùng tổ chức). Nay qua `requirePermissionStrict("order_proof.view")`. "Tạo clip"/"Thử lại" vẫn mở cho mọi vai trò xem được video, vì đó là đường duy nhất để xem clip chưa cắt, hết hạn trên cloud hoặc cắt lỗi (bảng chốt: mọi vai trò xem và tải được video). Riêng **"Tạo lại" clip còn trên cloud** cần `order_proof.generate`. Nút này bị ẩn trên hai trang video với vai trò không có quyền đó.
+- **"Chỉ xem tại bàn phụ trách" của Nhân viên đóng gói:**
+  - Trước đây không có API/màn hình nào ghi `user_profiles.station_id`, dù trang Màn hình bàn bảo admin gán bàn ở Người dùng hệ thống. Hệ quả: mọi tài khoản đóng gói đều không xem được camera bàn nào.
+  - Thêm ô **Bàn phụ trách** vào form tạo/sửa người dùng (hiện khi vai trò là Nhân viên đóng gói). Bảng có cột hiển thị bàn đang gán hoặc "Chưa gán bàn". API kiểm bàn cùng tổ chức và đang hoạt động (`src/lib/users/station-assignment.ts`), và chạy sau chốt chống leo thang.
+  - Phạm vi xem trực tiếp giờ đi theo quyền (`live.view_remote` = mọi bàn, `live.view_station` = đúng bàn được gán), không khoá cứng theo tên vai trò packer. Platform chỉnh ma trận là có tác dụng thật. Route `GET /api/live/[stationId]` dùng chung `requireStationLiveAccess` với luồng sự kiện, bỏ bản sao logic.
+- **Bảng điều khiển:** link "Xem tất cả thiết bị/nhân viên" và link cảnh báo thiết bị chỉ hiện khi vai trò vào được trang đích. Nhân viên đóng gói và Quan sát viên được đưa về trang giám sát thay vì bị chặn.
+- **Kiểm thử:** `tests/platform-rbac-matrix.test.ts` thêm các test sau:
+  - Bảng chức năng 30/09 mã hoá từng dòng × từng vai trò; thêm trang menu mà quên xếp quyền thì test đỏ.
+  - Chỉ-xem đúng nghĩa; mọi vai trò xem và tải được video.
+  - Mọi mã có nhãn.
+  - Phạm vi live theo quyền.
+  - Gán bàn.
+  - Chốt route cắt lại clip và route khiếu nại.
+  - Link trên Bảng điều khiển.
+
+  Kết quả: 840/840 test đạt; `tsc` app + tests sạch; lint các file thay đổi 0 lỗi (cảnh báo còn lại có sẵn từ trước); 4 script prebuild đạt.
+- **Chủ dự án chốt 30/09/2026 (sau rà soát):**
+  - (1) KHÔNG giới hạn dữ liệu giám sát/bằng chứng/tổng quan theo bàn cho Nhân viên đóng gói; chỉ camera trực tiếp theo bàn phụ trách.
+  - (2) Quét tay: mọi vai trò TRỪ Quan sát viên. Thêm quyền riêng `packing.manual_scan` (migration `20260930170000_manual_scan_permission.sql`, chỉ INSERT cho owner/admin/Trưởng kho/Trưởng ca/Đóng gói). `POST /api/warehouse/manual-scan` đòi quyền này thay cho `station_device.view`. Thêm `GET` cùng route trả danh sách máy quét tối giản, để trang Quét tay không còn phụ thuộc API Thiết bị/Bàn (Nhân viên đóng gói không có quyền hai API đó nên trước đây không chọn được máy quét). Không có quyền thì trang báo bằng câu tiếng Việt.
+  - (3) Không tách quyền xem/tải video: `video.view`/`video.download` đánh dấu `alwaysOn` trong catalog. Trên Platform hai ô này khoá ở trạng thái bật cho mọi vai trò (nhãn "Luôn bật"), và API lưu ma trận luôn ép hai mã này vào mọi vai trò.
+  - **Migration `20260930170000` đã được chủ dự án áp lên production 30/09/2026.** Đã kiểm lại (chỉ đọc): `packing.manual_scan` có đủ ở owner/admin/Trưởng kho/Trưởng ca/Đóng gói, Quan sát viên không có; mọi mã trong DB đều có nhãn trong catalog.
+  - Kiểm thử: 842/842 đạt; `tsc` app + tests sạch; script prebuild đạt.

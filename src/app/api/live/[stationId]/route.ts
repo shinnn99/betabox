@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
-import { isError, requirePermission, roleHasPermission } from "@/lib/supabase/guard";
+import { requireStationLiveAccess } from "@/lib/live/station-access";
 import {
   buildWhepUrl,
   relayPathName,
-  resolveStationLiveScope,
   type StationCameraRole,
 } from "@/lib/live/station-streams";
 
@@ -36,68 +34,11 @@ interface AssignedDeviceRow {
 const DEFAULT_WEBRTC_BASE = "http://127.0.0.1:8889";
 
 export async function GET(_request: Request, context: RouteContext) {
-  let ctx = await requirePermission("warehouse.view");
-  if (isError(ctx) && ctx.status === 403) {
-    ctx = await requirePermission("live.view_station");
-  }
-  if (isError(ctx)) return ctx;
-
   const { stationId } = await context.params;
-  if (!/^[0-9a-f-]{36}$/i.test(stationId)) {
-    return NextResponse.json({ error: "station_id_invalid" }, { status: 400 });
-  }
-
-  const admin = createAdminClient();
-  const { data: station, error: stationError } = await admin
-    .from("packing_stations")
-    .select("id, code, name, status")
-    .eq("id", stationId)
-    .eq("organization_id", ctx.organizationId)
-    .maybeSingle();
-  if (stationError) {
-    return NextResponse.json(
-      { error: "station_lookup_failed", message: stationError.message },
-      { status: 500 },
-    );
-  }
-  if (!station || station.status !== "active") {
-    return NextResponse.json({ error: "station_not_found" }, { status: 404 });
-  }
-
-  let assignedStationId: string | null = null;
-  if (!ctx.isPlatform && ctx.role === "packer") {
-    const { data: profile, error: profileError } = await admin
-      .from("user_profiles")
-      .select("station_id")
-      .eq("id", ctx.userId)
-      .eq("organization_id", ctx.organizationId)
-      .maybeSingle();
-    if (profileError) {
-      return NextResponse.json(
-        {
-          error: "station_assignment_unavailable",
-          message: "Chưa áp dụng schema gán tài khoản vào bàn đóng hàng.",
-        },
-        { status: 409 },
-      );
-    }
-    assignedStationId = profile?.station_id ?? null;
-  }
-
-  const scope = resolveStationLiveScope({
-    role: ctx.role,
-    isPlatform: ctx.isPlatform,
-    requestedStationId: stationId,
-    assignedStationId,
-    canViewRemote:
-      !ctx.isPlatform && (await roleHasPermission(ctx.role, "live.view_remote")),
-  });
-  if (scope === "forbidden") {
-    return NextResponse.json(
-      { error: "station_live_forbidden" },
-      { status: 403 },
-    );
-  }
+  // Cùng một chốt với luồng sự kiện live: quyền vào + phạm vi bàn.
+  const access = await requireStationLiveAccess(stationId);
+  if (access instanceof NextResponse) return access;
+  const { admin, ctx, scope, station } = access;
 
   const { data: assignedRows, error: assignmentError } = await admin
     .from("station_device_assignments")

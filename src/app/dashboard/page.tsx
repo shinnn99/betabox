@@ -23,6 +23,8 @@ import {
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { apiFetch, useImpersonatingOrgId } from "@/lib/api-fetch";
 import { startVisibilityPolling } from "@/lib/polling/visibility-poller";
+import { useCan } from "@/lib/usePermissions";
+import { canSeeHref } from "@/lib/nav-access";
 
 interface HourlyPoint {
   hour: number;
@@ -173,6 +175,10 @@ const RANGE_OPTIONS: { value: ProductionRange; label: string }[] = [
 ];
 
 export default function DashboardPage() {
+  // Link sang trang quản lý chỉ hiện với ai vào được trang đó (bảng 30/09).
+  const can = useCan();
+  const canSeeDevices = canSeeHref("/dashboard/devices", can);
+  const canSeeStaff = canSeeHref("/dashboard/staff", can);
   const [data, setData] = useState<DashboardOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -596,12 +602,14 @@ export default function DashboardPage() {
                   <DeviceRow key={d.id} device={d} />
                 ))}
             </div>
-            <Link
-              href="/dashboard/devices"
-              className="mt-auto pt-4 inline-flex items-center text-xs font-semibold text-emerald-600 hover:text-emerald-700"
-            >
-              Xem tất cả thiết bị <ChevronRight className="h-3.5 w-3.5" />
-            </Link>
+            {canSeeDevices && (
+              <Link
+                href="/dashboard/devices"
+                className="mt-auto pt-4 inline-flex items-center text-xs font-semibold text-emerald-600 hover:text-emerald-700"
+              >
+                Xem tất cả thiết bị <ChevronRight className="h-3.5 w-3.5" />
+              </Link>
+            )}
           </div>
         </div>
 
@@ -679,12 +687,14 @@ export default function DashboardPage() {
                 </tbody>
               </table>
             )}
-            <Link
-              href="/dashboard/staff"
-              className="mt-auto pt-4 inline-flex items-center text-xs font-semibold text-emerald-600 hover:text-emerald-700"
-            >
-              Xem tất cả nhân viên <ChevronRight className="h-3.5 w-3.5" />
-            </Link>
+            {canSeeStaff && (
+              <Link
+                href="/dashboard/staff"
+                className="mt-auto pt-4 inline-flex items-center text-xs font-semibold text-emerald-600 hover:text-emerald-700"
+              >
+                Xem tất cả nhân viên <ChevronRight className="h-3.5 w-3.5" />
+              </Link>
+            )}
           </div>
 
           <div className="bg-white rounded-2xl border border-slate-100 p-4 lg:p-5 shadow-sm flex flex-col">
@@ -789,11 +799,12 @@ function MetricCard({
   );
 }
 
-function alertHref(alert: AlertSnapshot): string {
+function alertHref(alert: AlertSnapshot, canSeeDevices: boolean): string {
   // Mapping id-prefix → trang chi tiết. Prefix do API gán
-  // (xem src/app/api/dashboard/overview/route.ts).
-  if (alert.id.startsWith("sd:")) return "/dashboard/devices?type=scanner";
-  if (alert.id.startsWith("cam:")) return "/dashboard/devices?type=camera";
+  // (xem src/app/api/dashboard/overview/route.ts). Không vào được Thiết bị
+  // kho (nhân viên đóng gói, quan sát viên) thì đưa về trang giám sát.
+  if (canSeeDevices && alert.id.startsWith("sd:")) return "/dashboard/devices?type=scanner";
+  if (canSeeDevices && alert.id.startsWith("cam:")) return "/dashboard/devices?type=camera";
   if (alert.order_code) {
     return `/dashboard/operations?q=${encodeURIComponent(alert.order_code)}`;
   }
@@ -801,6 +812,7 @@ function alertHref(alert: AlertSnapshot): string {
 }
 
 function AlertRow({ alert }: { alert: AlertSnapshot }) {
+  const canSeeDevices = canSeeHref("/dashboard/devices", useCan());
   const sev =
     alert.severity === "high"
       ? { label: "Cao", classes: "bg-rose-50 text-rose-700", dot: "bg-rose-500" }
@@ -829,7 +841,7 @@ function AlertRow({ alert }: { alert: AlertSnapshot }) {
         {alert.location ?? (alert.at ? formatTime(alert.at) : "")}
       </span>
       <Link
-        href={alertHref(alert)}
+        href={alertHref(alert, canSeeDevices)}
         className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 px-2 py-1 rounded-md border border-emerald-100 hover:bg-emerald-50 shrink-0"
       >
         Xem

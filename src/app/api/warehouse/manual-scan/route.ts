@@ -45,8 +45,65 @@ interface PackingRpcRow {
   previous_event_id: string | null;
 }
 
+/**
+ * Máy quét cho ô chọn của trang Quét tay. Cùng quyền với POST: người được
+ * quét tay (kể cả Nhân viên đóng gói, vốn không xem được trang Thiết bị kho)
+ * phải chọn được máy quét. Chỉ trả trường cần hiển thị — không cổng, không
+ * cấu hình kết nối.
+ */
+export async function GET() {
+  const ctx = await requirePermission("packing.manual_scan");
+  if (isError(ctx)) return ctx;
+
+  const admin = createAdminClient();
+  const [{ data: devices, error }, { data: assigns }] = await Promise.all([
+    admin
+      .from("station_devices")
+      .select("id, device_code, name")
+      .eq("organization_id", ctx.organizationId)
+      .eq("device_type", "scanner")
+      .neq("status", "archived")
+      .order("device_code"),
+    admin
+      .from("station_device_assignments")
+      .select("device_id, station_id, packing_stations ( code, name )")
+      .eq("organization_id", ctx.organizationId)
+      .is("unassigned_at", null),
+  ]);
+  if (error) {
+    return NextResponse.json(
+      { error: "scanners_unavailable", message: "Không tải được danh sách máy quét." },
+      { status: 500 },
+    );
+  }
+
+  type AssignRow = {
+    device_id: string;
+    station_id: string;
+    packing_stations: { code: string; name: string } | Array<{ code: string; name: string }> | null;
+  };
+  const byDevice = new Map<string, AssignRow>();
+  for (const a of (assigns ?? []) as AssignRow[]) byDevice.set(a.device_id, a);
+
+  const scanners = (devices ?? []).map((d) => {
+    const a = byDevice.get(d.id);
+    const ps = a ? (Array.isArray(a.packing_stations) ? a.packing_stations[0] : a.packing_stations) : null;
+    return {
+      id: d.id,
+      device_code: d.device_code,
+      name: d.name,
+      current_station:
+        a && ps ? { station_id: a.station_id, station_code: ps.code, station_name: ps.name } : null,
+    };
+  });
+
+  return NextResponse.json({ scanners }, { headers: { "Cache-Control": "no-store" } });
+}
+
 export async function POST(req: Request) {
-  const ctx = await requirePermission("station_device.view", req);
+  // Ghi lượt quét là thao tác GHI: quyền riêng packing.manual_scan (mọi vai
+  // trò trừ Quan sát viên — chốt 30/09/2026), không mượn quyền xem thiết bị.
+  const ctx = await requirePermission("packing.manual_scan", req);
   if (isError(ctx)) return ctx;
 
   const body = await req.json().catch(() => null);

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePlatformRole } from "@/lib/supabase/guard";
 import {
+  ALWAYS_ON_PERMISSION_CODES,
   PERMISSION_DEFINITIONS,
   RBAC_ROLES,
   permissionDefinition,
@@ -104,9 +105,10 @@ export async function PUT(req: Request) {
         { status: 400 },
       );
     }
+    // Quyền luôn-bật (xem/tải video) được ép vào mọi vai trò dù client gửi gì.
     normalized[role.code] = role.lockedFullAccess
       ? [...validCodes].sort()
-      : codes.sort();
+      : [...new Set([...codes, ...ALWAYS_ON_PERMISSION_CODES])].sort();
   }
 
   const extraRoles = Object.keys(body.permissions).filter(

@@ -964,6 +964,10 @@ function ScanActions({
   onOpen: (mode: ModalMode) => void;
 }) {
   const state = clipCellState(scan.clip);
+  // "Tạo lại" clip đang xem được là thao tác ghi; vai trò chỉ-xem chỉ có
+  // [Xem]. "Tạo clip"/"Thử lại" bên dưới vẫn mở cho mọi người vì đó là
+  // đường duy nhất để xem clip chưa cắt / hết hạn / cắt lỗi.
+  const canRegenerate = useCan()("order_proof.generate");
 
   if (state === "ready_cloud") {
     return (
@@ -974,14 +978,16 @@ function ScanActions({
         >
           <Play className="h-3 w-3" /> Xem
         </button>
-        <button
-          onClick={() => onOpen("generate")}
-          className="h-8 px-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1 text-xs font-semibold"
-          title="Cắt lại clip từ đầu"
-        >
-          <RotateCw className="h-3 w-3" />
-          Tạo lại
-        </button>
+        {canRegenerate && (
+          <button
+            onClick={() => onOpen("generate")}
+            className="h-8 px-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1 text-xs font-semibold"
+            title="Cắt lại clip từ đầu"
+          >
+            <RotateCw className="h-3 w-3" />
+            Tạo lại
+          </button>
+        )}
       </div>
     );
   }

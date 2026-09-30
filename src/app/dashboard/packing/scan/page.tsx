@@ -7,22 +7,14 @@ import DashboardLayout from "@/components/layout/DashboardLayout";
 import Select from "@/components/ui/Select";
 import { useToast } from "@/components/ui/Toast";
 
-interface Station {
-  id: string;
-  code: string;
-  name: string;
-  warehouse_id: string;
-  status: string;
-}
-
 interface ScannerDevice {
   id: string;
   device_code: string;
   name: string;
-  device_type: string;
   current_station: {
     station_id: string;
     station_code: string;
+    station_name: string;
   } | null;
 }
 
@@ -53,7 +45,8 @@ const STORAGE_KEY = "packing-scan:last";
 export default function ManualScanPage() {
   const toast = useToast();
   const [scanners, setScanners] = useState<ScannerDevice[]>([]);
-  const [stations, setStations] = useState<Station[]>([]);
+  // Không có quyền quét tay (Quan sát viên): báo rõ thay vì một trang trống.
+  const [denied, setDenied] = useState(false);
   const [scannerId, setScannerId] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [input, setInput] = useState("");
@@ -83,14 +76,10 @@ export default function ManualScanPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [r1, r2] = await Promise.all([
-      fetch("/api/station-devices?device_type=scanner", { cache: "no-store" }),
-      fetch("/api/packing-stations", { cache: "no-store" }),
-    ]);
-    const d1 = await r1.json();
-    const d2 = await r2.json();
-    if (r1.ok) setScanners(d1.devices ?? []);
-    if (r2.ok) setStations(d2.stations ?? []);
+    const res = await fetch("/api/warehouse/manual-scan", { cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
+    setDenied(res.status === 403);
+    if (res.ok) setScanners(data.scanners ?? []);
     setLoading(false);
   }, []);
 
@@ -102,10 +91,9 @@ export default function ManualScanPage() {
     () => scanners.find((s) => s.id === scannerId) ?? null,
     [scanners, scannerId],
   );
-  const stationInfo = useMemo(() => {
-    if (!selected?.current_station) return null;
-    return stations.find((s) => s.id === selected.current_station!.station_id) ?? null;
-  }, [selected, stations]);
+  const stationInfo = selected?.current_station
+    ? { code: selected.current_station.station_code, name: selected.current_station.station_name }
+    : null;
 
   const submit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -197,6 +185,11 @@ export default function ManualScanPage() {
           {loading ? (
             <p className="text-sm text-slate-400 inline-flex items-center gap-2">
               <Loader2 className="h-4 w-4 animate-spin" /> Đang tải thiết bị...
+            </p>
+          ) : denied ? (
+            <p className="text-sm text-amber-700 bg-amber-50 px-3 py-2 rounded-lg">
+              Tài khoản của bạn chỉ được xem, không được quét tay. Nhờ quản lý kho
+              quét giúp hoặc cấp quyền nếu cần.
             </p>
           ) : scanners.length === 0 ? (
             <p className="text-sm text-amber-700 bg-amber-50 px-3 py-2 rounded-lg">

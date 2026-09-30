@@ -20,7 +20,7 @@ export interface StationLiveAccess {
   station: { id: string; code: string; name: string; status: string };
 }
 
-/** Authorize an admin viewer or the packer account assigned to this station. */
+/** Cho phép người xem mọi bàn (live.view_remote) hoặc tài khoản được gán đúng bàn này (live.view_station). */
 export async function requireStationLiveAccess(
   stationId: string,
 ): Promise<StationLiveAccess | NextResponse> {
@@ -52,8 +52,17 @@ export async function requireStationLiveAccess(
     return NextResponse.json({ error: "station_not_found" }, { status: 404 });
   }
 
+  // Phạm vi xem đi theo bảng quyền Platform chỉnh được, không theo tên vai
+  // trò: live.view_remote = mọi bàn; live.view_station = chỉ bàn được gán.
+  const canViewRemote =
+    !ctx.isPlatform && (await roleHasPermission(ctx.role, "live.view_remote"));
+  const canViewStation =
+    !ctx.isPlatform &&
+    !canViewRemote &&
+    (await roleHasPermission(ctx.role, "live.view_station"));
+
   let assignedStationId: string | null = null;
-  if (!ctx.isPlatform && ctx.role === "packer") {
+  if (canViewStation) {
     const { data: profile, error: profileError } = await admin
       .from("user_profiles")
       .select("station_id")
@@ -77,8 +86,8 @@ export async function requireStationLiveAccess(
     isPlatform: ctx.isPlatform,
     requestedStationId: stationId,
     assignedStationId,
-    canViewRemote:
-      !ctx.isPlatform && (await roleHasPermission(ctx.role, "live.view_remote")),
+    canViewRemote,
+    canViewStation,
   });
   if (scope === "forbidden") {
     return NextResponse.json({ error: "station_live_forbidden" }, { status: 403 });

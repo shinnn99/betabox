@@ -2,14 +2,30 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Activity,
   AlertTriangle,
+  BarChart3,
   Check,
+  ChevronDown,
+  CircleHelp,
+  ClipboardList,
+  Crown,
+  Eye,
+  Info,
+  LayoutDashboard,
   Loader2,
   LockKeyhole,
+  Package,
   RefreshCw,
   Save,
   Search,
+  Settings,
   ShieldCheck,
+  UserCog,
+  Users,
+  Warehouse,
+  X,
+  type LucideIcon,
 } from "lucide-react";
 import PlatformLayout from "@/components/platform/PlatformLayout";
 import type { Role } from "@/lib/auth";
@@ -25,6 +41,26 @@ interface MatrixResponse {
 
 type Matrix = Record<Role, Set<string>>;
 type Notice = { tone: "success" | "error"; text: string } | null;
+
+/** Icon + màu nhận diện từng vai trò trên đầu cột. */
+const ROLE_STYLE: Record<Role, { icon: LucideIcon; text: string; badge: string }> = {
+  owner: { icon: Crown, text: "text-amber-500", badge: "bg-amber-50" },
+  admin: { icon: UserCog, text: "text-blue-600", badge: "bg-blue-50" },
+  warehouse_manager: { icon: Warehouse, text: "text-violet-600", badge: "bg-violet-50" },
+  shift_leader: { icon: ClipboardList, text: "text-pink-600", badge: "bg-pink-50" },
+  packer: { icon: Package, text: "text-emerald-600", badge: "bg-emerald-50" },
+  viewer: { icon: Eye, text: "text-slate-600", badge: "bg-slate-100" },
+};
+
+const GROUP_ICON: Record<string, LucideIcon> = {
+  "Tổng quan": LayoutDashboard,
+  "Vận hành kho": Activity,
+  "Quản lý kho": Warehouse,
+  "Nhân sự kho": Users,
+  "Báo cáo": BarChart3,
+  "Quản lý hệ thống": Settings,
+  "Quyền cũ": CircleHelp,
+};
 
 function emptyMatrix(): Matrix {
   return {
@@ -66,6 +102,16 @@ export default function PlatformPermissionsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
+  // Nhóm mã cũ không còn tác dụng nên thu gọn sẵn, tránh làm rối bảng.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["Quyền cũ"]));
+
+  const toggleCollapsed = (group: string) =>
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(group)) next.delete(group);
+      else next.add(group);
+      return next;
+    });
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -127,8 +173,13 @@ export default function PlatformPermissionsPage() {
 
   const dirty = savedSignature !== signature(matrix);
 
+  const alwaysOn = useMemo(
+    () => new Set((data?.permissions ?? []).filter((p) => p.alwaysOn).map((p) => p.code)),
+    [data],
+  );
+
   const toggle = (role: RbacRoleDefinition, permission: string, checked: boolean) => {
-    if (!data?.canEdit || role.lockedFullAccess) return;
+    if (!data?.canEdit || role.lockedFullAccess || alwaysOn.has(permission)) return;
     setNotice(null);
     setMatrix((current) => {
       const next = { ...current, [role.code]: new Set(current[role.code]) };
@@ -148,6 +199,7 @@ export default function PlatformPermissionsPage() {
     setMatrix((current) => {
       const next = { ...current, [role.code]: new Set(current[role.code]) };
       for (const permission of permissions) {
+        if (permission.alwaysOn) continue;
         if (checked) next[role.code].add(permission.code);
         else next[role.code].delete(permission.code);
       }
@@ -299,23 +351,35 @@ export default function PlatformPermissionsPage() {
                 <tr>
                   <th
                     scope="col"
-                    className="sticky left-0 z-40 w-[24rem] min-w-[24rem] bg-white px-4 py-3 text-left text-xs font-semibold text-slate-600"
+                    className="sticky left-0 z-40 w-[22rem] min-w-[22rem] bg-slate-50/95 px-4 py-4 text-left align-middle text-sm font-medium text-slate-600"
                   >
-                    Chức năng
+                    <span className="inline-flex items-center gap-2">
+                      <ShieldCheck className="h-4 w-4 text-slate-400" /> Quyền / Vai trò
+                    </span>
                   </th>
-                  {data.roles.map((role) => (
-                    <th key={role.code} scope="col" className="min-w-[9.5rem] px-3 py-3 text-center align-top">
-                      <div className="font-semibold text-slate-800">{role.label}</div>
-                      <div className="mt-1 text-[10px] font-normal leading-snug text-slate-400">
-                        {matrix[role.code].size}/{data.permissions.length}
-                      </div>
-                      {role.lockedFullAccess && (
-                        <span className="mt-1 inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
-                          <LockKeyhole className="h-3 w-3" /> Cố định
+                  {data.roles.map((role) => {
+                    const style = ROLE_STYLE[role.code];
+                    const RoleIcon = style?.icon ?? Users;
+                    return (
+                      <th
+                        key={role.code}
+                        scope="col"
+                        title={role.description}
+                        className="min-w-[9rem] border-l border-slate-100 bg-slate-50/95 px-3 py-3 text-center align-top"
+                      >
+                        <span className={`mx-auto flex h-8 w-8 items-center justify-center rounded-lg ${style?.badge ?? "bg-slate-100"}`}>
+                          <RoleIcon className={`h-4 w-4 ${style?.text ?? "text-slate-600"}`} />
                         </span>
-                      )}
-                    </th>
-                  ))}
+                        <div className={`mt-1.5 text-sm font-semibold ${style?.text ?? "text-slate-800"}`}>{role.label}</div>
+                        {role.lockedFullAccess && (
+                          <LockKeyhole className="mx-auto mt-1 h-3 w-3 text-slate-300" aria-label="Cố định toàn quyền" />
+                        )}
+                        <div className="mt-1 text-[11px] font-normal tabular-nums text-slate-400">
+                          {matrix[role.code].size}/{data.permissions.length}
+                        </div>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
@@ -334,6 +398,8 @@ export default function PlatformPermissionsPage() {
                       roles={data.roles}
                       matrix={matrix}
                       canEdit={data.canEdit}
+                      collapsed={!q && collapsed.has(group)}
+                      onToggleCollapsed={() => toggleCollapsed(group)}
                       onToggle={toggle}
                       onToggleGroup={toggleGroup}
                     />
@@ -348,79 +414,161 @@ export default function PlatformPermissionsPage() {
   );
 }
 
+/** Ô quyền dạng chấm tròn như bảng phân quyền chuẩn; input native vẫn giữ để bàn phím/đọc màn hình dùng được. */
+function PermissionCell({
+  checked,
+  locked,
+  disabled,
+  label,
+  onChange,
+}: Readonly<{
+  checked: boolean;
+  locked: boolean;
+  disabled: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}>) {
+  let tone = "bg-slate-50 text-slate-300 ring-slate-200";
+  if (checked) tone = locked ? "bg-slate-100 text-slate-500 ring-slate-200" : "bg-emerald-100 text-emerald-600 ring-emerald-200";
+  return (
+    <label className={`relative inline-flex ${disabled ? "cursor-not-allowed" : "cursor-pointer"}`}>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+        aria-label={label}
+        className="peer sr-only"
+      />
+      <span
+        className={`flex h-7 w-7 items-center justify-center rounded-full ring-1 transition peer-focus-visible:ring-2 peer-focus-visible:ring-emerald-500 ${tone} ${
+          disabled ? "" : "hover:scale-110 hover:ring-emerald-300"
+        }`}
+      >
+        {checked ? <Check className="h-4 w-4" strokeWidth={2.5} /> : <X className="h-3 w-3" />}
+      </span>
+    </label>
+  );
+}
+
 function PermissionGroupRows({
   group,
   permissions,
   roles,
   matrix,
   canEdit,
+  collapsed,
+  onToggleCollapsed,
   onToggle,
   onToggleGroup,
-}: {
+}: Readonly<{
   group: string;
   permissions: PermissionDefinition[];
   roles: RbacRoleDefinition[];
   matrix: Matrix;
   canEdit: boolean;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
   onToggle: (role: RbacRoleDefinition, permission: string, checked: boolean) => void;
   onToggleGroup: (role: RbacRoleDefinition, permissions: PermissionDefinition[], checked: boolean) => void;
-}) {
+}>) {
+  const GroupIcon = GROUP_ICON[group] ?? CircleHelp;
   return (
     <>
-      <tr className="bg-emerald-50/80">
+      <tr className="bg-slate-50/80">
         <th
           scope="rowgroup"
-          className="sticky left-0 z-20 bg-emerald-50 px-4 py-2 text-left text-xs font-bold text-emerald-900"
+          className="sticky left-0 z-20 border-t border-slate-200 bg-slate-50 px-4 py-3 text-left"
         >
-          {group}
-          <span className="ml-2 font-normal text-emerald-700/70">({permissions.length})</span>
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            aria-expanded={!collapsed}
+            className="flex w-full items-center gap-2.5 text-sm font-bold uppercase tracking-wide text-slate-800"
+          >
+            <GroupIcon className="h-4 w-4 text-slate-500" />
+            {group}
+            <span className="font-normal normal-case text-slate-400">({permissions.length})</span>
+            <ChevronDown className={`ml-auto h-4 w-4 text-slate-400 transition-transform ${collapsed ? "-rotate-90" : ""}`} />
+          </button>
         </th>
         {roles.map((role) => {
           const count = permissions.filter((permission) => matrix[role.code].has(permission.code)).length;
-          const checked = count === permissions.length;
+          const full = count === permissions.length;
+          const partial = count > 0 && !full;
+          const disabled = !canEdit || !!role.lockedFullAccess;
+          let tone = "border-slate-200 bg-white";
+          if (full) tone = role.lockedFullAccess ? "border-emerald-200 bg-emerald-100" : "border-emerald-600 bg-emerald-500";
+          else if (partial) tone = "border-emerald-600 bg-white";
           return (
-            <td key={role.code} className="border-l border-emerald-100 px-3 py-2 text-center">
-              <input
-                type="checkbox"
-                checked={checked}
-                disabled={!canEdit || role.lockedFullAccess}
-                onChange={(event) => onToggleGroup(role, permissions, event.target.checked)}
-                aria-label={`${checked ? "Thu hồi" : "Cấp"} toàn bộ nhóm ${group} cho ${role.label}`}
-                className="h-4 w-4 accent-emerald-600 disabled:cursor-not-allowed disabled:opacity-55"
-              />
-              <span className="ml-1.5 align-[2px] text-[10px] text-emerald-800/70">{count}/{permissions.length}</span>
+            <td key={role.code} className="border-l border-t border-slate-200 px-3 py-3 text-center">
+              <label
+                title={`${count}/${permissions.length} quyền`}
+                className={`relative inline-flex ${disabled ? "cursor-not-allowed" : "cursor-pointer"}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={full}
+                  ref={(el) => {
+                    if (el) el.indeterminate = partial;
+                  }}
+                  disabled={disabled}
+                  onChange={(event) => onToggleGroup(role, permissions, event.target.checked)}
+                  aria-label={`${full ? "Thu hồi" : "Cấp"} toàn bộ nhóm ${group} cho ${role.label} (${count}/${permissions.length})`}
+                  className="peer sr-only"
+                />
+                <span
+                  className={`flex h-6 w-6 items-center justify-center rounded-full border-[3px] peer-focus-visible:ring-2 peer-focus-visible:ring-emerald-500 peer-focus-visible:ring-offset-1 ${tone}`}
+                >
+                  {full || partial ? (
+                    <span className={`h-2 w-2 rounded-full ${full && !role.lockedFullAccess ? "bg-white" : "bg-emerald-600"}`} />
+                  ) : null}
+                </span>
+              </label>
             </td>
           );
         })}
       </tr>
-      {permissions.map((permission) => (
-        <tr key={permission.code} className="group border-b border-slate-100 hover:bg-slate-50/70">
-          <th
-            scope="row"
-            className="sticky left-0 z-10 border-t border-slate-100 bg-white px-4 py-2.5 text-left group-hover:bg-slate-50"
-          >
-            <div className="font-medium text-slate-800">{permission.label}</div>
-            <div className="mt-0.5 text-[11px] font-normal leading-snug text-slate-400">
-              {permission.description} <code className="ml-1 text-[10px] text-slate-300">{permission.code}</code>
-            </div>
-          </th>
-          {roles.map((role) => {
-            const checked = matrix[role.code].has(permission.code);
-            return (
-              <td key={role.code} className="border-l border-t border-slate-100 px-3 py-2.5 text-center">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  disabled={!canEdit || role.lockedFullAccess}
-                  onChange={(event) => onToggle(role, permission.code, event.target.checked)}
-                  aria-label={`${checked ? "Thu hồi" : "Cấp"} quyền ${permission.label} cho ${role.label}`}
-                  className="h-[1.1rem] w-[1.1rem] accent-emerald-600 disabled:cursor-not-allowed disabled:opacity-55"
-                />
-              </td>
-            );
-          })}
-        </tr>
-      ))}
+      {!collapsed &&
+        permissions.map((permission) => (
+          <tr key={permission.code} className="group hover:bg-slate-50/70">
+            <th
+              scope="row"
+              className="sticky left-0 z-10 border-t border-slate-100 bg-white py-2.5 pl-11 pr-4 text-left font-normal group-hover:bg-slate-50"
+            >
+              <span className="inline-flex items-center gap-1.5 text-sm text-slate-700">
+                {permission.label}
+                <span
+                  tabIndex={0}
+                  title={`${permission.description} (${permission.code})`}
+                  aria-label={`${permission.description} Mã quyền ${permission.code}`}
+                  className="inline-flex cursor-help text-slate-300 outline-none hover:text-slate-500 focus-visible:text-emerald-600"
+                >
+                  <Info className="h-3.5 w-3.5" />
+                </span>
+                {permission.alwaysOn && (
+                  <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
+                    <LockKeyhole className="h-3 w-3" /> Luôn bật
+                  </span>
+                )}
+              </span>
+            </th>
+            {roles.map((role) => {
+              const checked = matrix[role.code].has(permission.code);
+              return (
+                <td key={role.code} className="border-l border-t border-slate-100 px-3 py-2 text-center">
+                  <PermissionCell
+                    checked={checked}
+                    locked={!!role.lockedFullAccess || !!permission.alwaysOn}
+                    disabled={!canEdit || !!role.lockedFullAccess || !!permission.alwaysOn}
+                    label={`${checked ? "Thu hồi" : "Cấp"} quyền ${permission.label} cho ${role.label}`}
+                    onChange={(next) => onToggle(role, permission.code, next)}
+                  />
+                </td>
+              );
+            })}
+          </tr>
+        ))}
     </>
   );
 }

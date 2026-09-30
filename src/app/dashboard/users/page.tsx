@@ -31,6 +31,25 @@ interface UserRow {
   status: string;
   created_at: string;
   linked_staff: { id: string; staff_code: string; full_name: string } | null;
+  station_id: string | null;
+}
+
+interface StationOption {
+  id: string;
+  code: string;
+  name: string;
+}
+
+/**
+ * Vai trò "chỉ xem tại bàn phụ trách" (bảng chức năng 30/09/2026) — tài khoản
+ * phải được gán bàn thì camera trực tiếp của bàn đó mới mở.
+ */
+const STATION_SCOPED_ROLES: ReadonlySet<Role> = new Set<Role>(["packer"]);
+
+function stationLabel(stations: StationOption[], id: string | null): string | null {
+  if (!id) return null;
+  const station = stations.find((s) => s.id === id);
+  return station ? `${station.code} · ${station.name}` : "Bàn đã ngừng dùng";
 }
 
 export default function UsersPage() {
@@ -67,6 +86,7 @@ export default function UsersPage() {
   const impersonatingOrgId = useImpersonatingOrgId();
   const confirm = useConfirm();
   const [users, setUsers] = useState<UserRow[]>([]);
+  const [stations, setStations] = useState<StationOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [q, setQ] = useState("");
@@ -84,6 +104,7 @@ export default function UsersPage() {
       return;
     }
     setUsers(data.users);
+    setStations(data.stations ?? []);
     setLoading(false);
   }, [impersonatingOrgId]);
 
@@ -205,6 +226,13 @@ export default function UsersPage() {
                         <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-50 text-violet-700 text-xs font-medium border border-violet-100">
                           {ROLE_LABEL[u.role] ?? u.role}
                         </span>
+                        {STATION_SCOPED_ROLES.has(u.role) && (
+                          <div
+                            className={`mt-1 text-[11px] ${u.station_id ? "text-slate-500" : "text-amber-600"}`}
+                          >
+                            {stationLabel(stations, u.station_id) ?? "Chưa gán bàn"}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-slate-600 text-xs">{u.phone ?? "—"}</td>
                       <td className="px-4 py-3 text-xs">
@@ -256,6 +284,7 @@ export default function UsersPage() {
       {showCreate && (
         <CreateUserDialog
           roleOptions={roleOptions}
+          stations={stations}
           onClose={() => setShowCreate(false)}
           onCreated={() => {
             setShowCreate(false);
@@ -268,6 +297,7 @@ export default function UsersPage() {
         <EditUserDialog
           user={editing}
           roleOptions={roleOptions}
+          stations={stations}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -281,11 +311,13 @@ export default function UsersPage() {
 
 function CreateUserDialog({
   roleOptions,
+  stations,
   onClose,
   onCreated,
 }: {
   /** Chỉ các vai trò người đang thao tác được cấp (thấp hơn mình). */
   roleOptions: { value: Role; label: string }[];
+  stations: StationOption[];
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -296,6 +328,7 @@ function CreateUserDialog({
     full_name: "",
     phone: "",
     role: (roleOptions[0]?.value ?? "viewer") as Role,
+    station_id: "",
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -309,7 +342,10 @@ function CreateUserDialog({
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          ...form,
+          station_id: STATION_SCOPED_ROLES.has(form.role) ? form.station_id || null : null,
+        }),
       },
       impersonatingOrgId,
     );
@@ -366,6 +402,13 @@ function CreateUserDialog({
             options={roleOptions}
           />
         </Field>
+        {STATION_SCOPED_ROLES.has(form.role) && (
+          <StationField
+            stations={stations}
+            value={form.station_id}
+            onChange={(v) => setForm({ ...form, station_id: v })}
+          />
+        )}
         {err && <p className="text-sm text-red-600">{err}</p>}
         {saving && (
           <p className="text-sm text-slate-500">
@@ -398,12 +441,14 @@ function CreateUserDialog({
 function EditUserDialog({
   user,
   roleOptions,
+  stations,
   onClose,
   onSaved,
 }: {
   user: UserRow;
   /** Chỉ các vai trò người đang thao tác được cấp (thấp hơn mình). */
   roleOptions: { value: Role; label: string }[];
+  stations: StationOption[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -414,6 +459,7 @@ function EditUserDialog({
     role: user.role,
     status: user.status,
     password: "",
+    station_id: user.station_id ?? "",
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -427,6 +473,9 @@ function EditUserDialog({
     const body: Record<string, unknown> = {
       role: form.role,
       status: form.status,
+      // Đổi sang vai trò không giới hạn theo bàn thì bỏ gán luôn, tránh một
+      // phạm vi cũ "ngủ" trong hồ sơ rồi sống lại khi đổi vai trò về sau.
+      station_id: STATION_SCOPED_ROLES.has(form.role) ? form.station_id || null : null,
     };
     if (!linked) {
       body.full_name = form.full_name;
@@ -487,6 +536,13 @@ function EditUserDialog({
             options={roleOptions}
           />
         </Field>
+        {STATION_SCOPED_ROLES.has(form.role) && (
+          <StationField
+            stations={stations}
+            value={form.station_id}
+            onChange={(v) => setForm({ ...form, station_id: v })}
+          />
+        )}
         <Field label="Trạng thái">
           <Select
             value={form.status}
@@ -535,6 +591,35 @@ function EditUserDialog({
         </div>
       </form>
     </Modal>
+  );
+}
+
+function StationField({
+  stations,
+  value,
+  onChange,
+}: {
+  stations: StationOption[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  // Bàn đã gán nhưng nay ngừng dùng vẫn phải hiện để người sửa thấy và chọn lại.
+  const missing = !!value && !stations.some((s) => s.id === value);
+  return (
+    <Field label="Bàn phụ trách">
+      <Select
+        value={value}
+        onChange={onChange}
+        options={[
+          { value: "", label: "Chưa gán bàn" },
+          ...(missing ? [{ value, label: "Bàn đã ngừng dùng — hãy chọn lại" }] : []),
+          ...stations.map((s) => ({ value: s.id, label: `${s.code} · ${s.name}` })),
+        ]}
+      />
+      <p className="mt-1 text-[11px] text-slate-500">
+        Nhân viên đóng gói chỉ xem được camera trực tiếp của bàn này.
+      </p>
+    </Field>
   );
 }
 

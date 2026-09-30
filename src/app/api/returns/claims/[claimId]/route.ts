@@ -17,7 +17,9 @@ interface RouteContext {
  * không thì một hồ sơ có thể bị đóng sớm và mất dấu vết vì sao.
  */
 export async function PATCH(req: Request, { params }: RouteContext) {
-  const ctx = await requirePermissionStrict("order_proof.view", req);
+  // Đổi trạng thái / mã khiếu nại là thao tác ghi — cùng quyền với route bulk.
+  // Trước đây đòi order_proof.view nên vai trò chỉ-xem sửa được hồ sơ.
+  const ctx = await requirePermissionStrict("return.operate", req);
   if (isError(ctx)) return ctx;
   const { claimId } = await params;
 

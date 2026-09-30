@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePermissionStrict, isError } from "@/lib/supabase/guard";
 import { audit } from "@/lib/audit";
 import { canAssignRole, type Role } from "@/lib/auth";
+import { parseStationAssignment } from "@/lib/users/station-assignment";
 
 const VALID_ROLES: Role[] = [
   "owner",
@@ -175,6 +176,11 @@ export async function PATCH(req: Request, { params }: RouteContext) {
   }
 
   const admin = createAdminClient();
+
+  // Bàn phụ trách: phạm vi "chỉ xem tại bàn" của quyền live.view_station.
+  const station = await parseStationAssignment(admin, ctx.organizationId, body);
+  if (station instanceof NextResponse) return station;
+  if (station.value !== undefined) update.station_id = station.value;
 
   if (Object.keys(update).length > 0) {
     const { error: profileErr } = await admin

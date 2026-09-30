@@ -15,6 +15,11 @@ export function resolveStationLiveScope(input: {
    * mới không làm họ mất hình.
    */
   canViewRemote?: boolean;
+  /**
+   * Vai trò có quyền `live.view_station` — chỉ xem bàn được gán cho tài
+   * khoản. Không truyền → giữ hành vi cũ (chỉ packer), cho DB chưa có mã.
+   */
+  canViewStation?: boolean;
 }): StationLiveScope {
   if (
     input.isPlatform ||
@@ -25,7 +30,8 @@ export function resolveStationLiveScope(input: {
     return "admin";
   }
   if (
-    input.role === "packer" &&
+    (input.canViewStation ?? input.role === "packer") &&
+    input.assignedStationId !== null &&
     input.assignedStationId === input.requestedStationId
   ) {
     return "station";
