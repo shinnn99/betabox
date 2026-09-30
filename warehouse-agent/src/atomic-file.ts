@@ -3,6 +3,35 @@ import { existsSync } from "node:fs";
 import { dirname, resolve, basename } from "node:path";
 import { randomUUID } from "node:crypto";
 
+const TRANSIENT_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+interface RenameRetryOptions {
+  maxAttempts?: number;
+  sleep?: (delayMs: number) => Promise<void>;
+}
+
+/** Retry the short-lived file locks commonly caused by Windows scanners. */
+export async function renameWithRetry(
+  rename: () => Promise<void>,
+  options: RenameRetryOptions = {},
+): Promise<void> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 8);
+  const sleep = options.sleep ?? ((delayMs: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await rename();
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!code || !TRANSIENT_RENAME_CODES.has(code) || attempt >= maxAttempts) {
+        throw error;
+      }
+      await sleep(Math.min(50 * 2 ** (attempt - 1), 1_000));
+    }
+  }
+}
+
 /**
  * HIGH-19 (B4): atomic write helper cho queue nghiệp vụ.
  *
@@ -41,7 +70,10 @@ export async function atomicWriteFile(
   // Rename atomic. Trên Windows nếu canonical tồn tại và đang bị lock
   // (hiếm với queue của agent), rename sẽ throw. Vẫn giữ tmp file để lần
   // sau retry.
-  await fsp.rename(tmp, filePath);
+  // Never unlink the canonical queue first: that would create a data-loss
+  // window on power failure. Retry the same atomic rename while a short-lived
+  // Windows file lock clears instead.
+  await renameWithRetry(() => fsp.rename(tmp, filePath));
 }
 
 /**

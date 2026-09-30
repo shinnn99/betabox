@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   atomicWriteFile,
   quarantineCorruptQueue,
+  renameWithRetry,
   SerializedWriter,
 } from "../src/atomic-file";
 
@@ -66,6 +67,40 @@ test("atomicWriteFile: tạo thư mục cha nếu chưa có", async () => {
   } finally {
     await rm(dir, { recursive: true });
   }
+});
+
+test("renameWithRetry retries transient Windows EPERM locks", async () => {
+  let calls = 0;
+  const delays: number[] = [];
+  await renameWithRetry(
+    async () => {
+      calls++;
+      if (calls < 3) throw Object.assign(new Error("file is locked"), { code: "EPERM" });
+    },
+    {
+      maxAttempts: 4,
+      sleep: async (delayMs) => {
+        delays.push(delayMs);
+      },
+    },
+  );
+  assert.equal(calls, 3);
+  assert.deepEqual(delays, [50, 100]);
+});
+
+test("renameWithRetry fails immediately for non-lock errors", async () => {
+  let calls = 0;
+  await assert.rejects(
+    renameWithRetry(
+      async () => {
+        calls++;
+        throw Object.assign(new Error("path missing"), { code: "ENOENT" });
+      },
+      { sleep: async () => assert.fail("must not sleep") },
+    ),
+    /path missing/,
+  );
+  assert.equal(calls, 1);
 });
 
 // ============================================================================

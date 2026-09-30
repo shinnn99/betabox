@@ -727,7 +727,7 @@ export function classifyErrorFromStderr(stderr: string): ErrorKind {
  * đẩy ra ngoài, (2) không còn số 9 chữ số để match nhầm mã trạng thái.
  * Log ra stdout vẫn giữ nguyên đầy đủ.
  */
-const NOISY_FFMPEG_LINE = /Non-monotonic DTS|Timestamps are unset in a packet|Last message repeated/i;
+const NOISY_FFMPEG_LINE = /Non-monotonic DTS|Timestamps are unset in a packet|Last message repeated|deprecated pixel format used/i;
 
 export function stripNoisyFfmpegLines(text: string): string {
   if (!NOISY_FFMPEG_LINE.test(text)) return text;

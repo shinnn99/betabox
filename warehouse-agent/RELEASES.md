@@ -66,6 +66,10 @@ tuần, 77% là nhiễu giải mã, 528 lần FATAL nằm im trong đó không a
 - **Chẩn đoán theo event lỗi:** UI không quét nền. Khi một event đã được đánh dấu
   bị timeout / mất mạng / HTTP 4xx hoặc 5xx (gồm 422), agent mới nhận lệnh; kết quả mang nguyên
   correlation + đối tượng lỗi và phần `focus` để platform ghép đúng lần bấm.
+- **Queue segment trên Windows:** atomic rename tự thử lại có giới hạn khi gặp
+  `EPERM`/`EACCES`/`EBUSY` do antivirus hoặc indexer giữ file trong chốc lát.
+  Agent không unlink queue trước rename nên vẫn an toàn nếu mất điện. Cảnh báo
+  `deprecated pixel format` của swscaler cũng được bỏ khỏi log lỗi QR vì vô hại.
 - **Sửa lỗi MẤT dữ liệu trong hàng đợi gửi lại** (tìm ra 26/09 khi soát sự
   cố Đại Kim). Ba hàng đợi — lượt quét, báo đoạn video, kết quả cắt clip —
   đều đọc bản chụp, gửi (mạng nghẽn: vài phút), rồi ghi đè cả file: dòng nào
