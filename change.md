@@ -39,6 +39,29 @@ docs([Module]):     Cập nhật tài liệu
 
 <!-- Thêm các task mới ở ĐÂY (phía trên các task cũ hơn) -->
 
+### [DON-CLIP-LOCAL] - `_clips/` tích tụ vô hạn: thêm nhóm 3 vào cleanup, hạn 7 ngày
+
+- **Mục tiêu:** clip bằng chứng đã cắt dưới `_clips/` trên máy kho không có hạn nào, tích tụ mãi. Segment thô thì có hạn (7–45 ngày), clip thì không.
+- **Vì sao trước đây không ai dọn — cả ba nơi đều cố ý tránh:** `cleanup-segments.ps1` loại trừ `_clips` khỏi vòng quét; `disk-guard.ts:708` ghi thẳng *"Dung lượng `_clips` — chỉ để báo cáo. **v1 KHÔNG xoá clip**"* (nó ĐO nhưng không được phép xoá); `clip-cutter.ts` chỉ dọn rác tạm `.concat.txt`/`.tmp.mp4`/`.bak.mp4`, file canonical không nằm trong nhánh nào. Hệ quả: khi `_clips/` là thứ làm đầy ổ thì disk guard chỉ biết báo, không gỡ được.
+- **ĐỀ XUẤT BAN ĐẦU CỦA TÔI SAI — số thật trong DB bác bỏ:** tôi định xoá clip local *"khi đã có `bucket_path`"*, nghe an toàn. Query thật: **78 clip `evicted`** (còn `clip_path`, `bucket_path` NULL) so với **31 clip `ready`**. Luật đó bỏ sót đúng phần lớn nhất mà vẫn tạo cảm giác đã dọn.
+- **Kiến trúc thật (đọc code, không suy từ tên):** bucket `order-proof-clips` chỉ là **cache 72 giờ** (`BUCKET_TTL_HOURS`). Hết hạn, `cleanupExpiredClips()` xoá object + set `status='evicted'`, `bucket_path=NULL`. User xem lại thì `/watch` **NHÁNH 3 tự enqueue cắt lại từ segment gốc**. Tức ba tầng KHÔNG ngang hàng: **segment là nguồn chân lý, bucket là cache, clip local là phái sinh**.
+- **Thiết kế cuối gọn hơn hẳn — bỏ hẳn tầng cloud:** vì clip cắt lại được từ segment, không cần cloud gửi danh sách, không cần cache mới, không migration. Chỉ sửa `cleanup-segments.ps1`: thêm nhóm 3 xoá `_clips/*.mp4` cũ hơn `-ClipRetentionDays` (mặc định **7**) theo tuổi file. Dọn được cả 78 clip `evicted` mà phương án cloud sẽ bỏ sót.
+- **Xác minh clip local thật sự không còn ai đọc** (4 vế): cloud phục vụ clip từ **bucket** qua `signed_url` ở `/watch`; route `/api/order-proof/clips/[clipId]` đọc `clip_path` local đã `@deprecated` 03/07 và **grep dương 0 caller** trong `src/`, `warehouse-agent/`, `scripts/` (chỉ 1 dòng README); cắt lại clip dùng input là `segment.file_path` **không** phải clip cũ; boot recovery chỉ cần `.tmp`/`.stale`/`.bak`, không cần canonical.
+- **RÀNG BUỘC CỨNG cài vào script:** hạn clip phải **NGẮN HƠN** hạn segment. Nếu `ClipRetentionDays >= retention_days` thì **KHÔNG xoá clip nào**, ghi ERROR kèm cách sửa — vì lúc đó clip quá hạn bị xoá trong khi segment nguồn cũng đã xoá là mất bằng chứng vĩnh viễn. Fail-loud cùng chiều nhóm 2.
+- **Rác tạm KHÔNG thuộc nhóm 3:** `.tmp.mp4`/`.bak.mp4` có chủ sở hữu khác — `cleanupOrphanClipArtifacts` lúc agent boot, còn phải hỏi backend xác nhận marker. Để script đứng ngoài, tránh hai nơi cùng quyết một file. Thư mục `_clips` không bao giờ bị dọn kể cả khi rỗng.
+- **Verify trên cây giả — 6 ca, mỗi ca đo CẢ HAI VẾ** (`dev-cleanup-fixture.ps1` nay dựng 4 loại file trong `_clips`: clip cũ / clip mới / rác tạm / `_quarantine`):
+  1. `-WhatIf`: chọn đúng 3 clip cũ, in `[_clips]` trong bảng tổng kết, **không xoá gì thật** (old=3, fresh=2 còn nguyên).
+  2. Xoá thật: clip cũ **3→0**; clip mới **giữ 2**, rác tạm **giữ 2**, `_quarantine` **giữ 2**, thư mục `_clips` còn.
+  3. Hạn clip 10 ≥ hạn segment 7 → ERROR, **clip còn nguyên 3**, nhưng segment vẫn dọn bình thường (chặn đúng phạm vi, không quá tay).
+  4. Hạn clip = hạn segment (7=7) → cũng chặn, clip còn 3.
+  5. Cache thiếu → `exit 2`, **nhóm 3 không chạy**, clip còn nguyên 3+2.
+  6. Không có thư mục `_clips` → log INFO bỏ qua, `exit 0`, segment vẫn dọn.
+- **Bắt thêm một lỗi không thuộc scope:** `dev-cleanup-fixture.ps1` vốn có 23 dòng ký tự có dấu mà **thiếu UTF-8 BOM** (có trước thay đổi này, không phải do tôi gây). Verify thật bằng PS 5.1: dòng 1 đọc ra `"D���ng cA�y gi���"` thay vì `"Dựng cây giả"` — đúng cọc "`.ps1` có Unicode phải có BOM". Chỉ nằm trong comment nên không gây lỗi chạy, nhưng đã thêm BOM và chạy lại đủ ca để chắc không vỡ. `cleanup-segments.ps1` đã có BOM từ trước, giữ nguyên.
+- **Files sửa:** `warehouse-agent/scripts/cleanup-segments.ps1`, `warehouse-agent/scripts/dev-cleanup-fixture.ps1`, `change.md`.
+- **KHÔNG kéo theo:** không migration, không đổi schema, không sửa cloud, không đổi hành vi dọn segment. Không cần bump `cleanup-task.xml` (tham số có default).
+- **Còn lại:** chưa bump version agent nên **chưa ra máy kho** — script nằm trong `{app}` do installer chép, cần cài đè mới có nhóm 3. Route deprecated `clips/[clipId]` vẫn còn và vẫn `stat(clip_path)` khi signed URL fail; prod ở VPS không cùng máy agent nên đường đó đã chết sẵn, **cố ý không gộp vào đợt này** (xử riêng theo cọc "grep marker không đủ kết luận dead code"). Chưa đo `_clips/` thật trên máy kho để biết đợt dọn đầu giải phóng bao nhiêu.
+- **Trạng thái:** Đã hoàn thành.
+
 ### [CLEANUP-NGUONG-IM-LANG] - Ngưỡng báo "task dọn segment đã chết" trôi khỏi lịch chạy: 15 ngày → 3 ngày
 
 - **Mục tiêu:** sửa ngưỡng cảnh báo im lặng của bộ dọn segment trên máy kho, đang rộng gấp ~5 lần ý định gốc.
