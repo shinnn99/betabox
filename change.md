@@ -39,6 +39,22 @@ docs([Module]):     Cập nhật tài liệu
 
 <!-- Thêm các task mới ở ĐÂY (phía trên các task cũ hơn) -->
 
+### [DO-ROUTE-DEPRECATED] - Route `clips/[clipId]` tồn đọng từ 03/07: đo trước, chưa xoá
+
+- **Mục tiêu:** route `GET /api/order-proof/clips/[clipId]` tự ghi `@deprecated` 03/07/2026 kèm hẹn *"xoá sau 1-2 tuần verify prod im lặng"* — đã 3 tháng, chưa ai verify, chưa ai xoá. Đóng lại bằng cách tạo ra dữ liệu để quyết định.
+- **Vì sao nổi lên:** nó là nơi **duy nhất còn đọc clip từ ổ local** (`clip_path`), nên khi thêm nhóm dọn `_clips/` phải trả lời "xoá clip có làm route này vỡ không". Trả lời: không — route ưu tiên bucket, chỉ rơi xuống đọc file local khi signed URL fail, mà nhánh đó *"chỉ work khi server cùng máy agent"*; prod ở VPS nên **đã chết trước khi có thay đổi nào**.
+- **Grep ba trục, đều 0 caller:** (1) đường dẫn nguyên văn — 0 trong `src/`, `warehouse-agent/`, `scripts/`, `tests/`; (2) **URL ghép chuỗi** (cọc "grep marker không đủ, phải grep dynamic pattern") — 2 chỗ động duy nhất đều trỏ `/watch` và `/watch/retry`, không ai dựng `/clips/`; (3) script verify + middleware + `next.config` — không nhắc tới. Trục "component dựng URL từ `clipId`" rỗng.
+- **Nhưng grep repo KHÔNG đủ để xoá, và đó là lý do gác lại thật:** đây là endpoint HTTP công khai, caller có thể nằm **ngoài repo** — deep-link cũ trong email, bookmark, lịch sử browser. Đúng thứ comment gốc lo. Chỉ log prod trả lời được.
+- **Đã thêm `console.warn` mỗi lượt gọi** (`[deprecated-route]` + `referer` + `user-agent` cắt 80 ký tự), đi lên cloud qua remote-logger. Im lặng 1-2 tuần → xoá có căn cứ; có dòng → tìm nguồn gọi trước.
+- **Đặt log TRƯỚC `requirePermission`, không phải sau:** một lượt gọi bị 401/403 vẫn là một lượt gọi. Log sau lớp quyền thì ca "có người dùng nhưng sai quyền" sẽ im lặng và đọc ra thành "không ai dùng" — tức phép đo tự tạo ra kết luận sai. `clipId` là UUID từ URL, không query DB trước khi log nên không lộ gì thêm.
+- **Sửa README đang mô tả sai:** dòng `- GET /api/order-proof/clips/[clipId]: lay thong tin/signed URL clip.` đọc như route còn dùng. Đã ghi rõ DEPRECATED, vì sao chết (server không còn cùng máy agent), đường đúng là `signed_url` từ `/watch`, và mốc đo.
+- **KHÔNG xoá route:** nếu xoá, deep-link còn sót nhận 404 trần thay vì 410 kèm hướng dẫn *"vào /dashboard/videos bấm Xem"*. Giữ nguyên hành vi tới khi có số liệu. Route cũng không phải lỗ bảo mật — có `requirePermission` + `getClipById` scoped theo org.
+- **Files sửa:** `src/app/api/order-proof/clips/[clipId]/route.ts`, `src/app/api/order-proof/README.md`, `change.md`.
+- **Một lỗi của tôi trong lúc verify, ghi lại để khỏi lặp:** chạy `npx tsx --test tests/*clip*.test.ts` ra **6 bài đỏ**, suýt báo là hồi quy. Thực chất là chạy sai lệnh — repo có runner riêng `pnpm test` với `--conditions=react-server`, thiếu cờ đó thì `server-only` ném lỗi import. Đã chứng minh bằng cách stash thay đổi và chạy lại: **vẫn đúng 6 bài đỏ** khi chưa có sửa đổi nào. Chạy `pnpm test` đúng lệnh: **842/842 xanh**.
+- **Kết quả kiểm tra:** `pnpm test` 842/842, typecheck cloud xanh.
+- **Còn lại:** chờ 1-2 tuần đọc `agent_log_events` / log VPS tìm `[deprecated-route]`. Im lặng thì xoá route + dòng README. Có dòng thì lần nguồn theo `referer`.
+- **Trạng thái:** Đã hoàn thành (phần đo; việc xoá route còn mở theo dữ liệu).
+
 ### [DON-CLIP-LOCAL] - `_clips/` tích tụ vô hạn: thêm nhóm 3 vào cleanup, hạn 7 ngày
 
 - **Mục tiêu:** clip bằng chứng đã cắt dưới `_clips/` trên máy kho không có hạn nào, tích tụ mãi. Segment thô thì có hạn (7–45 ngày), clip thì không.
