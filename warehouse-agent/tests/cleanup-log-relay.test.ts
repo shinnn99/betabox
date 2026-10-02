@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, appendFile, readFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { CleanupLogRelay, analyzeCleanupLines } from "../src/cleanup-log-relay";
+import {
+  CleanupLogRelay,
+  analyzeCleanupLines,
+  DEFAULT_SILENCE_DAYS,
+} from "../src/cleanup-log-relay";
 
 /**
  * Relay log cleanup: phát lại nội dung + báo im lặng.
@@ -196,6 +200,76 @@ test("check: log mới → KHÔNG báo im lặng", async () => {
       { silenceThresholdMs: 15 * DAY_MS },
     ).check();
     assert.equal(cap.errors.filter((l) => l.includes("IM LẶNG")).length, 0);
+  } finally {
+    cap.restore();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Ngưỡng MẶC ĐỊNH — bám chu kỳ dọn hàng ngày trong betacom-agent.iss.
+//
+// Vì sao khoá riêng: ngưỡng gốc 15 ngày tính theo lịch Chủ nhật hàng tuần.
+// Đợt hàng hoàn đổi lịch sang hàng ngày, ngưỡng nằm ở file khác nên bị bỏ
+// lại — task chết 14 đêm vẫn im. Mọi test im lặng đều TRUYỀN ngưỡng tường
+// minh, nên default sai vẫn xanh hết. Ba bài dưới đây đóng đúng khe đó: hai
+// bài đi qua default thật (không truyền opts), một bài khoá con số.
+// ---------------------------------------------------------------------------
+
+test("ngưỡng mặc định = 3 ngày (2 chu kỳ dọn hàng ngày + đệm)", () => {
+  assert.equal(
+    DEFAULT_SILENCE_DAYS,
+    3,
+    "Đổi lịch dọn trong installer/betacom-agent.iss (<DaysInterval>) thì phải " +
+      "đổi ngưỡng này theo công thức ≈2 chu kỳ + đệm, không giữ số cũ",
+  );
+});
+
+test("default: log cũ 4 ngày → BÁO im lặng (không truyền ngưỡng)", async () => {
+  const dir = await makeDir();
+  const cap = captureConsole();
+  try {
+    const logPath = path.join(dir, "cleanup.log");
+    await writeFile(logPath, SUMMARY + "\n", "utf8");
+    // 4 ngày > ngưỡng mặc định 3 ngày. Với ngưỡng cũ 15 ngày bài này ĐỎ.
+    const old = (Date.now() - 4 * DAY_MS) / 1000;
+    await utimes(logPath, old, old);
+
+    await new CleanupLogRelay({
+      logPath,
+      statePath: path.join(dir, "state.json"),
+    }).check();
+
+    assert.ok(
+      cap.errors.some((l) => l.includes("IM LẶNG")),
+      "task dọn vắng 4 đêm phải báo động bằng ngưỡng mặc định",
+    );
+  } finally {
+    cap.restore();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("default: log cũ 2 ngày → KHÔNG báo (lỡ một hai đêm là chuyện thường)", async () => {
+  const dir = await makeDir();
+  const cap = captureConsole();
+  try {
+    const logPath = path.join(dir, "cleanup.log");
+    await writeFile(logPath, SUMMARY + "\n", "utf8");
+    // 2 ngày < ngưỡng 3 ngày: mất điện / máy tắt đúng 03:00 không được kêu.
+    const old = (Date.now() - 2 * DAY_MS) / 1000;
+    await utimes(logPath, old, old);
+
+    await new CleanupLogRelay({
+      logPath,
+      statePath: path.join(dir, "state.json"),
+    }).check();
+
+    assert.equal(
+      cap.errors.filter((l) => l.includes("IM LẶNG")).length,
+      0,
+      "vắng 2 đêm chưa phải báo động — ngưỡng không được nhạy quá",
+    );
   } finally {
     cap.restore();
     await rm(dir, { recursive: true, force: true });

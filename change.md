@@ -39,6 +39,23 @@ docs([Module]):     Cập nhật tài liệu
 
 <!-- Thêm các task mới ở ĐÂY (phía trên các task cũ hơn) -->
 
+### [CLEANUP-NGUONG-IM-LANG] - Ngưỡng báo "task dọn segment đã chết" trôi khỏi lịch chạy: 15 ngày → 3 ngày
+
+- **Mục tiêu:** sửa ngưỡng cảnh báo im lặng của bộ dọn segment trên máy kho, đang rộng gấp ~5 lần ý định gốc.
+- **Bối cảnh phát hiện:** đang rà câu hỏi "hệ đã có cơ chế dọn clip/segment theo thời gian chưa". Cơ chế dọn **có đủ** và chạy tốt: `cleanup-segments.ps1` qua Task Scheduler `BetacomAgentCleanup` hàng ngày 03:00 (`WakeToRun=true`), hai nhóm hạn (hàng hoàn 7 ngày theo `retention-plan.json`, còn lại theo `retention_days` của org), fail-loud/fail-safe ngược chiều nhau có chủ ý. Chỗ hỏng không nằm ở việc dọn mà ở **lớp giám sát việc dọn**.
+- **Bản chất lỗi — một con số bị bỏ lại sau khi lịch đổi:** ngưỡng `silenceThresholdMs` sinh ra ở commit `964c1c4` với công thức ghi rõ trong comment "15 ngày = **2 chu kỳ tuần** + đệm", đúng cho lịch gốc 03:00 **Chủ nhật hàng tuần**. Commit `ba8c405` (đợt hàng hoàn) đổi lịch sang **hàng ngày** vì segment hàng hoàn chỉ giữ 7 ngày — đổi đúng — nhưng ngưỡng nằm ở file khác (`src/cleanup-log-relay.ts`) nên không ai rà theo. Hệ quả: task dọn bị tắt/xoá hoặc máy tắt đúng 03:00 thì **14 đêm đầu KHÔNG có cảnh báo nào**, nhìn từ Hà Nội giống y "bình thường". Cùng họ với ca syscheck chết 27 ngày và ghi hình Đại Kim chết 8 ngày.
+- **Đây là suy giảm lớp giám sát, KHÔNG phải mất dữ liệu trực tiếp** — ghi đúng mức: dọn không chạy thì đĩa đầy dần và disk guard là lưới đỡ. Nhưng lưới đó **không gỡ được `_clips/`** (`disk-guard.ts`: "v1 KHÔNG xoá clip"), nên hai cọc cộng lại xấu hơn từng cái riêng.
+- **Giữ công thức thay vì giữ con số:** `DEFAULT_SILENCE_DAYS = 3` ≈ 2 chu kỳ dọn hàng ngày + đệm một lượt. Lỡ 1–2 đêm (mất điện, máy tắt) vẫn im; đêm thứ ba mới báo. Export hằng số ra ngoài để test khoá được.
+- **Vì sao con số trôi được mà CI không bắt:** cả 3 bài test im lặng đang có đều **truyền ngưỡng tường minh** `{ silenceThresholdMs: 15 * DAY_MS }`, nên giá trị default sai vẫn xanh hết. Đã thêm 3 bài đóng đúng khe đó — 2 bài đi qua default thật (không truyền `opts`), 1 bài khoá con số kèm thông báo lỗi chỉ sang `<DaysInterval>` trong `.iss`.
+- **Chứng minh bài test thật sự cắn (không xanh vì ăn may):** tạm đặt lại `DEFAULT_SILENCE_DAYS = 15` → **đúng 2 bài mới ĐỎ** ("ngưỡng mặc định = 3 ngày", "log cũ 4 ngày → BÁO im lặng"), 13 bài còn lại xanh. Vế âm cũng đúng: bài "log cũ 2 ngày → KHÔNG báo" xanh ở **cả hai** cấu hình, tức nó không xanh nhờ ngưỡng rộng. Trả về 3 → 15/15 xanh.
+- **Sửa cả phần chữ người trực đọc,** không chỉ comment nội bộ: 2 tin nhắn đi lên cloud qua `agent_log_events` đang mô tả lịch cũ — cảnh báo IM LẶNG nói "Script dọn hàng **tuần**", và nhánh chưa-có-log nói "bất thường nếu đã chạy quá **2 tuần**" (hướng người trực chờ thêm 2 tuần trong khi 2 ngày đã là bất thường). Thêm tên task `"BetacomAgentCleanup"` vào cảnh báo để khỏi phải tra.
+- **Chống lặp lại:** thêm khối comment đầu `cleanup-log-relay.ts` ghi rõ ngưỡng **bám** `<DaysInterval>` trong `installer/betacom-agent.iss`, kèm lịch sử vì sao số từng trôi. Giữ 2 dòng nhắc lịch cũ "Chủ nhật hàng tuần" ở đúng khối lịch sử này — có chủ đích, không phải sót.
+- **Files sửa:** `warehouse-agent/src/cleanup-log-relay.ts`, `warehouse-agent/tests/cleanup-log-relay.test.ts`, `change.md`.
+- **Kết quả kiểm tra:** `cleanup-log-relay.test.ts` **15/15** xanh (12 cũ + 3 mới), typecheck agent xanh.
+- **KHÔNG kéo theo:** không migration, không đổi schema, không đổi hành vi dọn. `checkIntervalMs` giữ 6 giờ — cảnh báo trễ tối đa 6 giờ sau ngưỡng 3 ngày, không đáng kể.
+- **Còn lại:** chưa bump version agent (chốt gom cùng các việc khác trong ngày rồi phát hành một lần) nên **bản sửa chưa ra máy kho**; ngưỡng mới chỉ có hiệu lực sau khi thay file chạy. Cọc `_clips/` tích tụ vô hạn vẫn mở — xem mục dưới.
+- **Trạng thái:** Đã hoàn thành.
+
 ### [GOM-VE-MAIN + AGENT-0.13.2] - Gộp nhánh `2-camera`, phát hành 0.13.2 thay 0.13.1
 
 - **Mục tiêu:** gom hết về `main`. Lúc `git fetch` phát hiện nhánh `2-camera` có commit `bee2158` của Huy (28/09, *retry locked queue renames on Windows*) chưa vào `main`.

@@ -6,7 +6,7 @@ import { RepeatNotifier } from "./disk-guard";
  * Phát lại log `cleanup-segments.ps1` lên cloud + báo động khi nó IM LẶNG.
  *
  * Cảnh:
- *   Script dọn chạy hàng tuần qua Task Scheduler, ghi log ra
+ *   Script dọn chạy hàng ngày (03:00) qua Task Scheduler, ghi log ra
  *   `<AgentDir>\logs\cleanup-segments.log`. KHÔNG AI chuyển file đó đi đâu.
  *   Ngày 2026-08-23 là lần đầu script thực sự phải xoá thứ gì đó — trên kho
  *   khách, không có ai bấm nút — và ba kết cục (xoá đúng, không xoá gì,
@@ -29,9 +29,18 @@ import { RepeatNotifier } from "./disk-guard";
  *
  * Điểm mtime KHÔNG trả lời được, nên phần nội dung phải gánh: một lượt
  * `exit 2` cũng ghi log, cũng làm mtime tươi. Mà `exit 2` là trạng thái TỰ
- * DUY TRÌ — cache thiếu tuần này thì tuần sau vẫn thiếu, script sẽ exit 2
- * mãi trong khi mtime tuần nào cũng mới. Vì vậy có nhánh `ranWithoutCleanup`
+ * DUY TRÌ — cache thiếu đêm nay thì đêm mai vẫn thiếu, script sẽ exit 2
+ * mãi trong khi mtime đêm nào cũng mới. Vì vậy có nhánh `ranWithoutCleanup`
  * riêng: chạy mà KHÔNG dọn được là báo động, không phải tin vui.
+ *
+ * NGƯỠNG IM LẶNG BÁM CHU KỲ DỌN — đổi một chỗ phải rà chỗ kia:
+ *   Ngưỡng được suy từ lịch chạy trong `installer/betacom-agent.iss`
+ *   (`<DaysInterval>`), không phải một con số độc lập. Lịch gốc là Chủ nhật
+ *   hàng tuần với ngưỡng 15 ngày (≈2 chu kỳ + đệm); đợt hàng hoàn đổi lịch
+ *   sang hàng ngày nhưng ngưỡng nằm ở file này nên bị bỏ lại, thành ra task
+ *   chết 14 đêm vẫn im. Giữ công thức, đừng giữ con số: ngưỡng ≈ 2 chu kỳ
+ *   dọn + đệm một lượt. Lịch hàng ngày → 3 ngày (xem DEFAULT_SILENCE_DAYS,
+ *   có test khoá giá trị).
  */
 
 export interface CleanupLogAnalysis {
@@ -75,12 +84,15 @@ export interface CleanupLogRelayDeps {
 }
 
 export interface CleanupLogRelayOptions {
-  /** Nhịp kiểm. Mặc định 6 giờ — script chạy hàng tuần, không cần dày hơn. */
+  /**
+   * Nhịp kiểm. Mặc định 6 giờ — đủ dày so với ngưỡng tính bằng ngày; cảnh
+   * báo trễ tối đa 6 giờ sau khi quá ngưỡng, không đáng kể.
+   */
   checkIntervalMs?: number;
   /**
-   * Ngưỡng im lặng. Mặc định 15 ngày = 2 chu kỳ tuần + đệm, để một lần lỡ
-   * (máy tắt đúng Chủ nhật) không báo động ngay, nhưng hai lần liên tiếp thì
-   * có.
+   * Ngưỡng im lặng. Mặc định {@link DEFAULT_SILENCE_DAYS} ngày = 2 chu kỳ
+   * dọn hàng ngày + đệm, để lỡ một hai đêm (mất điện, máy tắt đúng 03:00)
+   * không báo động ngay, nhưng đêm thứ ba thì có.
    */
   silenceThresholdMs?: number;
   /** Trần số dòng ERROR phát mỗi lượt, chống ngập nếu log đầy lỗi. */
@@ -88,6 +100,15 @@ export interface CleanupLogRelayOptions {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Số ngày im lặng trước khi báo động, suy từ chu kỳ dọn HÀNG NGÀY.
+ *
+ * Export để test khoá được giá trị: con số này từng trôi khỏi lịch chạy mà
+ * không ai phát hiện, vì mọi test đều truyền ngưỡng tường minh nên default
+ * sai vẫn xanh.
+ */
+export const DEFAULT_SILENCE_DAYS = 3;
 
 export class CleanupLogRelay {
   private timer: NodeJS.Timeout | null = null;
@@ -103,7 +124,7 @@ export class CleanupLogRelay {
     opts: CleanupLogRelayOptions = {},
   ) {
     this.checkIntervalMs = opts.checkIntervalMs ?? 6 * 60 * 60_000;
-    this.silenceThresholdMs = opts.silenceThresholdMs ?? 15 * DAY_MS;
+    this.silenceThresholdMs = opts.silenceThresholdMs ?? DEFAULT_SILENCE_DAYS * DAY_MS;
     this.maxEmitLines = opts.maxEmitLines ?? 20;
   }
 
@@ -132,16 +153,17 @@ export class CleanupLogRelay {
         stat = await fs.stat(this.deps.logPath);
       } catch {
         // Chưa có log = script chưa chạy lần nào. Ở máy vừa cài thì bình
-        // thường (chờ tới Chủ nhật đầu tiên); ở máy chạy lâu rồi thì bất
+        // thường (chờ tới 03:00 đầu tiên); ở máy chạy lâu rồi thì bất
         // thường. Không có mốc nào để phân biệt tại chỗ, nên báo MỘT LẦN
         // lúc khởi động thay vì kêu định kỳ — tránh máy mới cài kêu suốt
-        // tuần đầu.
+        // đêm đầu.
         if (!this.warnedMissing) {
           this.warnedMissing = true;
           console.warn(
             `[cleanup-log] chưa có log dọn segment tại ${this.deps.logPath} — ` +
-              `script cleanup chưa chạy lần nào. Bình thường nếu agent vừa cài; ` +
-              `bất thường nếu đã chạy quá 2 tuần (kiểm Task Scheduler).`,
+              `script cleanup chưa chạy lần nào. Bình thường nếu agent vừa cài ` +
+              `(chờ 03:00 đầu tiên); bất thường nếu máy đã chạy qua một đêm ` +
+              `(kiểm Task Scheduler).`,
           );
         }
         return;
@@ -153,9 +175,10 @@ export class CleanupLogRelay {
           console.error(
             `[cleanup-log] IM LẶNG: log dọn segment không được cập nhật ` +
               `${Math.round(ageMs / DAY_MS)} ngày (ngưỡng ` +
-              `${Math.round(this.silenceThresholdMs / DAY_MS)}). Script dọn hàng ` +
-              `tuần nhiều khả năng KHÔNG CHẠY — kiểm Task Scheduler trên máy kho. ` +
-              `Không dọn thì đĩa đầy dần cho tới khi disk guard phải kích hoạt.`,
+              `${Math.round(this.silenceThresholdMs / DAY_MS)}). Script dọn chạy ` +
+              `hàng ngày 03:00 nên nhiều khả năng KHÔNG CHẠY — kiểm Task Scheduler ` +
+              `("BetacomAgentCleanup") trên máy kho. Không dọn thì đĩa đầy dần cho ` +
+              `tới khi disk guard phải kích hoạt.`,
           );
         }
       } else if (this.notifier.clear("silence")) {
@@ -196,7 +219,7 @@ export class CleanupLogRelay {
         console.error(
           "[cleanup-log] script dọn CÓ CHẠY nhưng KHÔNG dọn được lượt nào " +
             "(exit 2). Đây là trạng thái tự duy trì: nguyên nhân còn đó thì " +
-            "tuần sau vẫn hỏng, trong khi mtime log vẫn tươi nên tín hiệu im " +
+            "đêm mai vẫn hỏng, trong khi mtime log vẫn tươi nên tín hiệu im " +
             "lặng KHÔNG bắt được. Xử nguyên nhân ở dòng ERROR bên trên.",
         );
       } else if (analysis.lastSummary !== null) {
