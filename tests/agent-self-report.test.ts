@@ -86,7 +86,12 @@ test("bóc: bỏ trường lạ, kẹp số âm, chuẩn hoá giờ, giới hạ
     cameras: [
       ...Array.from({ length: 100 }, (_, i) => ({ code: `c${i}`, recording: true })),
     ],
-    disk: { free_bytes: 5 * GB, total_bytes: 2 * GB, bytes_per_day: -1 },
+    disk: {
+      free_bytes: 5 * GB,
+      total_bytes: 2 * GB,
+      bytes_per_day: -1,
+      recording_bytes: 3 * GB,
+    },
     queues: { scans_pending: 3, clips_pending: "many" },
     last_qr_success_at: "2026-09-26T08:00:00+07:00",
     capabilities: ["adaptive_clip_bitrate", 7, "adaptive_clip_bitrate"],
@@ -96,6 +101,7 @@ test("bóc: bỏ trường lạ, kẹp số âm, chuẩn hoá giờ, giới hạ
   assert.equal(r.cameras.length, 64);
   assert.equal(r.disk!.free_bytes, 2 * GB, "trống không được vượt tổng");
   assert.equal(r.disk!.bytes_per_day, null);
+  assert.equal(r.disk!.recording_bytes, 2 * GB, "thư mục video không được vượt tổng ổ");
   assert.deepEqual(r.queues, { scans_pending: 3, clips_pending: null, uploads_pending: null });
   assert.equal(r.last_qr_success_at, "2026-09-26T01:00:00.000Z");
   assert.deepEqual(r.capabilities, ["adaptive_clip_bitrate"]);
@@ -105,8 +111,13 @@ test("so phiên bản và số ngày ổ còn", () => {
   assert.ok(compareVersions("0.12.1", "0.13.0") < 0);
   assert.ok(compareVersions("0.13.0", "0.13.0") === 0);
   assert.ok(compareVersions("1.0.0", "0.13.9") > 0);
-  assert.equal(diskDaysLeft({ free_bytes: 100 * GB, total_bytes: 465 * GB, bytes_per_day: 31 * GB }), 3.2);
-  assert.equal(diskDaysLeft({ free_bytes: 1, total_bytes: 2, bytes_per_day: null }), null);
+  assert.equal(diskDaysLeft({
+    free_bytes: 100 * GB,
+    total_bytes: 465 * GB,
+    bytes_per_day: 31 * GB,
+    recording_bytes: null,
+  }), 3.2);
+  assert.equal(diskDaysLeft({ free_bytes: 1, total_bytes: 2, bytes_per_day: null, recording_bytes: null }), null);
 });
 
 // ── Ổ đĩa máy kho ──────────────────────────────────────────────────────

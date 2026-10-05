@@ -36,7 +36,13 @@ export interface SelfReportInputs {
     lastSegmentAt: Date | null;
     badFramesLastHour: number | null;
   }>;
-  disk: { freeBytes: number; totalBytes: number; bytesPerRecordingHour: number | null } | null;
+  disk: {
+    freeBytes: number;
+    totalBytes: number;
+    bytesPerRecordingHour: number | null;
+    /** Thư mục ghi hình chiếm bao nhiêu. null = lượt này chưa đo. */
+    recordingBytes?: number | null;
+  } | null;
   scansPending: number | null;
   lastQrSuccessAt: Date | null;
   configFingerprint: string | null;
@@ -67,6 +73,11 @@ export function buildSelfReport(input: SelfReportInputs): Record<string, unknown
             input.disk.bytesPerRecordingHour && input.disk.bytesPerRecordingHour > 0
               ? Math.round(input.disk.bytesPerRecordingHour * 24)
               : null,
+          // Riêng phần video chiếm, tách khỏi "đã dùng" của TOÀN ổ. Hai con số
+          // trả lời hai câu khác nhau: toàn ổ cho cảnh báo sắp đầy (ffmpeg chết
+          // bất kể ai làm đầy), còn số này cho câu "video của tôi chiếm bao
+          // nhiêu". null = chưa đo được, KHÔNG phải 0.
+          recording_bytes: input.disk.recordingBytes ?? null,
         }
       : null,
     // Clip chờ cắt / chờ tải lên: agent không có hàng đợi riêng — lệnh cắt

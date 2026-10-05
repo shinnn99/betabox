@@ -6,6 +6,7 @@
  *
  * Không giữ trạng thái — dựng và kiểm riêng được.
  */
+import Link from "next/link";
 import { AlertTriangle, Loader2, Stethoscope } from "lucide-react";
 import { ago } from "@/lib/format/time-vn";
 
@@ -66,9 +67,19 @@ export default function FleetTable({ agents, latestVersion, now, busyId, onDiagn
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {agents.map((a) => (
-              <FleetRow key={a.id} a={a} latestVersion={latestVersion} now={now} busy={busyId === a.id} disabled={busyId !== null} onDiagnose={onDiagnose} onViewDiagnostics={onViewDiagnostics} />
-            ))}
+            {agents.length === 0 ? (
+              // Bảng trống trơn không chữ bị đọc thành "trang hỏng". Nói rõ là
+              // KHÔNG có máy nào, chứ không để người xem tự đoán.
+              <tr>
+                <td colSpan={8} className="px-3 py-8 text-center text-sm text-slate-500">
+                  Chưa có máy kho nào được khai trong hệ thống.
+                </td>
+              </tr>
+            ) : (
+              agents.map((a) => (
+                <FleetRow key={a.id} a={a} latestVersion={latestVersion} now={now} busy={busyId === a.id} disabled={busyId !== null} onDiagnose={onDiagnose} onViewDiagnostics={onViewDiagnostics} />
+              ))
+            )}
           </tbody>
         </table>
       </div>
@@ -99,7 +110,12 @@ function FleetRow({
     <tr className={a.status === "active" ? "" : "opacity-60"}>
       <td className="px-3 py-2 align-top">
         <p className="font-medium text-slate-800">{a.code ?? "—"}</p>
-        <p className="text-[11px] text-slate-400">{a.orgName}{a.status === "active" ? "" : ` · ${a.status}`}</p>
+        <p className="text-[11px] text-slate-400">
+          <Link href={`/platform/orgs/${a.orgId}`} className="hover:text-slate-700 hover:underline">
+            {a.orgName}
+          </Link>
+          {a.status === "active" ? "" : ` · ${a.status}`}
+        </p>
       </td>
       <td className="px-3 py-2 align-top text-xs">
         {a.version ? (
@@ -149,11 +165,17 @@ function FleetRow({
         {a.openIncidents.crit + a.openIncidents.warn === 0 ? (
           <span className="text-slate-400">0</span>
         ) : (
-          <span className="inline-flex items-center gap-1">
+          // Thấy "3 crit" mà không đi tiếp được là ngõ cụt: link sang trang Sự
+          // cố đã lọc sẵn đúng kho của máy này.
+          <Link
+            href={`/platform/incidents?org=${a.orgId}`}
+            className="inline-flex items-center gap-1 hover:underline"
+            title={`Xem sự cố đang mở của ${a.orgName}`}
+          >
             <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
             {a.openIncidents.crit > 0 && <span className="text-red-700 font-medium">{a.openIncidents.crit} crit</span>}
             {a.openIncidents.warn > 0 && <span className="text-amber-700">{a.openIncidents.warn} warn</span>}
-          </span>
+          </Link>
         )}
       </td>
       <td className="px-3 py-2 align-top text-right">

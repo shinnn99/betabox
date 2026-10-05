@@ -12,6 +12,7 @@ import {
   Wrench,
   Server,
   Settings,
+  HardDrive,
   type LucideIcon,
 } from "lucide-react";
 
@@ -98,6 +99,15 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Máy trạm kho",
         href: "/dashboard/agents",
         icon: Server,
+      },
+      // Sức chứa bằng chứng (02/10/2026): ổ máy kho còn mấy ngày, cấu hình số
+      // ngày lưu có vừa ổ không, clip đang nằm trên máy chủ. Đặt cạnh "Máy
+      // trạm kho" vì cùng nói về một cái máy, và dùng chung quyền.
+      {
+        id: "storage",
+        label: "Dung lượng lưu trữ",
+        href: "/dashboard/storage",
+        icon: HardDrive,
       },
       {
         id: "staff",

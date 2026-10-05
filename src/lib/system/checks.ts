@@ -486,8 +486,13 @@ type Admin = ReturnType<typeof createAdminClient>;
  * nguy hơn để trống — người trực sẽ tin ô màu xanh.
  *
  * Đường đi tiếp (chờ chốt): đếm lượt cấp signed URL × dung lượng clip để
- * tự ước lượng egress Storage. Cần bảng đếm mới + cột dung lượng clip
- * (hiện `order_proof_clips` không có cột nào ghi bytes).
+ * tự ước lượng egress Storage. Cần bảng đếm lượt cấp URL — cột dung lượng
+ * thì ĐÃ CÓ (`order_proof_clips.clip_size_bytes`, kiểm 02/10/2026: 31/31 clip
+ * trên bucket đều có số). Câu "chưa có cột nào ghi bytes" ở bản trước là sai.
+ *
+ * Lưu ý khi làm: `clip_size_bytes` KHÔNG phủ hết bucket. Đo 02/10/2026 thấy
+ * bucket 34 object/1421 MB còn bảng clip chỉ nhận 31/1354 MB. Muốn con số
+ * đúng phải đi từ `storage.objects` — xem `src/lib/system/storage-usage.ts`.
  */
 export function checkEgress(): SystemCheck {
   return {
@@ -2292,13 +2297,16 @@ export async function checkVpsResources(deps: {
  * CHƯA CÓ NGUỒN SỐ LIỆU — cùng một bức tường với egress, và cũng là kết
  * luận từ kiểm chứng chứ không phải bỏ sót.
  *
- * Tử số về nguyên tắc đếm được (cộng `metadata->>'size'` của storage.objects),
- * nhưng đó là quét toàn bucket trong một route chạy nền mỗi 15 phút — vi
- * phạm thẳng ràng buộc "truy vấn nhẹ" ở đầu file. MẪU SỐ thì không có API
- * nào trả: hạn mức lưu trữ của gói chỉ tồn tại ở trang billing.
+ * TỬ SỐ thì nay đo được, và đã có trang riêng cho nó: /platform/storage đọc
+ * `storage.objects` qua RPC `storage_usage_objects` (xem
+ * `src/lib/system/storage-usage.ts`). Nhưng đó là trang người MỞ RA XEM, chạy
+ * một lượt mỗi lần bấm — khác hẳn route tự kiểm nền chạy mỗi 15 phút, nơi
+ * quét toàn bucket vi phạm thẳng ràng buộc "truy vấn nhẹ" ở đầu file.
  *
- * Một ô ghi "1.2 TB" mà không có "trên bao nhiêu" thì không trả lời được
- * câu duy nhất người trực cần hỏi — sắp đầy chưa. Để trống và nói thẳng.
+ * MẪU SỐ vẫn không có API nào trả: hạn mức lưu trữ của gói chỉ tồn tại ở
+ * trang billing. Mà một ô ghi "1.2 TB" không kèm "trên bao nhiêu" thì không
+ * trả lời được câu duy nhất người trực cần hỏi — sắp đầy chưa. Nên mục này
+ * vẫn để trống ở đây và nói thẳng, thay vì bắn một con số không có ngưỡng.
  */
 export function checkStorageUsage(): SystemCheck {
   return {

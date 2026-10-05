@@ -268,6 +268,45 @@ test("readVolumeUsage: trả free/total > 0 cho thư mục thật", async () => 
   }
 });
 
+test("đo riêng thư mục video: cộng toàn bộ file bên trong, không chỉ segment mp4", async () => {
+  const root = await makeRoot();
+  try {
+    await makeSegment(root, "CAM1", Date.now() - DAY_MS, "segment.mp4", 2048);
+    await mkdir(path.join(root, "_clips"), { recursive: true });
+    await writeFile(path.join(root, "_clips", "clip.mp4"), Buffer.alloc(4096));
+    await mkdir(path.join(root, "logs"), { recursive: true });
+    await writeFile(path.join(root, "logs", "cleanup.log"), Buffer.alloc(128));
+
+    const guard = new DiskGuard(
+      { recordingRoot: root, getActiveCameras: () => [], isCutInFlight: () => false },
+      { absoluteFloorBytes: 1 },
+    );
+    await guard.tick();
+
+    assert.equal(
+      guard.getStatus()?.recordingBytes,
+      2048 + 4096 + 128,
+      "phải phản ánh đúng tổng dung lượng thực của RECORDING_DIR",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("đo riêng thư mục video: thư mục tồn tại nhưng trống trả 0, không trả chưa biết", async () => {
+  const root = await makeRoot();
+  try {
+    const guard = new DiskGuard(
+      { recordingRoot: root, getActiveCameras: () => [], isCutInFlight: () => false },
+      { absoluteFloorBytes: 1 },
+    );
+    await guard.tick();
+    assert.equal(guard.getStatus()?.recordingBytes, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 // ============================================================================
 // tick() — hai nửa
 // ============================================================================

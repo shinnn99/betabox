@@ -2029,7 +2029,12 @@ async function main(): Promise<void> {
           badFramesLastHour: badFrames.get(cameraId) ?? null,
         })),
         disk: disk
-          ? { freeBytes: disk.freeBytes, totalBytes: disk.totalBytes, bytesPerRecordingHour: disk.bytesPerRecordingHour }
+          ? {
+              freeBytes: disk.freeBytes,
+              totalBytes: disk.totalBytes,
+              bytesPerRecordingHour: disk.bytesPerRecordingHour,
+              recordingBytes: disk.recordingBytes,
+            }
           : null,
         scansPending: await queue.count().catch(() => null),
         lastQrSuccessAt: qrScanService.lastSuccessAt(),

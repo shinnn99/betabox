@@ -91,7 +91,15 @@ interface OrgDetail {
     status: string;
     last_seen_at: string | null;
     online: boolean;
+    /** null = máy chạy bản cũ chưa biết tự khai (≤ 0.12.x). */
+    version: string | null;
+    outdated: boolean;
+    /** `recording: null` = chưa tự khai, KHÁC với 0 camera đang ghi. */
+    cameras: { declared: number; recording: number | null; notRecording: string[] };
+    disk: { freeGb: number; freePct: number; daysLeft: number | null } | null;
+    queues: { scans_pending?: number } | null;
   }>;
+  latest_agent_version: string;
   members: Array<{
     user_id: string;
     full_name: string | null;
@@ -147,18 +155,33 @@ export default function PlatformOrgDetailPage({
   const [error, setError] = useState("");
   const [tab, setTab] = useState<TabKey>("overview");
 
+  // KHÔNG setLoading(true) ở đầu hàm: lượt đầu do effect gọi, mà state
+  // `loading` đã khởi tạo true rồi — bật lại đồng bộ trong thân effect là một
+  // vòng render thừa (react-hooks/set-state-in-effect). Nút Làm mới tự bật
+  // spinner trước khi gọi. Cùng cách xử lý với trang Tình trạng hệ thống.
   const load = useCallback(async () => {
-    setLoading(true);
-    const res = await fetch(`/api/platform/orgs/${id}`, { cache: "no-store" });
-    const body = await res.json();
-    if (!res.ok) {
-      setError(body.message ?? body.error ?? "Không tải được chi tiết tổ chức.");
+    try {
+      const res = await fetch(`/api/platform/orgs/${id}`, { cache: "no-store" });
+      const body = await res.json();
+      if (!res.ok) {
+        // 404 phải nói đúng là "không có tổ chức này", không gộp vào câu lỗi
+        // chung: gộp thì người trực đi kiểm mạng và quyền, trong khi sự thật
+        // là id sai hoặc tổ chức đã bị xoá.
+        setError(
+          res.status === 404
+            ? "Không tìm thấy tổ chức này — có thể đã bị xoá, hoặc đường dẫn sai."
+            : (body.message ?? body.error ?? "Không tải được chi tiết tổ chức."),
+        );
+        return;
+      }
+      setData(body as OrgDetail);
+      setError("");
+    } catch (err) {
+      // Mạng rớt cũng phải nói ra chứ không để trang treo ở "Đang tải".
+      setError(err instanceof Error ? err.message : "Lỗi mạng.");
+    } finally {
       setLoading(false);
-      return;
     }
-    setData(body as OrgDetail);
-    setError("");
-    setLoading(false);
   }, [id]);
 
   useEffect(() => {
@@ -204,7 +227,16 @@ export default function PlatformOrgDetailPage({
             {/* Grid 2 cột: main (2/3) + sidebar (1/3). Trên mobile stack. */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               <div className="lg:col-span-2 space-y-4">
-                {tab === "overview" && <OverviewMain data={data} onReload={load} />}
+                {tab === "overview" && (
+                  <OverviewMain
+                    data={data}
+                    onReload={() => {
+                      setLoading(true);
+                      void load();
+                    }}
+                    reloading={loading}
+                  />
+                )}
                 {tab === "members" && <MembersTab members={data.members} />}
                 {tab === "audit" && (
                   <AuditTab
@@ -217,7 +249,7 @@ export default function PlatformOrgDetailPage({
               <div className="space-y-4">
                 <OrgInfoCard data={data} />
                 <ConfigCard data={data} />
-                <AdminActionsCard />
+                <AdminActionsCard onOpenAudit={() => setTab("audit")} />
               </div>
             </div>
           </>
@@ -383,11 +415,14 @@ function TabBar({
 function OverviewMain({
   data,
   onReload,
+  reloading,
 }: {
   data: OrgDetail;
   onReload: () => void;
+  reloading: boolean;
 }) {
   const { totals, organization: org, agents, agent_logs, recent } = data;
+  const latestVersion = data.latest_agent_version;
   const allAgentsOnline =
     totals.agents_total > 0 && totals.agents_online === totals.agents_total;
   const noAgents = totals.agents_total === 0;
@@ -473,6 +508,7 @@ function OverviewMain({
           icon={Cpu}
           title="Tình trạng vận hành"
           onRefresh={onReload}
+          refreshing={reloading}
         />
         {agents.length === 0 ? (
           <EmptyAgents />
@@ -485,6 +521,8 @@ function OverviewMain({
                   <th className="text-left px-4 py-2 font-medium">Máy trạm</th>
                   <th className="text-left px-4 py-2 font-medium">Heartbeat gần nhất</th>
                   <th className="text-left px-4 py-2 font-medium">Phiên bản</th>
+                  <th className="text-left px-4 py-2 font-medium">Camera ghi</th>
+                  <th className="text-left px-4 py-2 font-medium">Ổ đĩa</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -506,7 +544,19 @@ function OverviewMain({
                     <td className="px-4 py-3 text-xs text-slate-500">
                       {a.last_seen_at ? formatRelative(a.last_seen_at) : "chưa từng"}
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-400">—</td>
+                    <td className="px-4 py-3 text-xs">
+                      <AgentVersionCell
+                        version={a.version}
+                        outdated={a.outdated}
+                        latest={latestVersion}
+                      />
+                    </td>
+                    <td className="px-4 py-3 text-xs">
+                      <AgentCameraCell cameras={a.cameras} />
+                    </td>
+                    <td className="px-4 py-3 text-xs">
+                      <AgentDiskCell disk={a.disk} />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -521,6 +571,7 @@ function OverviewMain({
           icon={AlertTriangle}
           title="Cảnh báo gần đây"
           onRefresh={onReload}
+          refreshing={reloading}
         />
         {agent_logs.length === 0 ? (
           <div className="p-6 flex items-center gap-3">
@@ -695,19 +746,32 @@ function ConfigCard({ data }: { data: OrgDetail }) {
             </span>
           }
         />
-        <InfoRow label="Chính sách" value="Mặc định" muted />
       </dl>
+      {/* Bỏ dòng 'Chính sách: Mặc định': chữ đó không đọc từ nguồn nào cả —
+          hằng số in ra trông như một thiết lập có thật. Thay bằng đường đi
+          tới nơi sửa cấu hình thật. */}
+      <Link
+        href="/platform/config"
+        className="mt-3 inline-flex items-center gap-1 text-xs text-sky-700 hover:underline"
+      >
+        Sửa ở trang Cấu hình các kho
+        <ChevronRight className="h-3.5 w-3.5" />
+      </Link>
     </div>
   );
 }
 
-function AdminActionsCard() {
-  // Hoãn sau 26/7 theo cọc project_platform_admin_mvp_sequencing_2026_07_23.
-  // Giữ button dạng đóng để Hạnh biết sắp có mà không dùng nhầm.
-  const items: Array<{ icon: typeof Lock; label: string; tone: "danger" | "muted" | "neutral" }> = [
+function AdminActionsCard({ onOpenAudit }: { onOpenAudit: () => void }) {
+  // Hai thao tác đổi trạng thái tổ chức vẫn hoãn theo cọc
+  // project_platform_admin_mvp_sequencing_2026_07_23: cần CHECK constraint +
+  // RLS DENY + middleware, chưa có thì nút bấm được cũng không khóa nổi ai.
+  //
+  // "Xem nhật ký hỗ trợ" thì KHÁC: dữ liệu đã nằm sẵn trong tab Nhật ký của
+  // chính trang này, không chờ schema nào. Để nó xám chung với hai nút kia là
+  // tự giấu một thứ đã chạy được.
+  const pending: Array<{ icon: typeof Lock; label: string; tone: "danger" | "neutral" }> = [
     { icon: Lock, label: "Tạm khóa tổ chức", tone: "danger" },
     { icon: Archive, label: "Lưu trữ tổ chức", tone: "neutral" },
-    { icon: BookOpen, label: "Xem nhật ký hỗ trợ", tone: "neutral" },
   ];
   return (
     <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4">
@@ -716,7 +780,16 @@ function AdminActionsCard() {
         <h2 className="text-sm font-semibold text-slate-700">Thao tác quản trị</h2>
       </div>
       <div className="space-y-2">
-        {items.map((it) => {
+        <button
+          type="button"
+          onClick={onOpenAudit}
+          className="w-full h-10 px-3 rounded-xl border border-slate-200 text-slate-600 bg-white text-sm inline-flex items-center gap-2 hover:bg-slate-50"
+        >
+          <BookOpen className="h-4 w-4" />
+          <span className="flex-1 text-left">Xem nhật ký hỗ trợ</span>
+          <ChevronRight className="h-4 w-4 text-slate-300" />
+        </button>
+        {pending.map((it) => {
           const Icon = it.icon;
           return (
             <button
@@ -727,7 +800,7 @@ function AdminActionsCard() {
                   ? "border-red-100 text-red-600 bg-red-50/40"
                   : "border-slate-200 text-slate-600 bg-white"
               }`}
-              title="Sắp có"
+              title="Chưa có schema tạm khóa"
             >
               <Icon className="h-4 w-4" />
               <span className="flex-1 text-left">{it.label}</span>
@@ -737,7 +810,7 @@ function AdminActionsCard() {
         })}
       </div>
       <p className="text-[11px] text-slate-400 mt-2">
-        Các thao tác này sẽ mở sau khi hệ thống có schema tạm khóa.
+        Hai thao tác đổi trạng thái tổ chức sẽ mở sau khi hệ thống có schema tạm khóa.
       </p>
     </div>
   );
@@ -886,14 +959,116 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+/* ---------------- Ô bản tự khai của agent ----------------
+ *
+ * Ba ô dưới đây đọc CÙNG dữ liệu với trang Đội agent (`FleetTable`), chỉ
+ * trình bày gọn hơn vì ở đây đã biết đang xem org nào.
+ *
+ * Luật chung cho cả ba: `null` nghĩa là MÁY CHƯA KHAI, và phải nói ra bằng
+ * chữ — không được rơi về `0` hay `—` trần. "0 camera đang ghi" và "không
+ * biết có camera nào đang ghi không" là hai kết luận khác hẳn nhau, và cái
+ * sau mới là sự thật với máy chạy bản ≤ 0.12.x.
+ */
+
+function NotReported({ hint }: { hint: string }) {
+  return (
+    <span className="text-slate-400" title={hint}>
+      chưa tự khai
+    </span>
+  );
+}
+
+function AgentVersionCell({
+  version,
+  outdated,
+  latest,
+}: {
+  version: string | null;
+  outdated: boolean;
+  latest: string;
+}) {
+  if (!version) {
+    return <NotReported hint="Máy chạy bản ≤ 0.12.x — chưa biết lệnh tự khai." />;
+  }
+  return (
+    <span className={outdated ? "text-amber-700" : "text-slate-600"}>
+      <span className="font-mono">{version}</span>
+      {outdated && (
+        <span className="ml-1 whitespace-nowrap">⚠ (mới nhất {latest})</span>
+      )}
+    </span>
+  );
+}
+
+function AgentCameraCell({
+  cameras,
+}: {
+  cameras: { declared: number; recording: number | null; notRecording: string[] };
+}) {
+  if (cameras.declared === 0) {
+    return <span className="text-slate-400">chưa khai camera</span>;
+  }
+  if (cameras.recording === null) {
+    return (
+      <span className="text-slate-500">
+        {cameras.declared} khai ·{" "}
+        <NotReported hint="Máy chạy bản ≤ 0.12.x — chưa khai camera nào đang ghi." />
+      </span>
+    );
+  }
+  const short = cameras.recording < cameras.declared;
+  return (
+    <div>
+      <span className={short ? "text-red-600 font-medium" : "text-slate-700"}>
+        {cameras.recording}/{cameras.declared} đang ghi
+      </span>
+      {cameras.notRecording.length > 0 && (
+        <div className="mt-0.5 text-red-600 break-all">
+          không ghi: {cameras.notRecording.join(", ")}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgentDiskCell({
+  disk,
+}: {
+  disk: { freeGb: number; freePct: number; daysLeft: number | null } | null;
+}) {
+  if (!disk) {
+    return <NotReported hint="Máy chạy bản ≤ 0.12.x — chưa khai dung lượng ổ." />;
+  }
+  // Ngưỡng khớp FleetTable: đỏ dưới 3 ngày / 3% trống, hổ phách dưới 7 / 10.
+  const tone =
+    (disk.daysLeft !== null && disk.daysLeft < 3) || disk.freePct < 3
+      ? "text-red-600 font-medium"
+      : (disk.daysLeft !== null && disk.daysLeft < 7) || disk.freePct < 10
+        ? "text-amber-700"
+        : "text-slate-700";
+  return (
+    <div>
+      <span className={tone}>
+        {disk.daysLeft === null ? "chưa đủ số liệu" : `còn ~${disk.daysLeft} ngày`}
+      </span>
+      <div className="mt-0.5 text-slate-400">
+        {disk.freeGb} GB trống ({disk.freePct}%)
+      </div>
+    </div>
+  );
+}
+
 function SectionHeader({
   icon: Icon,
   title,
   onRefresh,
+  refreshing = false,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   title: string;
   onRefresh?: () => void;
+  /** Đang tải lại — nút phải quay, nếu không bấm xong không thấy gì động. */
+  refreshing?: boolean;
 }) {
   return (
     <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-100">
@@ -902,10 +1077,11 @@ function SectionHeader({
       {onRefresh && (
         <button
           onClick={onRefresh}
-          className="h-7 w-7 rounded-lg hover:bg-slate-50 text-slate-400 hover:text-slate-600 inline-flex items-center justify-center"
+          disabled={refreshing}
+          className="h-7 w-7 rounded-lg hover:bg-slate-50 text-slate-400 hover:text-slate-600 inline-flex items-center justify-center disabled:opacity-60"
           title="Làm mới"
         >
-          <RefreshCw className="h-3.5 w-3.5" />
+          <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
         </button>
       )}
     </div>

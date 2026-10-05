@@ -334,7 +334,7 @@ export default function SystemStatusPage() {
       pageSubtitle="Cảnh báo thật gửi qua Lark — trang này để xem lại và tra chi tiết."
       pageIcon={Activity}
     >
-      <div className="p-4 sm:p-6 space-y-5">
+      <div className="space-y-5">
         {error && (
           <div className="p-3 rounded-xl bg-red-50 text-red-600 text-sm border border-red-100">
             {error}

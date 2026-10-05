@@ -60,7 +60,14 @@ export async function GET(req: NextRequest) {
     })(),
     clipStatus: ((): ListScansFilter["clipStatus"] => {
       const v = sp.get("clip_status");
-      if (v === "none" || v === "ready" || v === "pending" || v === "failed") return v;
+      if (
+        v === "none" ||
+        v === "ready" ||
+        v === "available" ||
+        v === "missing" ||
+        v === "pending" ||
+        v === "failed"
+      ) return v;
       return "any";
     })(),
     limit: parseLimit(sp.get("limit")),

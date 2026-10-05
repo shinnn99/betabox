@@ -3,7 +3,13 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requirePlatformRole } from "@/lib/supabase/guard";
 import { resolveOrgParams, resolveWarehouseParams } from "@/lib/config/effective";
 import { getClipMaxSeconds } from "@/lib/config/template-store";
-import { loadFleetRows, returnClipSecondsByOrg } from "@/lib/warehouse/fleet";
+import {
+  buildFleetViewRow,
+  loadFleetRows,
+  returnClipSecondsByOrg,
+  type FleetRow,
+} from "@/lib/warehouse/fleet";
+import { LATEST_AGENT_VERSION } from "@/lib/warehouse/self-report";
 import { isMissingColumnError, type ColumnQueryError } from "@/lib/supabase/missing-column";
 import { logOccurrences } from "@/lib/warehouse/log-grouping";
 
@@ -100,9 +106,12 @@ export async function GET(_req: Request, ctx: RouteContext) {
       .from("warehouses")
       .select("id, code, name, status, notify_lark_webhook_url, notify_lark_enabled, packing_timing_config, session_fallback_seconds")
       .eq("organization_id", orgId),
+    // Kèm agent_id + code: trang chi tiết cần biết camera nào thuộc agent nào
+    // để nói "agent X khai 4 camera, chỉ 3 đang ghi" — con số `totals.cameras`
+    // trần không trả lời được câu đó.
     admin
       .from("cameras")
-      .select("id")
+      .select("id, code, agent_id, status")
       .eq("organization_id", orgId),
     admin
       .from("packing_stations")
@@ -216,6 +225,31 @@ export async function GET(_req: Request, ctx: RouteContext) {
     status: string;
     last_seen_at: string | null;
   }>;
+
+  // Bản tự khai của agent — CÙNG nguồn với trang Đội agent (`loadFleetRows`),
+  // cố ý không đọc lại bằng truy vấn riêng: hai đường đọc là hai cách để một
+  // ngày nào đó trang chi tiết và trang Đội agent nói hai phiên bản khác nhau
+  // về cùng một máy. Kết quả dùng cho CẢ phần cấu hình bên dưới.
+  //
+  // activeOnly: false — agent đã tắt vẫn phải hiện ở bảng chi tiết (bảng này
+  // liệt kê mọi agent của org, không chỉ agent active).
+  const fleet = await loadFleetRows(admin, { orgIds: [orgId], activeOnly: false }).catch(
+    () => ({ rows: [] as FleetRow[], selfReportAvailable: false }),
+  );
+  const fleetRowById = new Map(fleet.rows.map((r) => [r.id, r]));
+  const cameraRows = (camerasRes.data ?? []) as Array<{
+    id: string;
+    code: string | null;
+    agent_id: string | null;
+    status: string | null;
+  }>;
+  const camerasByAgent = new Map<string, Array<{ id: string; code: string | null }>>();
+  for (const c of cameraRows) {
+    if (!c.agent_id || c.status !== "active") continue;
+    const list = camerasByAgent.get(c.agent_id) ?? [];
+    list.push({ id: c.id, code: c.code });
+    camerasByAgent.set(c.agent_id, list);
+  }
   const agentsActive = agents.filter((a) => a.status === "active");
   const agentsOnline = agentsActive.filter((a) => {
     if (!a.last_seen_at) return false;
@@ -297,7 +331,9 @@ export async function GET(_req: Request, ctx: RouteContext) {
       webhooks_configured: webhooksConfigured,
       params: await (async () => {
         const clipMax = await getClipMaxSeconds(admin);
-        const fleet = await loadFleetRows(admin, { orgIds: [orgId], activeOnly: true });
+        // `returnClipSecondsByOrg` tự lọc status==='active', nên dùng chung
+        // `fleet.rows` (đọc mọi agent) vẫn ra đúng con số như lúc truy vấn
+        // riêng với activeOnly.
         const returnClip = returnClipSecondsByOrg(fleet.rows, clipMax).get(orgId) ?? clipMax;
         return buildConfigParams(org, warehousesRes.data ?? [], clipMax, returnClip);
       })(),
@@ -319,16 +355,37 @@ export async function GET(_req: Request, ctx: RouteContext) {
         : null,
       last_impersonate: lastImpersonate,
     },
-    agents: agents.map((a) => ({
-      id: a.id,
-      code: a.code,
-      name: a.name,
-      status: a.status,
-      last_seen_at: a.last_seen_at,
-      online:
-        a.last_seen_at != null &&
-        now - new Date(a.last_seen_at).getTime() <= AGENT_ONLINE_THRESHOLD_MS,
-    })),
+    agents: agents.map((a) => {
+      const row = fleetRowById.get(a.id);
+      // Không có dòng fleet (migration tự khai chưa chạy) → các trường tự khai
+      // về null, và trang hiện "chưa tự khai" chứ KHÔNG hiện 0 hay dấu gạch
+      // trần: 0 camera đang ghi và "chưa biết có đang ghi không" là hai kết
+      // luận khác nhau.
+      const view = row
+        ? buildFleetViewRow(row, {
+            orgName: org.name,
+            declaredCameras: camerasByAgent.get(a.id) ?? [],
+            openIncidents: { crit: 0, warn: 0 },
+          })
+        : null;
+      return {
+        id: a.id,
+        code: a.code,
+        name: a.name,
+        status: a.status,
+        last_seen_at: a.last_seen_at,
+        online:
+          a.last_seen_at != null &&
+          now - new Date(a.last_seen_at).getTime() <= AGENT_ONLINE_THRESHOLD_MS,
+        version: view?.version ?? null,
+        outdated: view?.outdated ?? false,
+        cameras: view?.cameras ?? { declared: (camerasByAgent.get(a.id) ?? []).length, recording: null, notRecording: [] },
+        disk: view?.disk ?? null,
+        queues: view?.queues ?? null,
+      };
+    }),
+    /** Bản agent mới nhất — để trang nói rõ "cũ hơn bản nào". */
+    latest_agent_version: LATEST_AGENT_VERSION,
     members: members.map((m) => ({
       user_id: m.id,
       full_name: m.full_name,

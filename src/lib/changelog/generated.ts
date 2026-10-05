@@ -6,6 +6,34 @@ import type { Release } from "./types";
 
 export const GENERATED_RELEASES: Release[] = [
   {
+    "agentVersion": "0.14.0",
+    "date": "2026-10-05",
+    "title": "Biết được video chiếm bao nhiêu ổ đĩa",
+    "summary": "Trước nay trang theo dõi chỉ nói được ổ đĩa máy kho còn trống bao nhiêu. Con số đó trả lời được \"ổ sắp đầy chưa\", nhưng không trả lời được câu hay hỏi hơn: trong phần đã dùng thì **video chiếm bao nhiêu**, còn lại là Windows và phần mềm khác. Không biết tỷ lệ đó thì cũng không biết đặt số ngày lưu bao nhiêu là vừa ổ.",
+    "items": [
+      {
+        "tag": "Mới",
+        "title": "Trang Dung lượng lưu trữ",
+        "detail": "Thêm mục **Dung lượng lưu trữ** trong menu, ngay cạnh *Máy trạm kho*. Trang này trả lời bốn câu: ổ máy kho còn trống bao nhiêu và còn đủ mấy ngày, riêng thư mục video chiếm bao nhiêu, mỗi ngày ghi thêm chừng nào, và số ngày lưu đang đặt có vừa với ổ hiện tại không. Ai xem được *Máy trạm kho* thì xem được trang này."
+      },
+      {
+        "tag": "Mới",
+        "title": "Đo riêng thư mục video ở máy kho",
+        "detail": "Máy kho nay đo riêng dung lượng thư mục dùng để lưu video và báo lên cùng nhịp với các số khác. Phép đo cộng toàn bộ dữ liệu thực có trong thư mục đó, nên không bỏ sót file tạm hay dữ liệu lạ cũng đang chiếm chỗ. Để không làm máy kho phải quét ổ liên tục, số này được đo lại tối đa mỗi giờ — nên có thể chậm hơn thực tế khoảng một giờ, và trang có ghi rõ điều đó. Máy chưa cập nhật vẫn ghi hình và báo cáo bình thường; chỉ riêng ô \"Thư mục lưu video\" hiện gạch ngang kèm lời nhắc cập nhật."
+      },
+      {
+        "tag": "Cải tiến",
+        "title": "Dọn file video sót lại trên máy chủ",
+        "detail": "Có trường hợp clip đã tải lên máy chủ nhưng không được ghi nhận vào sổ, nên lượt dọn định kỳ không nhìn thấy để xoá — file cứ nằm đó chiếm chỗ. Nay lượt dọn kiểm thêm một vòng từ phía máy chủ, nên những file dạng này được nhặt và xoá. Clip đang dùng và clip còn trong hạn xem không bị ảnh hưởng."
+      },
+      {
+        "tag": "Sửa lỗi",
+        "title": "Biểu đồ dung lượng theo ngày hiện đủ ngày",
+        "detail": "Biểu đồ dung lượng ghi theo ngày trước đây chỉ hiện được vài ngày trong khoảng hai tuần, các ngày còn lại trống. Nguyên nhân là một số lượt ghi bị vào sổ hai lần với hai cách đặt tên khác nhau, làm phần cộng dồn không khớp. Đã dọn các dòng trùng và giữ lại số đúng, nên biểu đồ hiện đủ ngày."
+      }
+    ]
+  },
+  {
     "agentVersion": "0.13.1",
     "date": "2026-09-30",
     "title": "Bản 0.13.1 — đã thay bằng 0.13.2",

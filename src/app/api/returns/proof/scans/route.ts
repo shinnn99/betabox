@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { isError, requirePermission } from "@/lib/supabase/guard";
-import { listScans } from "@/lib/order-proof/service";
+import { listScans, type ListScansFilter } from "@/lib/order-proof/service";
 
 export const runtime = "nodejs";
 
@@ -34,6 +34,18 @@ export async function GET(req: NextRequest) {
       to: parseDate(sp.get("to")),
       waybillCode: sp.get("waybill_code") || undefined,
       stationId: sp.get("station_id") ?? undefined,
+      clipStatus: ((): ListScansFilter["clipStatus"] => {
+        const value = sp.get("clip_status");
+        if (
+          value === "none" ||
+          value === "ready" ||
+          value === "available" ||
+          value === "missing" ||
+          value === "pending" ||
+          value === "failed"
+        ) return value;
+        return "any";
+      })(),
       limit: parseLimit(sp.get("limit")),
       offset: parseLimit(sp.get("offset")) ?? 0,
       eventKind: "return",

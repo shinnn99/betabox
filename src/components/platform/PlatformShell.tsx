@@ -19,7 +19,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { usePlatformSession, type PlatformSession } from "@/lib/usePlatformSession";
-import { PLATFORM_NAV } from "@/lib/platform-nav";
+import { PLATFORM_NAV_SECTIONS } from "@/lib/platform-nav";
 import {
   PageHeaderSetterContext,
   type PageHeaderState,
@@ -244,49 +244,53 @@ export default function PlatformShell({ children }: { children: ReactNode }) {
           </div>
 
           <nav className="flex-1 px-3 pb-2 overflow-y-auto mb-4 sidebar-nav-scroll">
-            <div className="px-3 pb-2 pt-1">
-              {!collapsed && (
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
-                  Quản trị
-                </span>
-              )}
-            </div>
-            {PLATFORM_NAV.map((item) => {
-              const active = isActive(item.href);
-              const Icon = item.icon;
-              return (
-                <Link
-                  key={item.id}
-                  href={item.href}
-                  onClick={closeMobile}
-                  title={collapsed ? item.label : undefined}
-                  className={`flex items-center gap-3 px-3 py-1.5 my-0 transition-colors duration-200 group ${
-                    active
-                      ? "text-white rounded-full bg-gradient-to-r from-emerald-500 to-green-600 shadow-md shadow-emerald-200"
-                      : "text-slate-700 hover:bg-slate-50 rounded-lg"
-                  }`}
-                >
-                  <div className="h-8 w-8 flex items-center justify-center shrink-0">
-                    <Icon
-                      className={`h-[18px] w-[18px] transition-colors duration-200 ${
-                        active
-                          ? "text-white"
-                          : "text-slate-400 group-hover:text-slate-700"
-                      }`}
-                    />
-                  </div>
+            {PLATFORM_NAV_SECTIONS.map((section, idx) => (
+              <div key={section.id}>
+                <div className={`px-3 pb-2 ${idx === 0 ? "pt-1" : "pt-4"}`}>
                   {!collapsed && (
-                    <span
-                      className={`text-[12px] flex-1 whitespace-nowrap overflow-hidden ${
-                        active ? "font-semibold" : "font-medium"
-                      }`}
-                    >
-                      {item.label}
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                      {section.label}
                     </span>
                   )}
-                </Link>
-              );
-            })}
+                </div>
+                {section.children.map((item) => {
+                  const active = isActive(item.href);
+                  const Icon = item.icon;
+                  return (
+                    <Link
+                      key={item.id}
+                      href={item.href}
+                      onClick={closeMobile}
+                      title={collapsed ? item.label : undefined}
+                      className={`flex items-center gap-3 px-3 py-1.5 my-0 transition-colors duration-200 group ${
+                        active
+                          ? "text-white rounded-full bg-gradient-to-r from-emerald-500 to-green-600 shadow-md shadow-emerald-200"
+                          : "text-slate-700 hover:bg-slate-50 rounded-lg"
+                      }`}
+                    >
+                      <div className="h-8 w-8 flex items-center justify-center shrink-0">
+                        <Icon
+                          className={`h-[18px] w-[18px] transition-colors duration-200 ${
+                            active
+                              ? "text-white"
+                              : "text-slate-400 group-hover:text-slate-700"
+                          }`}
+                        />
+                      </div>
+                      {!collapsed && (
+                        <span
+                          className={`text-[12px] flex-1 whitespace-nowrap overflow-hidden ${
+                            active ? "font-semibold" : "font-medium"
+                          }`}
+                        >
+                          {item.label}
+                        </span>
+                      )}
+                    </Link>
+                  );
+                })}
+              </div>
+            ))}
           </nav>
 
           {!collapsed && (

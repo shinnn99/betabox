@@ -1905,3 +1905,366 @@ docs([Module]):     Cập nhật tài liệu
   - (3) Không tách quyền xem/tải video: `video.view`/`video.download` đánh dấu `alwaysOn` trong catalog. Trên Platform hai ô này khoá ở trạng thái bật cho mọi vai trò (nhãn "Luôn bật"), và API lưu ma trận luôn ép hai mã này vào mọi vai trò.
   - **Migration `20260930170000` đã được chủ dự án áp lên production 30/09/2026.** Đã kiểm lại (chỉ đọc): `packing.manual_scan` có đủ ở owner/admin/Trưởng kho/Trưởng ca/Đóng gói, Quan sát viên không có; mọi mã trong DB đều có nhãn trong catalog.
   - Kiểm thử: 842/842 đạt; `tsc` app + tests sạch; script prebuild đạt.
+
+### [PLATFORM-NAV-GROUPS] - Chia menu Platform theo đối tượng quản, bỏ nhãn chung "Quản trị"
+
+- **Trạng thái:** Đã hoàn thành (chưa commit).
+- **Nguồn yêu cầu:** chủ dự án 02/10/2026 — 10 mục menu platform đang nằm chung dưới một nhãn "Quản trị", cần rà lại chức năng từng tab và xếp về đúng danh mục (phần nào kiểm soát toàn bộ, phần nào kiểm soát kho...).
+- **Trục chia đã chốt:** theo ĐỐI TƯỢNG đang quản, bốn nhóm:
+  - **Khách hàng** — Tổ chức, Cấu hình các kho, Phân quyền.
+  - **Hạ tầng vận hành** — Tình trạng hệ thống, Sự cố, Đội agent.
+  - **Nội bộ nền tảng** — Quản trị nền tảng, Nhật ký phiên bản.
+  - **Nhật ký** — Nhật ký kiểm toán, Nhật ký các kho.
+- **Hai chỗ dễ xếp nhầm, đã rà bằng dữ liệu nguồn chứ không suy từ tên mục:**
+  - *Phân quyền* (`/platform/permissions`) là ma trận RBAC cho vai trò **trong kho** (owner, admin, Trưởng kho, Đóng gói...), nên thuộc nhóm Khách hàng. Quyền của chính quản trị nền tảng (`platform_owner` / `platform_support`) nằm ở mục *Quản trị nền tảng* bên nhóm Nội bộ.
+  - *Nhật ký phiên bản* (`/platform/changelog`) sinh từ thư mục `changelog/` lúc build, không phụ thuộc tổ chức — là phiên bản của chính Betacom, nên xếp Nội bộ chứ không xếp cùng hai nhật ký tra cứu.
+  - Hai mục nhật ký giữ nguyên là hai mục riêng: *Nhật ký kiểm toán* đọc `platform_audit_log` (việc quản trị nền tảng làm), *Nhật ký các kho* đọc `audit_logs` (việc người trong kho làm). Hai bảng, hai mục đích.
+- **Thay đổi mã:**
+  - `src/lib/platform-nav.ts`: thêm `PlatformNavSection` + `PLATFORM_NAV_SECTIONS`; `PLATFORM_NAV` giữ lại dưới dạng danh sách phẳng sinh từ sections (tra cứu theo href, không dùng render menu) nên không phá chỗ dùng cũ.
+  - `src/components/platform/PlatformShell.tsx`: render theo section, bỏ nhãn cứng "Quản trị". Khoảng cách giữa nhóm (`pt-4`, nhóm đầu `pt-1`) và kiểu nhãn nhóm mirror đúng `DashboardSidebar` của menu kho, để hai menu nhìn như một hệ.
+  - Chỉ đổi cách xếp và cách render menu — không đổi href, không đổi quyền, không đổi trang nào.
+- **Kiểm thử:** `tsc --noEmit` sạch.
+
+### [PLATFORM-PAGES-AUDIT] - Vá đường đi từ trang tổng xuống chi tiết + dọn số liệu giả ở menu Platform
+
+- **Trạng thái:** Đã hoàn thành (chưa commit).
+- **Nguồn yêu cầu:** chủ dự án 02/10/2026 — rà 10 trang platform xem "nhìn vào đã biết toàn bộ tình trạng hệ thống chưa", chỉ ra chỗ khó hiểu/thiếu/thừa.
+- **Kết luận rà soát:** dữ liệu gần đủ, nhưng ĐƯỜNG ĐI bị đứt — trang Tình trạng hệ thống báo "Ghi hình: Lỡ nhịp" / "Clip lỗi: 7 clip", bấm "Xem chi tiết" sang `/platform/orgs/[id]` thì trang đó không có mục nào nói về hai chuyện vừa báo. Ba trang system/agents/incidents có trùng nhưng KHÔNG thừa: mỗi trang trả lời một câu khác nhau, và mỗi trang giữ thao tác riêng (Chẩn đoán chỉ ở Đội agent, Ghi nhận/Đã xử lý chỉ ở Sự cố). Trùng thật chỉ ở 2 ô: agent sống/chết và số camera.
+- **Sáu mục đã sửa:**
+  1. **Cột "Phiên bản" ở trang chi tiết kho là dấu gạch cứng** — `orgs/[id]/page.tsx` in literal `—`, và API không hề select cột version. Nay API dùng chung `loadFleetRows` (CÙNG nguồn với trang Đội agent, cố ý không đọc bằng truy vấn riêng để hai trang không nói hai phiên bản khác nhau về một máy) và trả thêm `version` / `outdated` / `cameras` / `disk` / `latest_agent_version`.
+  2. **Thiếu chiều sâu vận hành ở trang chi tiết** — thêm hai cột "Camera ghi" và "Ổ đĩa" vào bảng Tình trạng vận hành, ngưỡng màu khớp `FleetTable` (đỏ <3 ngày / <3% trống, hổ phách <7 / <10). Ba ô mới giữ luật `null` = "chưa tự khai" bằng CHỮ, không rơi về `0` hay `—` trần: "0 camera đang ghi" và "không biết có camera nào đang ghi không" là hai kết luận khác hẳn nhau.
+  3. **`/platform/agents` không có dòng rỗng** — 0 agent thì bảng trống trơn không chữ, đọc như trang hỏng. Thêm dòng `colSpan={8}`.
+  4. **Sổ sự cố nhúng ở trang tổng thiếu cột Kho** — hai kho có cùng `where_label` hiện ra y hệt nhau. Route `/api/system/status` gắn tên kho từ `scope.orgNameById` vào từng dòng sổ; sự cố cấp hệ thống (cron, VPS) hiện "Hệ thống" chứ không để trống.
+  5. **Nút Làm mới ở trang chi tiết không phản hồi** — `loading` bật nhưng spinner gác ở `loading && !data`. Nay `SectionHeader` nhận `refreshing` và nút tự quay. Đồng thời tách 404 thành câu riêng ("Không tìm thấy tổ chức này") thay vì gộp vào lỗi chung, và bọc `try/catch` để mạng rớt không treo trang ở "Đang tải".
+  6. **Agents/Config là ngõ cụt điều hướng** — cột "Sự cố mở" nay link sang `/platform/incidents?org=<id>` đã lọc sẵn (trang Sự cố đọc `?org=` MỘT LẦN lúc dựng, sau đó ô chọn là chủ); tên kho ở cột Máy kho link sang trang chi tiết kho.
+- **Hai chỗ dọn thêm:**
+  - Bỏ dòng `Chính sách: "Mặc định"` ở thẻ Cấu hình — hằng số in ra, không đọc từ nguồn nào, trông như một thiết lập có thật. Thay bằng link sang trang Cấu hình các kho.
+  - "Xem nhật ký hỗ trợ" tách khỏi nhóm nút xám: dữ liệu đã nằm sẵn ở tab Nhật ký của chính trang đó, không chờ schema nào — nay bấm được, chuyển tab. Hai nút "Tạm khóa" / "Lưu trữ" GIỮ NGUYÊN trạng thái hoãn theo cọc `project_platform_admin_mvp_sequencing_2026_07_23` (cần CHECK constraint + RLS DENY + middleware; chưa có thì nút bấm được cũng không khóa nổi ai).
+- **Không đụng:** không migration, không đổi quyền, không đổi luồng cảnh báo Lark. `returnClipSecondsByOrg` dùng chung `fleet.rows` đọc mọi agent vẫn ra đúng số cũ vì hàm tự lọc `status==='active'` (đã kiểm `src/lib/warehouse/fleet.ts:74`).
+- **Kiểm thử:** 842/842 test đạt; `tsc --noEmit` sạch; lint 8 file thay đổi 0 lỗi (1 cảnh báo `set-state-in-effect` ở `orgs/[id]/page.tsx` đã CÓ TỪ TRƯỚC — kiểm bằng cách lint lại bản HEAD); build production sạch sau khi xoá `.next`, đủ 11 route platform.
+
+### [PLATFORM-STORAGE-USAGE] - Trang Dung lượng video trên Supabase Storage
+
+- **Trạng thái:** Đã hoàn thành — migration ĐÃ áp lên production 02/10/2026 và đã verify. (chưa commit)
+- **Nguồn yêu cầu:** chủ dự án 02/10/2026 — theo dõi dung lượng video lưu ở Supabase của từng kho: số lượng video, thời gian lưu còn lại, dung lượng từng video, tổng dung lượng, và tiền khi vượt trần.
+- **Hai chốt của chủ dự án:** (1) KHÔNG hiển thị con số tiền; (2) đặt ở tab mới "Dung lượng video" trong nhóm Hạ tầng vận hành.
+
+**Ba phát hiện khi kiểm DB thật trước khi viết (chỉ đọc):**
+1. **`order_proof_clips.clip_size_bytes` ĐÃ CÓ và phủ 100%** — 31/31 clip trên bucket đều có số. Comment trong `src/lib/system/checks.ts` ghi "hiện `order_proof_clips` không có cột nào ghi bytes" là **lỗi thời**; đã sửa lại comment ở cả `checkEgress` và `checkStorageUsage`.
+2. **Bucket là CACHE 72 giờ (`BUCKET_TTL_HOURS`), không phải kho lưu bằng chứng.** Số thật: 31 clip `ready` (1354 MB) vs **78 clip `evicted`** (đã rời bucket, chỉ còn segment gốc dưới máy kho). Nên "thời gian lưu còn lại" ở Supabase tính bằng GIỜ, hoàn toàn không liên quan `retention_days` 30/35 ngày. Trang nói to điều này ở đầu và nhắc lại ở chân bảng — thiếu câu đó người đọc thấy "còn 2 giờ" sẽ tưởng sắp mất bằng chứng của khách.
+3. **Bucket có 3 object mồ côi (~67 MB)** mà bảng clip không trỏ tới (từ 04/07 và 16-17/09, đều dưới org test Betacom). Cộng `clip_size_bytes` cho ra con số LUÔN nhỏ hơn thực tế — đúng phần chênh đó là thứ làm hoá đơn cao hơn ước lượng mà không giải thích được.
+
+**Thiết kế theo phát hiện 3:** nguồn chân lý là `storage.objects`, KHÔNG phải bảng clip. Bảng clip chỉ dùng để GÁN TÊN (kho nào, đơn nào); object không gán được thì vào nhóm "Không rõ chủ" chứ không bị loại khỏi tổng.
+
+**Đã thêm:**
+- `supabase/migrations/20261002090000_storage_usage_fn.sql` — RPC `storage_usage_objects(p_bucket, p_limit)`. Cần hàm vì schema `storage` không lộ qua PostgREST. SECURITY DEFINER nhưng an toàn: không nhận SQL tuỳ ý, chỉ trả 3 cột (đường dẫn, bytes, ngày tạo), `search_path` ghim cứng, và **EXECUTE chỉ cấp `service_role`** — REVOKE khỏi PUBLIC/anon/authenticated, vì cấp cho `authenticated` là mọi user tenant đọc được đường dẫn clip của MỌI kho (rò rỉ chéo tổ chức).
+- `src/lib/system/storage-usage.ts` — đọc + đối chiếu + gom nhóm. Trần 2000 file, chạm trần thì `truncated=true` và trang nói ra (tổng thiếu mà im lặng còn tệ hơn không có số).
+- `src/app/api/platform/storage/route.ts` — chặn bằng `requirePlatformRole`. Kèm mốc lượt dọn gần nhất: bucket là cache nên con số dung lượng chỉ đọc đúng khi biết cron dọn còn sống.
+- `src/app/platform/storage/page.tsx` — 4 ô số (tổng dung lượng, quá hạn chưa dọn, file không rõ chủ, lượt dọn gần nhất) + bảng theo kho + bảng từng video (lọc theo kho, tìm theo mã đơn/đường dẫn).
+- `tests/storage-usage.test.ts` — 5 test khoá đúng ba tính chất dễ hỏng: tổng đi từ `storage.objects`; mồ côi không bị loại khỏi tổng (cộng các dòng theo kho == tổng); RPC chưa có thì `available:false` chứ KHÔNG phải 0 byte.
+- Thêm mục vào `PLATFORM_NAV_SECTIONS` nhóm "Hạ tầng vận hành".
+
+**Phần tiền — cố ý không có số:** trang có một ô giải thích vì sao. Hạn mức gói và đơn giá vượt trần chỉ có ở trang billing Supabase, không API công khai nào trả (đã kiểm Management API + endpoint Prometheus 12/08/2026, ghi trong `checkEgress`). Một con số gõ tay sẽ lỗi thời âm thầm ngay lần Supabase đổi giá mà người đọc vẫn tin. Trang đưa con số GB để đối chiếu tay với dashboard.
+
+**Kiểm thử:** 847/847 test đạt (842 cũ + 5 mới); `tsc --noEmit` sạch; build production sạch sau khi xoá `.next`, có đủ `/platform/storage` + `/api/platform/storage`; thân truy vấn của RPC đã chạy thử trên production (chỉ đọc) ra đúng dữ liệu. Lint: 1 cảnh báo `set-state-in-effect` ở trang mới — ĐÚNG BẰNG mẫu đã có ở `platform/system/page.tsx` (đã kiểm), cố ý giữ nhất quán.
+
+**Áp migration 02/10/2026 — ghi lại đúng cách đã làm:**
+- Áp bằng **MCP `apply_migration`** theo yêu cầu trực tiếp của chủ dự án, KHÔNG bằng `db push`. Lý do không dùng `db push`: lúc đó `migration list` cho thấy có **ba** migration chưa track chứ không phải một — `20260930160000` (RBAC matrix) và `20260930170000` (manual scan) đã áp tay từ 30/09 nhưng chưa vào sổ. `db push` sẽ chạy lại cả ba, mà `20260930160000` có `DELETE FROM role_permission_matrix WHERE role IN ('warehouse_manager','packer','viewer')` rồi insert lại bộ chuẩn — tức xoá mọi chỉnh sửa phân quyền làm qua UI từ 30/09. Đi đường MCP để chỉ đụng đúng một hàm.
+- **Drift version đã xử lý tại chỗ:** MCP tự đặt version theo đồng hồ của nó (`20261002042335`) chứ không theo tên file (`20261002090000`) — đúng loại nợ mà cọc `project_apply_migration_via_db_push` cảnh báo. Đã **đổi tên file local thành `20261002042335_storage_usage_fn.sql`** để file và DB khớp nhau, nên lần này KHÔNG sinh thêm drift.
+- **Verify sau khi áp (hai nửa):**
+  - *Dương:* `storage_usage_objects('proof-clips-transient', 2000)` trả 34 object / 1.490.533.839 byte (1421 MB) — khớp **byte-for-byte** với `SELECT ... FROM storage.objects` đếm trực tiếp.
+  - *Âm (quan trọng hơn):* `has_function_privilege` xác nhận `service_role` = true, **`authenticated` = false, `anon` = false**; `prosecdef` = true; `search_path` = `storage, pg_catalog`. Tức user tenant KHÔNG gọi được hàm — không rò rỉ đường dẫn clip chéo tổ chức.
+  - *Không tác dụng phụ:* chụp vân tay `md5(string_agg(permission_code))` của 6 vai trò TRƯỚC và SAU khi áp — cả 6 giống hệt (owner 48 · admin 48 · warehouse_manager 19 · shift_leader 17 · packer 9 · viewer 8). Phân quyền không bị đụng.
+
+**Nợ track đã dọn xong (02/10/2026, chủ dự án tự chạy):**
+```
+npx supabase migration repair --status applied 20260930160000 20260930170000
+```
+Verify sau khi repair: `migration list` còn **0** dòng remote rỗng (trước đó 3); cả ba version `20260930160000` / `20260930170000` / `20261002042335` đều đã vào `schema_migrations`. Quan trọng nhất — repair CHỈ ghi sổ, không chạy lại SQL: chụp lại vân tay `md5(string_agg(permission_code))` của 6 vai trò sau repair thấy **giống hệt** lúc trước (owner 48 · admin 48 · warehouse_manager 19 · shift_leader 17 · packer 9 · viewer 8, tổng 149 grant). Lần `db push` sau sẽ không còn reset phân quyền.
+
+### [WAREHOUSE-STORAGE-HEALTH] - Trang Dung lượng lưu trữ cho kho (/dashboard/storage)
+
+- **Trạng thái:** Đã hoàn thành (chưa commit). Không cần migration — mọi dữ liệu đã có sẵn.
+- **Nguồn yêu cầu:** chủ dự án 02/10/2026 — kho tự kiểm soát được dung lượng Supabase và dung lượng trên máy kho của họ, xem còn lưu được bao nhiêu ngày, như platform đang quản.
+- **Hai chốt:** (1) kho thấy CẢ ổ máy kho lẫn Supabase của riêng họ; (2) quyền `station_device.view` — cùng quyền trang Máy trạm kho, nên Trưởng kho vào được, Nhân viên đóng gói và Quan sát viên không.
+
+**Phát hiện khi kiểm số thật trước khi viết (kho Đại Kim, 02/10/2026):**
+- Ổ 465 GB, còn trống **45.9 GB**, agent tự khai tốc độ ghi **39.9 GB/ngày** → còn khoảng **1.1 ngày là đầy ổ**.
+- `retention_days` đang đặt **30 ngày**, nhưng ổ chỉ chứa nổi khoảng **11.6 ngày** với tốc độ đó. Đối chiếu `camera_recording_files` 14 ngày gần nhất: ~31 GB/ngày, tức sức chứa thực ~15 ngày. **Cấu hình đang hứa gấp đôi thứ cái ổ làm được, và trước trang này không màn hình nào nói ra.**
+- Phụ: `camera_recording_files` giữ 38.278 dòng trải 70 ngày / 594 GB trong khi ổ chỉ 465 GB — dòng sống lâu hơn file (script dọn xoá file nhưng không xoá dòng). Trang CỐ Ý không dùng tổng dòng này làm "dung lượng đang dùng"; dung lượng lấy từ bản tự khai của agent, còn bảng dòng chỉ dùng để vẽ nhịp ghi theo ngày.
+
+**Khác bản platform ở chỗ nào (có chủ đích):** trang platform trả lời "Betacom trả tiền bao nhiêu cho Supabase" nên xếp bucket lên đầu. Trang này trả lời "bằng chứng của tôi còn giữ được bao lâu" nên **xếp ổ máy kho lên đầu, Supabase xuống cuối** — vì ổ đầy là mất bằng chứng thật, còn hết hạn 72h trên bucket thì KHÔNG mất gì (cắt lại được từ segment gốc). Đảo thứ tự là dạy người quản kho lo nhầm chỗ. Mục Supabase có hẳn một đoạn giải thích điều này.
+
+**Đã thêm:**
+- `src/lib/warehouse/storage-health.ts` — đọc + tính. Hai hàm THUẦN tách riêng để test được từng ngưỡng: `capacityDaysOf()` (ổ chứa nổi mấy ngày) và `buildStorageWarnings()` (nơi DUY NHẤT quyết định "thế nào là đáng lo"). Bốn loại cảnh báo: ổ sắp đầy (crit <3 ngày, warn <7), retention vượt sức chứa, máy chưa tự khai, máy mất kết nối.
+- `src/app/api/warehouse/storage/route.ts` — `requirePermission("station_device.view")`.
+- `src/app/dashboard/storage/page.tsx` — cảnh báo → thẻ ổ đĩa từng máy → biểu đồ ghi theo ngày (14 ngày) → clip trên máy chủ.
+- `tests/warehouse-storage-health.test.ts` — 10 test, dùng chính số thật Đại Kim làm ca kiểm.
+- Thêm mục "Dung lượng lưu trữ" vào `src/lib/nav.ts` (nhóm Quản lý kho, cạnh Máy trạm kho) + `src/lib/nav-access.ts` + dòng tương ứng trong bảng SPEC của `tests/platform-rbac-matrix.test.ts`.
+
+**Cách ly tenant (đã verify):** cả 4 truy vấn trong `readStorageHealth` đều lọc org (`loadFleetRows({orgIds})`, `organizations.eq(id)`, `camera_recording_files.eq(organization_id)`, `order_proof_clips.eq(organization_id)`). Route lấy org từ `ctx.organizationId` do guard giải từ JWT/cookie đóng giả, **KHÔNG nhận org qua query param** — nhận qua param là mở đường cho kho A gõ id kho B.
+
+**Vài điểm trình bày đã cân nhắc:**
+- Máy bản ≤ 0.12.x chưa tự khai ổ → nói "chưa báo dung lượng", KHÔNG vẽ thanh 0%: thanh rỗng đọc như ổ trống, mà sự thật là không có số liệu. Test khoá: không số liệu thì KHÔNG được suy ra "ổ sắp đầy".
+- Ngưỡng cảnh báo lệch cấu hình đặt ở 80% (ổ 26 ngày vs đặt 30 thì im) — tránh báo động giả vì sai số đo tốc độ ghi; thứ cần bắt là lệch GẤP ĐÔI, không phải lệch 10%.
+- Cắt ngày theo giờ Việt Nam (+7) chứ không theo UTC: cloud chạy TZ=UTC nên bản ghi 7 giờ sáng sẽ rơi nhầm sang hôm trước.
+- Câu cảnh báo nói thẳng hậu quả "ổ đầy thì máy kho NGỪNG GHI và mất bằng chứng từ lúc đó", không nói chung chung "ổ sắp đầy" — có test khoá chuỗi này.
+
+**Kiểm thử:** 857/857 test đạt (847 cũ + 10 mới); `tsc --noEmit` sạch; build production sạch sau khi xoá `.next`, có đủ `/dashboard/storage` + `/api/warehouse/storage`. Test `platform-rbac-matrix` đã bắt đúng việc thêm trang mà chưa khai quyền (bảng SPEC phải phủ đủ menu) — đã bổ sung dòng, không nới lỏng ràng buộc.
+
+### [BUCKET-ORPHAN-CLEANUP] - Dọn 3 object mồ côi trong bucket clip (02/10/2026)
+
+- **Trạng thái:** Đã xoá trên production, verify xong. (chưa commit)
+- **Nguồn yêu cầu:** chủ dự án 02/10/2026 — thấy dòng "không gắn đơn / quá hạn 282.8 giờ" trên trang Dung lượng video mới làm, yêu cầu rà soát và xoá.
+- **Rà soát trước khi xoá (4 vế, không xoá theo cảm tính):**
+  - 0 dòng `order_proof_clips` nào trỏ tới 3 file này (kiểm cả `bucket_path` lẫn `clip_path`).
+  - Cả 3 thuộc org `00000000-...-0001` = **"Betacom"**, org test nội bộ, KHÔNG phải kho khách. Org đó có **0 clip `ready`** — không ai xem được gì từ các file này.
+  - File giữa truy ngược ra một clip `status='failed'`, `bucket_path=NULL` (waybill SPXVN062307014218): upload dở dang — file lên bucket nhưng dòng DB không được cập nhật. Đúng cơ chế sinh mồ côi.
+  - File cũ nhất 04/07 dung lượng **0 byte** (upload hỏng hẳn).
+- **Không xoá được bằng SQL — và đó là Supabase chặn đúng:** `DELETE FROM storage.objects` bị trigger `storage.protect_delete()` chặn, vì xoá dòng DB sẽ để lại file thật nằm mồ côi trong S3, tức đổi loại rác này lấy loại rác khác khó thấy hơn. Phải đi qua Storage API.
+- **Đã thêm `scripts/delete-orphan-bucket-objects.mjs`** — liệt kê đệ quy bucket, đối chiếu với `order_proof_clips`, xoá qua Storage API. Ba lớp an toàn: mặc định **chạy khô** (phải `--yes` mới xoá); danh sách mồ côi tính lại **ngay trước** lúc xoá chứ không dùng danh sách chép sẵn (clip vừa upload giữa chừng sẽ tự loại ra); in đủ tên + dung lượng trước khi đụng.
+- **Kết quả — verify hai nửa:**
+  - *Dương:* bucket từ 34 object / 1421 MB còn **31 / 1354 MB**; mồ côi còn **0**.
+  - *Âm (quan trọng hơn):* 31 clip `status='ready'` có `bucket_path` **còn nguyên vẹn** — không xoá nhầm clip đang dùng.
+
+**NỢ CÒN MỞ — lỗi gốc chưa fix:** đây là dọn MỘT LẦN. Cơ chế sinh mồ côi vẫn sống: 30 ngày gần nhất có **16 clip `status='failed'`**, mới nhất 29/09. Mỗi lần upload lên bucket xong mà không ghi được `bucket_path` là đẻ thêm một file không ai dọn (lượt dọn 72h đi từ bảng clip, không đi từ bucket, nên không bao giờ chạm tới). Trang `/platform/storage` có ô "File không rõ chủ" để thấy khi tái diễn; chạy lại script trên khi số đó > 0. Fix gốc cần: ghi `bucket_path` trước/cùng giao dịch với upload, hoặc cho lượt dọn đi từ bucket thay vì từ bảng clip.
+
+### [BUCKET-ORPHAN-SWEEP] - Fix gốc: lượt dọn thứ hai đi TỪ BUCKET
+
+- **Trạng thái:** Đã hoàn thành (chưa commit). Không cần migration — dùng lại RPC `storage_usage_objects` đã áp sáng nay.
+- **Nguồn yêu cầu:** chủ dự án 02/10/2026, sau khi dọn tay 3 object mồ côi: làm fix gốc để không tái diễn. Chọn hướng "cho lượt dọn đi từ bucket" (an toàn hơn vì bắt được cả mồ côi do nguyên nhân khác, không chỉ nguyên nhân đã biết).
+- **Lỗ hổng:** `cleanupExpiredClips()` đi từ **bảng `order_proof_clips`** — tìm dòng `bucket_uploaded_at` quá 72h rồi xoá file tương ứng. Object nào KHÔNG dòng nào trỏ tới thì nó không bao giờ nhìn thấy, nằm trên bucket tính tiền vĩnh viễn. Nguồn sinh: agent upload lên bucket THÀNH CÔNG rồi mới báo về để cloud ghi `bucket_path`; bước báo về hỏng là file có thật mà DB không biết. 30 ngày gần nhất có 16 clip `status='failed'` → nguồn sinh vẫn sống.
+
+**Đã thêm `src/lib/watch/orphan-objects.ts`** — `sweepOrphanObjects()`, lượt quét đi từ bucket.
+
+**ĐIỀU NGUY HIỂM NHẤT của hướng này, và cách chặn:** một clip ĐANG upload có file trên bucket mà `bucket_path` còn NULL — **nhìn y hệt mồ côi**. Quét mù sẽ xoá đúng cái file vừa upload xong, biến lượt dọn rác thành máy phá bằng chứng. Chốt chặn là `MIN_ORPHAN_AGE_HOURS = 24`: chỉ đụng object già hơn 24 giờ. Upload một clip mất vài giây tới vài phút, nên 24h là dư an toàn. Hệ quả cố ý: mồ côi mới sinh sống thêm tối đa 24h — đổi vài chục MB lấy việc không bao giờ xoá nhầm.
+
+Thứ tự đọc cũng có chủ đích: liệt kê bucket TRƯỚC, đọc `bucket_path` SAU. Clip upload xong giữa chừng sẽ có mặt trong tập "có chủ" và được tha.
+
+- **Nối vào cron sẵn có:** chạy trong `runCleanupClipsJob()` ngay sau lượt một, dùng chung systemd timer và sổ `system_jobs`. Lỗi ở lượt hai CHỈ ghi sổ, không ném — dọn rác hỏng không đáng làm hỏng lượt dọn chính. Sổ job nay có thêm `orphans_deleted`, `orphans_freed_bytes`, `orphans_too_young`, `orphans_error`. **`orphans_too_young` chính là nhịp sinh rác**: số đó lớn dần qua các lượt nghĩa là lỗi ghi `bucket_path` đang tái diễn — đó là cảnh báo sớm cho lỗi gốc phía agent, thứ trước đây không ai thấy.
+- **`tests/orphan-objects-sweep.test.ts` — 6 test**, trong đó ca SỐNG CÒN: file mới 3 phút tuổi, chưa dòng clip nào trỏ tới, PHẢI không bị xoá và phải không gọi `remove` lần nào. Thêm ca sát ngưỡng (23 giờ tha / 25 giờ xoá) và ca dựng lại đúng số thật 02/10 (34 object, 3 mồ côi, 67.2 MB).
+- **Kiểm thử:** 863/863 đạt (857 + 6 mới); `tsc` sạch; lint 0 lỗi 0 cảnh báo; build production sạch sau khi xoá `.next`. Chạy khô trên production xác nhận bucket hiện sạch: 31 file, 31 có chủ, **0 mồ côi**.
+
+**Ghi chú về hướng không chọn:** hướng kia — ghi `bucket_path` cùng giao dịch với upload — không bỏ hẳn, nhưng nó chỉ bịt đúng một nguyên nhân đã biết và phải sửa cả phía agent (đường phát hành chậm hơn). Lượt quét từ bucket bắt được MỌI mồ côi bất kể nguyên nhân, và chạy hoàn toàn ở cloud. Làm cái này trước là đúng thứ tự.
+
+### [WAREHOUSE-STORAGE-UI] - Dựng lại giao diện Dung lượng lưu trữ theo mockup
+
+- **Trạng thái:** Đã hoàn thành (chưa commit). Không cần sửa agent — xem mục dưới.
+- **Nguồn yêu cầu:** chủ dự án 02/10/2026 gửi mockup, yêu cầu dựng lại y hệt; theo dõi thêm dung lượng theo ngày, SỐ LƯỢNG VIDEO theo ngày; cho phép sửa agent nếu thiếu dữ liệu.
+
+**KHÔNG cần sửa agent — đã kiểm trước khi làm.** `camera_recording_files` đã có `file_size_bytes`, và agent đang báo đủ: 14 ngày gần nhất có 11.158 đoạn, trong đó 1.125 đoạn thiếu dung lượng NHƯNG toàn bộ rơi vào 18-21/09 (agent bản cũ, mỗi ngày thiếu ~50%); **từ 22/09 trở đi thiếu 0**. Số video mỗi ngày thì chỉ là `COUNT(*)`, luôn có sẵn. Nên phần việc nằm hết ở tầng đọc + giao diện.
+
+- **Xử lý ngày thiếu dung lượng (không giấu):** `DailyRecordingRow` thêm `segmentsWithoutSize`. Cột của ngày thiếu tô **hổ phách** thay vì xanh, và dưới biểu đồ có dòng giải thích. Lý do phải làm: cột ngắn của 18-21/09 là vì **DB không biết**, KHÔNG phải vì kho ghi ít — im lặng ở đây làm người đọc kết luận ngược hẳn về nhịp ghi.
+- **Giao diện dựng lại theo mockup:** nút Kiểm lại + mốc "Cập nhật" (lấy `self_report_at`, thêm vào payload); hai banner cảnh báo có nút dẫn thẳng `/dashboard/settings/warehouse-config`; thẻ ổ đĩa lớn với **vòng phần trăm SVG thuần** (không kéo thêm thư viện biểu đồ) + 3 ô nhỏ; bảng "Thông tin ổ đĩa" 8 dòng bên phải; biểu đồ cột theo ngày có bộ chọn 7/14 ngày và **3 ô tổng: số video đã ghi, tổng dung lượng, trung bình mỗi ngày**; mục Clip trên máy chủ; mục Hướng dẫn & gợi ý.
+- **Hai câu cảnh báo định lượng hơn, khớp mockup:** "đã dùng 419.1 GB / 465.0 GB" thay vì chỉ nêu phần trống; và "có thể bị xoá sớm hơn **18.4 ngày** so với cài đặt" thay vì "không đủ" — con số lệch buộc người đọc đối chiếu được, còn "không đủ" thì đọc xong vẫn không biết có nghiêm trọng không. Thêm 2 test khoá đúng hai chuỗi này.
+- **Giữ nguyên các luật đã có:** thứ tự ổ-kho-trước-Supabase-sau; máy chưa tự khai thì nói "chưa báo dung lượng" chứ KHÔNG vẽ vòng 0% (vòng rỗng đọc như ổ trống); mục Supabase vẫn có câu "hết 72h KHÔNG mất bằng chứng".
+- **Kiểm thử:** 865/865 đạt (863 + 2 mới); `tsc` sạch; build production sạch sau khi xoá `.next`; lint còn đúng 1 cảnh báo `set-state-in-effect` — mẫu đã có ở mọi trang khác trong repo.
+
+### [STORAGE-DAILY-FIX] - Sửa lỗi biểu đồ chỉ hiện 2/14 ngày + cột không vẽ
+
+- **Trạng thái:** Đã hoàn thành, migration ĐÃ áp lên production và verify. (chưa commit)
+- **Nguồn:** chủ dự án 02/10/2026 — "14 ngày gần nhất mà sao chỉ hiển thị 2 ngày".
+
+**Bug 1 — trần 1.000 dòng của PostgREST (lỗi của tôi ở entry trước).** `readStorageHealth` kéo thẳng `camera_recording_files` về Node rồi gộp bằng JS, kèm ghi chú tôi tự viết là "đã lọc org + 14 ngày nên tập nhỏ". **Ghi chú đó sai**: kho Đại Kim có 11.158 dòng trong 14 ngày. PostgREST chặn ở 1.000 dòng mặc định nên trang chỉ nhận 1.000 dòng CŨ NHẤT → vẽ đúng 2 ngày (18-19/09) và tổng hiện "1000 video / 7.3 GB". Nhìn như kho ngừng hoạt động, trong khi kho chạy đủ 13 ngày.
+  - **Dấu hiệu đáng nhớ:** con số **1000 tròn trĩnh** trong một tổng là dấu hiệu chạm trần trang, không phải số thật. Lẽ ra phải nghi ngay khi nhìn ảnh.
+  - **Sửa:** thêm RPC `recording_daily_usage(p_organization_id, p_days)` gộp Ở SQL — trả tối đa ~31 dòng thay vì hàng chục nghìn. KHÔNG chữa bằng cách nâng `.limit()`: nâng lên 50.000 là kéo 50.000 dòng về Node mỗi lần mở trang, và vẫn vỡ khi kho thêm camera.
+  - Múi giờ cắt ngày chuyển vào SQL (`AT TIME ZONE 'Asia/Ho_Chi_Minh'`), giữ đúng hành vi cũ.
+  - Hàm chưa có (migration chưa chạy) → trả rỗng, **KHÔNG rơi về cách đọc thô cũ**: cách cũ cho ra con số SAI mà trông vẫn hợp lý, tệ hơn là không có biểu đồ.
+- **Bug 2 — cột không vẽ.** Chuỗi chiều cao flex bị đứt: cột con dùng `height: %` bên trong `flex-1` lồng trong `flex-col`, nên không có mốc quy chiếu → mọi cột ra 0px. Sửa bằng khung `h-48` cố định + `absolute inset-0` cho dãy cột. Nhân tiện thêm trục dọc có nhãn GB, lưới ngang, và nhãn ngày đặt cùng hệ flex với cột để thẳng hàng tuyệt đối.
+- **Verify trên production:** `recording_daily_usage(...)` trả **13 ngày / 11.157 video / 273 GB** — thay cho 2 ngày / 1000 video / 7.3 GB.
+- **Test hồi quy mới** (`tests/warehouse-storage-health.test.ts`): khoá hai điều — phải gọi RPC gộp, và **KHÔNG được `select` bảng `camera_recording_files` thô** (chính là đường dính trần 1.000 dòng); đồng thời khẳng định tổng số video vượt được mốc 1.000.
+- **Migration:** áp qua MCP `apply_migration` như lần trước; MCP tự đặt version `20261002071526` nên đã **đổi tên file local cho khớp** (`20261002071526_recording_daily_usage_fn.sql`) — không sinh drift.
+- **Kiểm thử:** 866/866 đạt; `tsc` sạch; build production sạch sau khi xoá `.next`; lint còn đúng 1 cảnh báo `set-state-in-effect` quen thuộc.
+
+### [STORAGE-RECORDING-SPLIT] - Tách "đoạn đang quay" khỏi "thiếu dung lượng vĩnh viễn"
+
+- **Trạng thái:** Đã hoàn thành, migration ĐÃ áp production và verify. (chưa commit)
+- **Nguồn:** chủ dự án 02/10/2026 hỏi "agent trả về hết luôn rồi à" khi thấy cột 02/10 tô hổ phách.
+- **Trả lời: CÓ, agent trả về đủ** — nhưng cảnh báo của trang sai, và đó là lỗi của bản trước.
+
+**Chẩn đoán (kiểm dữ liệu, không suy từ màu cột):** 2 đoạn thiếu dung lượng của ngày 02/10 đều có `ended_at IS NULL` và bắt đầu **0.1 / 0.6 phút trước** — tức **đang quay dở ngay lúc đọc**, chưa đóng file nên chưa có dung lượng. Hoàn toàn bình thường. Trong khi đó 18, 19, 21/09 thiếu ~50% mỗi ngày và **đã đóng file** → agent bản cũ thật, dữ liệu sẽ không bao giờ có.
+
+Bản trước gộp hai ca này vào một nhãn "máy kho bản cũ". Hệ quả: **ngày HÔM NAY lúc nào cũng bị gắn cảnh báo sai**, chỉ vì luôn có 1-2 đoạn đang quay. Cảnh báo sai lặp lại mỗi ngày là cách nhanh nhất để người dùng thôi đọc cảnh báo.
+
+- **Migration `20261002080843_recording_daily_usage_split_recording.sql`** — RPC tách thành hai cột: `segments_without_size` (đã đóng file mà vẫn thiếu → vĩnh viễn) và `segments_recording` (đang quay → sẽ có). Phải `DROP FUNCTION` trước vì thêm cột trả về là đổi kiểu trả về (lỗi 42P13).
+- **Giao diện:** cột chỉ tô hổ phách khi `segmentsWithoutSize > 0`; phần "đang quay" nói ở **tông trung tính màu xám**, không phải cảnh báo, và chỉ hiện khi thật sự có. Tooltip mỗi cột liệt kê riêng hai loại.
+- **Hàm bản cũ chưa có cột mới → đọc về 0**, trang chỉ mất phần chú thích "đang quay" chứ không hiện sai.
+- **Verify production:** 02/10 giờ là `0 thiếu vĩnh viễn / 2 đang quay`; chỉ 18, 19, 21/09 còn bị tính là thiếu thật. Đúng như bản chất dữ liệu.
+- **Test mới:** khoá đúng ca này — ngày chỉ có đoạn đang quay phải ra `segmentsWithoutSize = 0`, còn ngày agent bản cũ vẫn phải bị đếm là thiếu.
+- **Kiểm thử:** 867/867 đạt; `tsc` sạch; dev server 0 lỗi.
+
+**Ghi chú về `rm -rf .next`:** entry trước tôi xoá `.next` để build trong lúc dev server của chủ dự án đang chạy → server văng ENOENT `build-manifest.json` hàng loạt, trông như code hỏng. Đã kill cây tiến trình qua PowerShell (`/T`), xoá sạch, khởi động lại. Cọc `feedback_dev_server_kill_tree` đã được bổ sung vế này: kiểm tiến trình node trỏ vào repo TRƯỚC mọi `rm -rf .next`, kể cả khi chỉ định build.
+
+### [STORAGE-WORDING] - Bỏ thuật ngữ nội bộ khỏi giao diện kho
+
+- **Trạng thái:** Đã hoàn thành (chưa commit). Chỉ sửa chữ, không đổi logic.
+- **Nguồn:** chủ dự án 02/10/2026 hỏi "số đoạn không có dung lượng nghĩa là sao" khi xem tooltip biểu đồ.
+- **Vấn đề:** cụm "đoạn không có dung lượng" là thuật ngữ nội bộ (`file_size_bytes IS NULL`) lọt thẳng ra giao diện. Người quản kho không có cách nào đoán được nó nghĩa là gì — và câu hỏi tự nhiên tiếp theo là "vậy có mất video không?", mà chữ cũ không trả lời.
+
+**Đã kiểm 371 đoạn ngày 21/09 trước khi sửa chữ** (để nói đúng bản chất, không đoán): toàn bộ `status='ready'`, **có đường dẫn file, có thời lượng 60 giây, đã đóng file** — chỉ thiếu mỗi `file_size_bytes`. Tức **video vẫn còn và vẫn xem được**; hệ quả duy nhất là cột 21/09 hiện 5.4 GB thay vì ~11 GB thật. Thêm một chi tiết đáng chú ý: cùng camera `dahua_01`, cùng ngày, cùng 60s/đoạn mà 373 đoạn ghi được kích thước còn 371 đoạn không — xen kẽ, nên là lỗi lúc-được-lúc-không của agent bản cũ chứ không phải hỏng cả ngày.
+
+- **Chữ mới:** "N video chưa rõ nặng bao nhiêu (video vẫn còn)" thay cho "N đoạn không có dung lượng"; chú thích dưới biểu đồ nói **trấn an trước** — in đậm "Video vẫn còn và vẫn xem được bình thường" — rồi mới giải thích vì sao cột thấp. Dùng "video" thay "đoạn", "nặng bao nhiêu" thay "dung lượng".
+- **Đã BỎ mốc ngày cứng trong câu:** bản nháp viết "đã hết từ 22/09" — đúng với kho Đại Kim nhưng **sai với org khác** (org test còn thiếu tới 22/09 và vẫn còn 2 đoạn trong 10 ngày qua, kiểm bằng truy vấn theo từng org). Một câu khẳng định sai trong giao diện còn tệ hơn là không nói.
+- **Kiểm thử:** 867/867 đạt; `tsc` sạch.
+
+### [STORAGE-MISSING-SIZE-DECISION] - Chốt KHÔNG truy hồi kích thước file cũ
+
+- **Trạng thái:** Đã chốt + sửa chữ giao diện (chưa commit). Không đụng agent, không migration.
+- **Nguồn:** chủ dự án 02/10/2026 hỏi "giờ cần làm gì để lấy đúng toàn bộ, bump agent mới lên kho à".
+
+**Trả lời: KHÔNG cần bump agent — kiểm trước khi kết luận.**
+- Agent kho Đại Kim **đã chạy 0.13.2** (bản mới nhất). Bump không đổi gì.
+- **Thiếu trong 10 ngày qua = 0**; ngày thiếu gần nhất là 21/09, tức 11 ngày trước. Lỗi đã tự hết.
+- Đọc `warehouse-agent/src/segment-tracker.ts:85-160`: agent hiện tại **làm đúng sẵn** — lúc MỞ segment ghi `file_size_bytes: null` (chưa đóng file thì chưa biết nặng bao nhiêu, đúng), lúc ĐÓNG segment thì `safeStatSize()` lấy kích thước thật. Không có lỗi nào để sửa.
+
+**Vì sao không truy hồi được số cũ:** 7.954 đoạn thiếu nằm rải từ **11 đến 28 ngày trước**, trong khi ổ máy kho chỉ chứa nổi ~12 ngày → **file thật của hầu hết đã bị dọn**. Muốn biết kích thước phải `stat()` chính file đó; file không còn thì không có đường nào khác. Chỉ ngày 21/09 (371 đoạn) là có thể còn file.
+
+**Ba phương án đã cân nhắc, chủ dự án chốt phương án 1:**
+1. **Để nguyên, tự trôi** (đã chọn) — các ngày thiếu đều >11 ngày tuổi, sẽ rời khỏi cửa sổ 14 ngày trong ~3 ngày nữa và biểu đồ tự sạch. Không tốn gì.
+2. Ước lượng bù bằng trung bình cùng camera/cùng ngày — cột cao đúng hơn nhưng là số ƯỚC, không phải số đo; vi phạm luật "không bịa số" của hệ.
+3. Viết lệnh quét lại cho agent — tốn một đợt phát hành để cứu đúng 1 ngày, trong khi không video nào bị mất.
+
+- **Sửa chữ cho tự giải thích:** chú thích giờ nói đủ ba ý — (a) *"không ghi lại được kích thước file"* thay cho *"chưa rõ nặng bao nhiêu"* (mơ hồ); (b) lỗi thuộc bản máy kho cũ, bản đang chạy đã ghi đúng; (c) **"Không cần làm gì: các ngày này sẽ tự rời khỏi biểu đồ khi quá 14 ngày"** — trả lời thẳng câu "giờ cần làm gì" ngay trong giao diện, thay vì để người đọc hỏi lại.
+- **Kiểm thử:** 867/867 đạt; `tsc` sạch; dev server 0 lỗi.
+
+### [STORAGE-DUPLICATE-ROWS] - Truy ra bản chất thật: KHÔNG phải "không đo được dung lượng" mà là GHI TRÙNG DÒNG
+
+- **Trạng thái:** Đã truy nguyên nhân + sửa chữ giao diện (chưa commit). Không cần sửa agent, không migration.
+- **Nguồn:** chủ dự án 02/10/2026 hỏi "sao video vẫn còn mà lại không đo được dung lượng" — câu hỏi này phá vỡ giả định tôi đang dùng.
+
+**TÔI ĐÃ KẾT LUẬN SAI Ở HAI ENTRY TRƯỚC.** Tôi nói "máy kho bản cũ ghi video xong nhưng không ghi lại kích thước" mà chưa hề chứng minh — chỉ suy từ việc `file_size_bytes IS NULL` trùng với giai đoạn agent cũ. Sự thật khác hẳn.
+
+**Bản chất thật (có bằng chứng):** mỗi video bị ghi vào sổ **HAI LẦN** dưới hai đường dẫn khác nhau:
+- `dahua_01/2026/09/21/dahua_01_20260921_090936.mp4` — nguồn `legacy_nextjs`, **có đủ 15.2 MB**
+- `CTC01/2026/09/21/dahua_01_20260921_090936.mp4` — nguồn `agent`, kích thước **NULL**
+
+Cùng tên file, cùng camera, **cùng mốc bắt đầu chính xác tới giây** (7.950/7.950 cặp khớp `started_at`). Một bản lấy mã camera làm thư mục gốc, bản kia lấy mã bàn.
+
+**Số liệu chốt:** 7.950/7.954 dòng "thiếu dung lượng" đều có một dòng sinh đôi ĐÃ CÓ đủ kích thước. Nên **dung lượng không hề mất** — nó nằm ở dòng kia. Thứ sai là số ĐẾM: ngày 21/09 hiện 744 video trong khi thật sự chỉ có **372**.
+
+**Lỗi đã dừng hẳn — ranh giới trùng khớp chính xác:** từ 22/09 trở đi `dòng_trùng = 0` và chỉ còn nguồn `agent`; mọi ngày có trùng đều có cả hai nguồn `agent,legacy_nextjs`. Tức lỗi chấm dứt đúng lúc bỏ đường ghi legacy. **Không cần bump agent, không cần sửa agent.**
+
+- **Sửa chữ cho đúng bản chất:** "N dòng ghi trùng (video không bị mất)" thay cho "N video không ghi lại được kích thước"; chú thích nói rõ cột thấp hơn thực tế **khoảng một nửa** và **số video thật bằng khoảng một nửa con số hiển thị** — trước đó trang để người đọc tưởng kho ghi được 744 video/ngày.
+- **Sửa luôn chú thích trong `storage-health.ts`** vì nó đang mô tả sai nguyên nhân cho người đọc code sau này.
+- **Kiểm thử:** 867/867 đạt; `tsc` sạch; dev server 0 lỗi.
+
+**Bài học:** `file_size_bytes IS NULL` trùng thời điểm với "agent bản cũ" KHÔNG chứng minh agent là thủ phạm — tương quan không phải nhân quả. Phải so hai nhóm trong cùng một ngày (có size vs không size) mới lòi ra chúng khác nhau ở `source` và `file_path`, chứ không phải ở phiên bản agent.
+
+### [SEGMENT-DUPLICATE-ROWS-PENDING] - 7.950 dòng trùng: ĐÃ DỪNG trước khi xoá, chờ xác nhận đường dẫn thật
+
+- **Trạng thái:** **CHƯA XOÁ GÌ.** Đang chờ chủ dự án kiểm thư mục ghi hình thật dưới máy kho Đại Kim.
+- **Nguồn:** chủ dự án 02/10/2026 đồng ý dọn 7.950 dòng trùng.
+
+**VÌ SAO DỪNG — tiêu chí dọn tôi đề xuất ban đầu là SAI, sẽ xoá nhầm dòng cần giữ.**
+
+Tôi định dọn theo tiêu chí "xoá dòng không có `file_size_bytes`". Kiểm trước khi chạy thì lộ ra điều ngược hẳn:
+
+| Thư mục gốc | Nguồn | Khoảng thời gian | Có size |
+|---|---|---|---|
+| `CTC01/` | `agent` | 26/08 → **02/10 (hôm nay)** | NULL |
+| `dahua_01/` | `legacy_nextjs` | 26/08 → **21/09 (đã chết)** | có |
+
+`file_path` do agent dựng bằng `path.relative(recordingRoot, absPath)` (`warehouse-agent/src/segment-tracker.ts:65`) — tức **đường dẫn THẬT trên ổ**. Agent hôm nay vẫn đang ghi vào `CTC01/`, còn `dahua_01/` nguồn legacy dừng hẳn từ 21/09.
+
+Nên nhiều khả năng **`CTC01/` mới là dòng thật** và `dahua_01/` là bản ghi trùng của hệ cũ — tức ngược hoàn toàn với tiêu chí "giữ dòng có size". Xoá theo tiêu chí cũ sẽ:
+- Mất dòng trỏ tới file thật trên ổ.
+- Giữ lại dòng trỏ tới đường dẫn không còn tồn tại.
+- **6 clip bằng chứng đang tham chiếu `CTC01/` qua `source_files`** (gồm 1 clip `ready` của đơn thật TTVN1107560365) sẽ mất đường truy ngược.
+
+**Đã kiểm thêm:** không bảng nào có khoá ngoại trỏ tới `camera_recording_files`; liên kết duy nhất là chuỗi `file_path` nằm trong `order_proof_clips.source_files`.
+
+**Dữ kiện còn thiếu — chỉ người ra kho mới biết:** thư mục ghi hình thật dưới máy kho tên là `CTC01\` (mã bàn) hay `dahua_01\` (mã camera). Chủ dự án sẽ kiểm và báo lại.
+
+**Khi có câu trả lời, hướng xử lý sẽ là:** xoá nhánh KHÔNG khớp đường dẫn thật, và nếu nhánh giữ lại là `CTC01/` (thiếu size) thì **chép `file_size_bytes` từ bản sinh đôi sang trước khi xoá** — dữ liệu kích thước đã có sẵn, không mất.
+
+**Bài học:** "dòng nào thiếu dữ liệu thì dòng đó là rác" là suy luận hấp dẫn nhưng không có cơ sở. Phải xác định đâu là NGUỒN THẬT trước, rồi mới quyết giữ nhánh nào — thiếu dữ liệu chỉ là triệu chứng, không phải bằng chứng về tính chính danh.
+
+### [SEGMENT-DUPLICATE-CLEANUP] - Dọn 7.952 dòng trùng: chép size rồi xoá nhánh legacy
+
+- **Trạng thái:** ĐÃ xoá trên production, verify hai vế xong. (chưa commit)
+- **Nguồn:** chủ dự án 02/10/2026 hỏi "xoá có ảnh hưởng gì không" trước khi cho dọn.
+
+**Trả lời câu hỏi đó bằng rà code, và kết quả ĐẢO NGƯỢC kế hoạch dọn ban đầu của tôi.** Grep mọi nơi đọc `camera_recording_files` thì ba chỗ quan trọng nhất đều **chỉ đọc `source='agent'`**:
+- `src/lib/order-proof/clip-resolver.ts:485` — cắt clip bằng chứng
+- `scripts/kpi-daily.ts:220` — KPI BB-2 (đơn mất bằng chứng)
+- `src/lib/system/evidence-coverage.ts:133` — phủ sóng bằng chứng
+
+Và chú thích sẵn có trong clip-resolver nói rõ vì sao: *"row từ route Next.js cũ (file trỏ ổ máy khác, có thể không tồn tại trên ổ agent)… bỏ filter này thì clip có thể lấy segment không tồn tại và fail sớm, hoặc tệ hơn: lẫn nội dung sai đơn."*
+
+Nên: **xoá nhánh `legacy_nextjs` = gần như không ảnh hưởng** (không nơi nào đọc); **xoá nhánh `agent` = hỏng thật** (mất khả năng cắt clip cho mọi đơn 26/08–21/09). Kế hoạch cũ của tôi — "xoá dòng thiếu `file_size_bytes`" — chính là xoá nhánh `agent`. Suýt làm ngược.
+
+**Đã làm, hai bước:**
+1. Chép `file_size_bytes` từ nhánh legacy sang nhánh agent theo `(camera_id, file_name)`. Chỉ ghi vào dòng đang NULL. Kết quả: nhánh agent từ 7.954 dòng thiếu size còn **4** (4 đoạn không có bản sinh đôi — không cứu được, chấp nhận).
+2. Xoá **7.952 dòng** `source='legacy_nextjs'` của kho Đại Kim.
+
+**Verify hai vế:**
+- *Dương:* 14 ngày gần nhất đều `trùng = 0`, `thiếu size = 0`. Ngày 21/09 còn đúng 372 dòng cho 372 video (trước: 744 dòng).
+- *Âm (quan trọng hơn):* 6 clip bằng chứng từng tham chiếu nhánh này — kiểm lại thì **cả 6 vẫn truy ngược được segment nguồn** qua `source_files`, gồm clip `ready` của đơn thật TTVN1107560365. Không clip nào mất đường.
+
+**Lưu ý phạm vi:** chỉ dọn org Đại Kim. Org khác chưa rà — nếu có nhánh legacy thì xử lý riêng, không chạy mù toàn hệ.
+
+**Bài học (bổ sung cho entry trước):** câu "xoá có ảnh hưởng gì không" đáng giá hơn cả việc dọn. Nếu không rà consumer trước, tôi đã xoá đúng nhánh mà clip-resolver phụ thuộc — và hậu quả chỉ lộ ra khi có người cần cắt lại clip cho một đơn cũ, tức rất lâu sau, lúc không ai nhớ tới lần dọn này.
+
+### [STORAGE-TWO-SOURCES] - Nói rõ hai nguồn số: ổ đĩa đo thật vs biểu đồ cộng từ sổ
+
+- **Trạng thái:** Đã hoàn thành (chưa commit). Chỉ thêm chú thích, không đổi logic.
+- **Nguồn:** chủ dự án 02/10/2026 hỏi "dung lượng này sẽ chuẩn 100% dung lượng trên máy kho đúng không".
+
+**Trả lời: KHÔNG, và chênh lệch đo được là 175 GB.** Hai con số trên trang đo hai thứ khác nhau:
+
+| Chỗ hiện | Nguồn | Giá trị 02/10/2026 |
+|---|---|---|
+| Phần "Ổ đĩa máy kho" / "Thông tin ổ đĩa" | Agent `stat()` ổ thật | **435.7 GB đã dùng / 465 GB** |
+| 3 ô tổng của biểu đồ theo ngày | Cộng `file_size_bytes` từ sổ | **610.4 GB** (cả thời kỳ) |
+
+**Vì sao lệch — và vì sao KHÔNG phải lỗi:** sổ `camera_recording_files` **cố ý giữ lại dòng của file đã bị dọn** (ghi rõ trong `scripts/kpi-daily.ts:9-16`: dòng segment là bằng chứng cho câu hỏi "lúc đóng đơn có ghi được không", nên không script nào xoá dòng khi file hết hạn). Dòng cũ nhất từ 24/07 — 70 ngày trước — trong khi ổ chỉ chứa nổi ~12 ngày. Cộng dòng = cộng cả video đã không còn trên ổ.
+
+**Đã kiểm phần quan trọng nhất là đúng nguồn:** `storage-health.ts:301-310` lấy `freeBytes`/`totalBytes`/`usedBytes` thẳng từ `self_report.disk` của agent, KHÔNG cộng từ sổ. Nên mọi cảnh báo "còn mấy ngày là đầy ổ", "đã dùng bao nhiêu / tổng bao nhiêu" đều bám số đo thật. Chỉ biểu đồ theo ngày là cộng từ sổ — và đó là đúng mục đích của nó (xem nhịp ghi, gồm cả ngày đã bị dọn).
+
+- **Đã thêm hai câu chú thích** để không ai đọc nhầm một trong hai con số là sai:
+  - Dưới 3 ô tổng biểu đồ: *"Số ở đây đếm video đã ghi trong khoảng đã chọn — gồm cả video sau đó đã bị dọn theo hạn lưu. Dung lượng ổ đĩa ở phần trên mới là chỗ đang thật sự chiếm trên máy kho."*
+  - Dưới bảng Thông tin ổ đĩa: *"Số liệu do chính máy kho đo trên ổ đĩa và gửi về."*
+- **Kiểm thử:** 867/867 đạt; `tsc` sạch.
+
+**Lưu ý còn lại:** ngay cả số ổ đĩa cũng là của TOÀN Ổ, không riêng thư mục ghi hình — nếu máy kho còn dữ liệu khác trên cùng ổ thì phần đó cũng tính vào "đã dùng". Đúng cho mục đích cảnh báo (ổ đầy là ffmpeg chết, bất kể ai làm đầy), nhưng không phải "dung lượng video chiếm bao nhiêu".
+
+### [AGENT-0-14-0] - Phát hành agent 0.14.0: báo riêng dung lượng thư mục video
+
+- **Trạng thái:** Đã hoàn thành (chưa commit, chưa dựng exe).
+- **Vì sao bump số giữa (0.13.2 → 0.14.0), không phải 0.13.3:** `disk.recording_bytes` là TRƯỜNG MỚI trong giao kèo tự khai giữa agent và cloud, không phải bản vá lỗi. Luật phân loại ở `src/lib/changelog/releases.ts` cũng gắn số cuối = 0 với "bản lớn", đúng bản chất đợt này.
+- **Vì sao bắt buộc bump:** 0.13.2 đã phát hành 30/09 và đã có máy tải. Giữ nguyên số mà đổi nội dung thì `/platform/agents` không phân biệt được máy nào biết báo `recording_bytes`, và banner "Cần cập nhật agent" ở `/dashboard/storage` không nói nổi *cập nhật lên bản nào*.
+- **SÁU chỗ phải sửa cùng lúc — không phải năm.** Ngoài bốn chỗ `warehouse-agent/tests/self-report-0-13.test.ts` canh (`src/version.ts`, `package.json`, `installer/betacom-agent.iss`, `RELEASES.md`) và `LATEST_AGENT_VERSION` phía cloud, còn **`changelog/*.md`** — `tests/changelog-page.test.ts` đòi mỗi số phiên bản máy kho phải có mục cho NGƯỜI DÙNG. Chỗ thứ sáu này phát hiện do test đỏ, không do đọc comment hướng dẫn: comment đầu `src/version.ts` chỉ kể năm chỗ. **Đã cập nhật comment đó thành sáu.**
+- **Đã làm:**
+  - `AGENT_VERSION` / `package.json` / `AppVersion` / `LATEST_AGENT_VERSION` → `0.14.0`.
+  - `RELEASES.md`: mục 0.14.0 — nêu rõ phép đo cộng MỌI file trong `RECORDING_DIR` (không chỉ `.mp4` theo khuôn `camera/YYYY/MM/DD`), cache tối đa 1 giờ, `0` ≠ `null`, và phép đo KHÔNG tham gia quyết định xoá.
+  - `changelog/2026-10-05.md`: mục người dùng cho 0.14.0 + hai mục nội bộ (storage, menu platform). Đã chạy lại `pnpm build:changelog` → `generated.ts` 19 bản.
+- **Đường xuống cấp đã kiểm (agent cũ + cloud mới):** `parseSelfReport` trả `recording_bytes: null` chứ không phải `0`; `storage-health` kẹp `Math.min(rec, usedBytes)`; UI hiện `—` kèm lời nhắc cập nhật. Đúng cọc "`ended_at` NULL có HAI nghĩa" — chưa-đo phân biệt rõ khỏi trống-thật.
+- **Kiểm thử:** agent 266/266 đạt; cloud 875/875 đạt; `tsc` app + tests sạch; 3 script prebuild đạt (N2 DiD-A 0 lời gọi ngoài helper, vế 4 còn hiệu lực cả hai chiều).
+- **Bẫy đã gỡ khi verify:** `npm run typecheck` ban đầu đỏ ~20 lỗi, TOÀN BỘ trong `.next/dev/types/` — rác dev-server cũ, không phải mã nguồn. Xoá `.next/dev` thì sạch. Lần sau gặp lỗi `TS1128`/`TS1160` ở `.next/` thì xoá trước khi đi chẩn đoán mã nguồn.
+
+**Việc CHƯA làm, cần trước khi giao máy:** chưa dựng `betacom-agent.exe` và chưa dựng bộ cài `BetacomAgentSetup-v0.14.0.exe`. Lưu ý `tests/changelog-page.test.ts` còn một vế nữa: file `.exe` nằm trong `warehouse-agent/releases/` là bằng chứng bản đó đã tới tay người dùng, nên khi thêm bộ cài vào đó thì mục changelog phải có sẵn — hiện đã có.
+
+### [AGENT-0-14-0-BUILD] - Dựng file chạy + bộ cài 0.14.0
+
+- **Trạng thái:** Đã hoàn thành (chưa commit). Hai artifact đã nằm ở `warehouse-agent/releases/`.
+- **Đã dựng:**
+  - `betacom-agent-0.14.0.exe` — 65 MB (68.344.043 byte), qua `npm run build:exe` (tsc → pkg node22-win-x64).
+  - `BetacomAgentSetup-v0.14.0.exe` — 148 MB (155.180.387 byte), qua ISCC 6. Compile 500s, đóng gói đủ 9 nguồn (agent, ffmpeg, ffprobe, nssm, mediamtx, cleanup-segments.ps1 + 3 file license/version).
+- **Verify phiên bản — KHÔNG tin mỗi tên file:**
+  - Đếm chuỗi trong binary: `0.14.0` xuất hiện 3 lần, `0.13.2` **0 lần** → không phải artifact cũ đổi tên.
+  - `dist/version.js` (bản tsc thật đi vào pkg) ghi `AGENT_VERSION = "0.14.0"`.
+  - Metadata bộ cài: `ProductVersion = 0.14.0`, `ProductName = Betacom Warehouse Agent`.
+  - Chạy thử file chạy với `.env` giả: khởi động được qua `loadConfig`, in banner `Warehouse agent starting`, rồi chết đúng chỗ không gọi được backend giả — tức binary chạy thật, không phải file hỏng.
+- **Verify test HAI NỬA cho `tests/changelog-page.test.ts` vế thứ hai** (vế này chỉ kích khi có `.exe` trong `releases/`):
+  - Dương: liệt kê 7 bộ cài test soi, có `v0.14.0` trong đó → 875/875 đạt là dương THẬT, không phải do test bỏ qua file.
+  - Âm: tạo `BetacomAgentSetup-v9.9.9.exe` giả → test đỏ đúng thông điệp "nhật ký chưa có mục cho bản 9.9.9". Đã xoá file giả.
+- **Tài liệu giao máy:** thêm `releases/THAY-FILE-CHAY-0.14.0.md` (gồm bước kiểm "ô Thư mục lưu video phải ra số, và phải ≤ phần Đã sử dụng" + lưu ý ô này trống một lát sau restart vì phép đo chạy theo nhịp 1 giờ). Cập nhật `releases/README.md` trỏ bản mới nhất 0.14.0, bản lùi 0.13.2.
+- **Kiểm thử cuối:** agent 266/266; cloud 875/875; `tsc` app + tests sạch; 3 script prebuild đạt.
+
+**Hạn mức LFS — việc CHỦ DỰ ÁN cần chạy tay:** quy ước `releases/.gitignore` là Git chỉ giữ bản ĐANG DÙNG + MỘT bản lùi. 0.13.2 nay tụt xuống đường lùi nên bộ cài 0.12.1 phải rời Git. Đã thêm `BetacomAgentSetup-v0.12.1.exe` vào `.gitignore` và cập nhật ghi chú hạn mức, nhưng **chưa chạy lệnh Git** (CLAUDE.md cấm). Cần chạy tay:
+
+```
+git rm --cached warehouse-agent/releases/BetacomAgentSetup-v0.12.1.exe
+```
+
+Lệnh này chỉ bỏ theo dõi, KHÔNG xoá file trên đĩa. Sau đợt này tracked còn ~440 MB / 1 GB (hiện 361 MB + 213 MB của 0.14.0 − 155 MB của 0.12.1 lùi ra).

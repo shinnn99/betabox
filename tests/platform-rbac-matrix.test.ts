@@ -112,6 +112,10 @@ const SPEC: ReadonlyArray<readonly [string, string, readonly SpecRole[]]> = [
   ["Bàn đóng hàng", "/dashboard/packing-stations", [M]],
   ["Thiết bị kho", "/dashboard/devices", [M]],
   ["Máy trạm kho", "/dashboard/agents", [M]],
+  // Dung lượng lưu trữ (02/10/2026): cùng quyền station_device.view với Máy
+  // trạm kho, nên cùng một cột — Trưởng kho vào được, Đóng gói và Quan sát
+  // viên không.
+  ["Dung lượng lưu trữ", "/dashboard/storage", [M]],
   ["Nhân sự kho", "/dashboard/staff", [M]],
   ["Báo cáo hiệu suất", "/dashboard/reports", [M]],
   ["Người dùng hệ thống", "/dashboard/users", [M]],
