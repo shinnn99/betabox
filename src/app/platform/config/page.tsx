@@ -211,7 +211,7 @@ export default function PlatformConfigPage() {
       pageSubtitle="Mọi tổ chức, mọi kho trên một màn hình. Số to là số hệ thống thật sự chạy."
       pageIcon={SlidersHorizontal}
     >
-      <div className="p-4 sm:p-6 space-y-4">
+      <div className="space-y-4">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative">
             <Search className="h-4 w-4 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />

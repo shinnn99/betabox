@@ -7,7 +7,13 @@ Endpoint chinh:
 - `GET /api/order-proof/scans`: danh sach scan/proof de dashboard hien thi.
 - `POST /api/order-proof/[pe_id]/watch`: yeu cau xem/cat/ghep clip cho mot packing event.
 - `POST /api/order-proof/[pe_id]/watch/retry`: thu lai khi clip loi.
-- `GET /api/order-proof/clips/[clipId]`: lay thong tin/signed URL clip.
+- `GET /api/order-proof/clips/[clipId]`: **DEPRECATED 03/07/2026, dung cho
+  caller moi.** Doc clip tu `clip_path` tren o dia agent — chi chay duoc khi
+  server cung may agent, nen da chet san tu khi prod roi Vercel sang VPS.
+  Duong dung bay gio: `signed_url` trong response cua `/watch` (mot cua,
+  khong hai cho tra URL clip). Route con giu vi co the con deep-link cu
+  trong email/bookmark; tu 02/10/2026 co `console.warn` moi luot goi de do
+  xem con ai dung that khong — im lang 1-2 tuan thi xoa.
 
 Nhung diem da xu ly trong luong 2-camera:
 

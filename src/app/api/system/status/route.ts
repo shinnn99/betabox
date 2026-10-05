@@ -88,6 +88,24 @@ export async function GET() {
     ledger = { available: false, reason: errorMessage(err) };
   }
 
+  // Gắn TÊN kho vào từng dòng sổ. Thiếu nó thì hai kho khác nhau có cùng
+  // `where_label` (vd hai kho đều đặt tên bàn giống nhau) hiện ra y hệt nhau,
+  // và người trực không biết phải gọi cho kho nào. Trang Sự cố có cột này rồi;
+  // sổ nhúng ở đây trước giờ thì không.
+  const ledgerWithOrgNames: IncidentLedgerView = ledger.available
+    ? {
+        ...ledger,
+        open: ledger.open.map((i) => ({
+          ...i,
+          // Sự cố cấp hệ thống (cron, VPS) không thuộc kho nào — nói "Hệ thống"
+          // chứ không để trống, vì ô trống đọc như dữ liệu bị thiếu.
+          organization_name: i.organization_id
+            ? (scope?.orgNameById.get(i.organization_id) ?? i.organization_id)
+            : null,
+        })),
+      }
+    : ledger;
+
   // Các tầng trang đọc, xếp theo thứ tự câu hỏi của người trực:
   //   hero        → "có phải làm gì không", sáu con số
   //   issues      → "đang hỏng cái gì, ở đâu, làm gì" (rỗng = không có việc)
@@ -112,6 +130,6 @@ export async function GET() {
     }),
     unavailable: unavailableChecks(checks),
     last_background_run: lastBackgroundRun,
-    incidents: ledger,
+    incidents: ledgerWithOrgNames,
   });
 }

@@ -5,15 +5,19 @@
 # bản nữa là vượt hạn mức, GitHub chặn push.
 #
 # Quy ước: Git chỉ giữ BẢN ĐANG DÙNG và MỘT bản lùi.
-#   - bộ cài:   0.13.1 (đang dùng) + 0.12.1 (đường lùi)
-#   - file chạy: 0.13.1 (đang dùng)
+#   - bộ cài:   0.14.0 (đang dùng) + 0.13.2 (đường lùi)
+#   - file chạy: 0.14.0 (đang dùng) + 0.13.2 (đường lùi)
 #
 # Phát hành bản mới thì thêm bản cũ vào đây và `git rm --cached` nó. File vẫn
 # nằm trên đĩa, chỉ không đẩy lên GitHub nữa.
+#
+# Cập nhật 05/10/2026 (phát hành 0.14.0): 0.13.2 tụt xuống đường lùi nên bộ cài
+# 0.12.1 rời Git. Tracked sau đợt này ~440 MB / 1 GB.
 
 BetacomAgentSetup-v0.9.1.exe
 BetacomAgentSetup-v0.11.0.exe
 BetacomAgentSetup-v0.12.0.exe
+BetacomAgentSetup-v0.12.1.exe
 betacom-agent-0.12.0.exe
 betacom-agent-0.12.1.exe
 betacom-agent-0.13.0.exe

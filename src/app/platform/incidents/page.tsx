@@ -54,7 +54,14 @@ const STATUS_TABS: Array<{ value: StatusFilter; label: string }> = [
 
 export default function PlatformIncidentsPage() {
   const [status, setStatus] = useState<StatusFilter>("active");
-  const [org, setOrg] = useState("");
+  // Lọc kho ban đầu đọc từ `?org=` để trang khác link thẳng vào đây kèm bộ
+  // lọc (trang Đội agent dùng: bấm số sự cố của một máy → sang đây đã lọc sẵn
+  // đúng kho đó). Chỉ đọc MỘT LẦN lúc dựng — sau đó ô chọn là chủ, nếu không
+  // người dùng đổi bộ lọc xong lại bị URL cũ kéo về.
+  const [org, setOrg] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return new URLSearchParams(window.location.search).get("org") ?? "";
+  });
   const [data, setData] = useState<IncidentsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -167,7 +174,7 @@ export default function PlatformIncidentsPage() {
       pageSubtitle="Sổ sự cố của mọi kho — do lượt tự kiểm nền ghi mỗi 15 phút."
       pageIcon={Siren}
     >
-      <div className="p-4 sm:p-6 space-y-4">
+      <div className="space-y-4">
         {data && stale && (
           <div className="p-4 rounded-2xl bg-red-600 text-white">
             <p className="text-base font-semibold">Lượt tự kiểm nền đã ngừng — sổ này đang KHÔNG được cập nhật</p>

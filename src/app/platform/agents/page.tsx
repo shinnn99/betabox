@@ -127,7 +127,7 @@ export default function PlatformAgentsPage() {
       pageSubtitle="Mọi máy kho: phiên bản, camera đang ghi, ổ còn mấy ngày, hàng đợi, sự cố mở."
       pageIcon={Server}
     >
-      <div className="p-4 sm:p-6 space-y-4">
+      <div className="space-y-4">
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"

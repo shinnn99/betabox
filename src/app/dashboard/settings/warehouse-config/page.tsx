@@ -279,7 +279,7 @@ export default function WarehouseConfigPage() {
       pageSubtitle="Quản lý thời gian lưu video và cảnh báo của kho"
       pageIcon={Settings}
     >
-      <div className="flex gap-4 items-stretch h-full lg:mr-[-15px]">
+      <div className="flex gap-4 items-stretch h-full">
         <div
           className="min-w-0 transition-[width] duration-300 ease-out flex flex-col overflow-hidden"
           style={{ width: editing ? "calc(100% - 396px)" : "100%" }}

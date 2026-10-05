@@ -67,7 +67,7 @@ export interface ScanClaimSummary {
 
 export interface ScanClipSummary {
   id: string;
-  status: "pending" | "ready" | "failed";
+  status: "pending" | "ready" | "failed" | "evicted";
   generated_at: string | null;
   duration_seconds: number | null;
   target_duration_seconds: number | null;
@@ -124,6 +124,7 @@ function first<T>(v: T | T[] | null): T | null {
 async function attachClipsToEvents(
   organizationId: string,
   events: PackingJoinRow[],
+  options: { includeRelatedContext?: boolean } = {},
 ): Promise<ScanEventPublic[]> {
   if (events.length === 0) return [];
   const admin = createAdminClient();
@@ -230,13 +231,17 @@ async function attachClipsToEvents(
 
   // 1 lookup agent liveness cho toàn list (per-org). Cùng HÀM với /watch —
   // không chỉ cùng cột — để badge list và state /watch KHÔNG lệch.
-  const liveness = await readAgentLiveness(admin, organizationId);
-  const agentOfflineSeconds = liveness.offline_duration_seconds;
-  const agentTimeDriftSeconds = liveness.time_drift_seconds;
-
-  // Hồ sơ kiện hoàn: chỉ hỏi khi trang có kiện hoàn — trang đơn đi không
-  // tốn thêm query nào.
-  const returnIds = events.filter((e) => e.event_kind === "return").map((e) => e.id);
+  const includeRelatedContext = options.includeRelatedContext !== false;
+  let agentOfflineSeconds = 0;
+  let agentTimeDriftSeconds: number | null = null;
+  if (includeRelatedContext) {
+    const liveness = await readAgentLiveness(admin, organizationId);
+    agentOfflineSeconds = liveness.offline_duration_seconds;
+    agentTimeDriftSeconds = liveness.time_drift_seconds;
+  }
+  const returnIds = includeRelatedContext
+    ? events.filter((e) => e.event_kind === "return").map((e) => e.id)
+    : [];
   const claimByEvent = new Map<string, ScanClaimSummary>();
   if (returnIds.length > 0) {
     const { data: claims } = await admin
@@ -323,8 +328,17 @@ export interface ListScansFilter {
   // (no_active_session / unmapped_scanner / invalid_code) are ALWAYS
   // excluded because they don't represent a real packed order.
   scanStatus?: "any" | "valid" | "duplicated";
-  // "any" | "none" (no clip row) | "ready" | "pending" | "failed".
-  clipStatus?: "any" | "none" | "ready" | "pending" | "failed";
+  // Legacy values "none"/"ready" stay accepted for API compatibility.
+  // The UI uses "available"/"missing" so the filter matches what the user
+  // can actually watch now, including bucket TTL expiry.
+  clipStatus?:
+    | "any"
+    | "none"
+    | "ready"
+    | "available"
+    | "missing"
+    | "pending"
+    | "failed";
   /**
    * Đơn đi hay kiện hoàn. Mặc định đơn đi: trước khi có tham số này trang
    * Bằng chứng giao hàng liệt kê lẫn cả kiện hoàn (cùng status 'valid').
@@ -337,7 +351,27 @@ export interface ListScansFilter {
 export interface ListScansResult {
   scans: ScanEventPublic[];
   has_more: boolean;
+  /** Raw packing_events cursor, required because clip filtering happens after attachment. */
+  next_offset: number;
 }
+
+function matchesClipStatus(
+  scan: ScanEventPublic,
+  clipStatus: NonNullable<ListScansFilter["clipStatus"]>,
+): boolean {
+  if (clipStatus === "any") return true;
+  if (clipStatus === "none") return scan.clip === null;
+  if (clipStatus === "ready") return scan.clip?.status === "ready";
+  if (clipStatus === "available") return clipBucketValid(scan.clip);
+  if (clipStatus === "missing") {
+    return scan.clip === null ||
+      scan.clip.status === "evicted" ||
+      (scan.clip.status === "ready" && !clipBucketValid(scan.clip));
+  }
+  return scan.clip?.status === clipStatus;
+}
+
+const CLIP_FILTER_SCAN_BATCH = 200;
 
 export async function listScans(
   organizationId: string,
@@ -346,66 +380,102 @@ export async function listScans(
   const admin = createAdminClient();
   const limit = Math.max(1, Math.min(200, filter.limit ?? 50));
   const offset = Math.max(0, filter.offset ?? 0);
-
   const eventKind = filter.eventKind ?? "outbound";
-  let q = admin
-    .from("packing_events")
-    .select(PACKING_COLUMNS)
-    .eq("organization_id", organizationId)
-    .eq("event_kind", eventKind)
-    .order("scanned_at", { ascending: false })
-    .range(offset, offset + limit - 1);
 
-  if (eventKind === "return") {
-    // Kiện hoàn: mọi kiện có video. 'duplicated_return' là quét lại kiện
-    // đã ghi — không có video riêng nên không liệt kê.
-    q = q.in("status", ["valid", "return_suspect"]);
-  } else if (filter.scanStatus === "valid") {
-    q = q.eq("status", "valid");
-  } else if (filter.scanStatus === "duplicated") {
-    q = q.eq("status", "duplicated");
-  } else {
-    q = q.in("status", ["valid", "duplicated"]);
-  }
+  const fetchEvents = async (
+    rawOffset: number,
+    rawLimit: number,
+  ): Promise<PackingJoinRow[]> => {
+    let q = admin
+      .from("packing_events")
+      .select(PACKING_COLUMNS)
+      .eq("organization_id", organizationId)
+      .eq("event_kind", eventKind)
+      .order("scanned_at", { ascending: false })
+      .range(rawOffset, rawOffset + rawLimit - 1);
 
-  // Cửa sổ video dài 0 giây thì không có gì để xem và cắt clip cũng ra
-  // file rỗng. Gặp ở kiện hoàn nghi vấn (`return_suspect`): lưới an toàn
-  // ghi `bắt đầu = kết thúc = giờ quét` vì không có phiên làm việc nào để
-  // lấy mốc. Chúng vẫn hiện ở "Cần xử lý" và trong nhật ký — chỗ đó mới
-  // đúng việc của chúng.
-  //
-  // Giữ dòng chưa có số giây (`null`): đó là kiện đang mở, chưa đóng.
-  q = q.or("work_duration_seconds.is.null,work_duration_seconds.gt.0");
+    if (eventKind === "return") {
+      // Repeated return scans do not own a separate proof clip.
+      q = q.in("status", ["valid", "return_suspect"]);
+    } else if (filter.scanStatus === "valid") {
+      q = q.eq("status", "valid");
+    } else if (filter.scanStatus === "duplicated") {
+      q = q.eq("status", "duplicated");
+    } else {
+      q = q.in("status", ["valid", "duplicated"]);
+    }
 
-  if (filter.from) q = q.gte("scanned_at", filter.from.toISOString());
-  if (filter.to) q = q.lte("scanned_at", filter.to.toISOString());
-  if (filter.waybillCode && filter.waybillCode.trim()) {
-    const code = filter.waybillCode.trim().toUpperCase();
-    q = q.ilike("waybill_code", `%${code}%`);
-  }
-  if (filter.warehouseId) q = q.eq("warehouse_id", filter.warehouseId);
-  if (filter.stationId) q = q.eq("station_id", filter.stationId);
+    // A zero-length work window cannot produce a useful proof clip. Keep null
+    // durations because those are still-open events.
+    q = q.or("work_duration_seconds.is.null,work_duration_seconds.gt.0");
 
-  const { data, error } = await q;
-  if (error) throw error;
+    if (filter.from) q = q.gte("scanned_at", filter.from.toISOString());
+    if (filter.to) q = q.lte("scanned_at", filter.to.toISOString());
+    if (filter.waybillCode && filter.waybillCode.trim()) {
+      const code = filter.waybillCode.trim().toUpperCase();
+      q = q.ilike("waybill_code", `%${code}%`);
+    }
+    if (filter.warehouseId) q = q.eq("warehouse_id", filter.warehouseId);
+    if (filter.stationId) q = q.eq("station_id", filter.stationId);
 
-  const events = (data ?? []) as PackingJoinRow[];
-  const scans = await attachClipsToEvents(organizationId, events);
-
-  let filtered = scans;
-  if (filter.clipStatus && filter.clipStatus !== "any") {
-    filtered = scans.filter((s) => {
-      if (filter.clipStatus === "none") return s.clip === null;
-      return s.clip?.status === filter.clipStatus;
-    });
-  }
-
-  return {
-    scans: filtered,
-    has_more: events.length === limit,
+    const { data, error } = await q;
+    if (error) throw error;
+    return (data ?? []) as PackingJoinRow[];
   };
-}
 
+  const clipStatus = filter.clipStatus ?? "any";
+  if (clipStatus === "any") {
+    // Read one extra row so has_more is exact instead of assuming that a full
+    // page always means another page exists.
+    const events = await fetchEvents(offset, limit + 1);
+    const pageEvents = events.slice(0, limit);
+    const scans = await attachClipsToEvents(organizationId, pageEvents);
+    return {
+      scans,
+      has_more: events.length > limit,
+      next_offset: offset + pageEvents.length,
+    };
+  }
+
+  // Clip state is attached data, so it cannot be filtered correctly after
+  // reading only the first UI page. Walk the complete filtered event stream in
+  // bounded batches until this page is full and one further match is found, or
+  // until the stream is exhausted. Pagination still uses the raw event cursor.
+  const pageEvents: PackingJoinRow[] = [];
+  let cursor = offset;
+
+  while (true) {
+    const events = await fetchEvents(cursor, CLIP_FILTER_SCAN_BATCH);
+    if (events.length === 0) {
+      const scans = await attachClipsToEvents(organizationId, pageEvents);
+      return { scans, has_more: false, next_offset: cursor };
+    }
+
+    const candidates = await attachClipsToEvents(organizationId, events, {
+      includeRelatedContext: false,
+    });
+    for (let index = 0; index < candidates.length; index += 1) {
+      if (!matchesClipStatus(candidates[index], clipStatus)) continue;
+
+      if (pageEvents.length === limit) {
+        // Start the next request at this extra matching event so it is not lost.
+        const scans = await attachClipsToEvents(organizationId, pageEvents);
+        return {
+          scans,
+          has_more: true,
+          next_offset: cursor + index,
+        };
+      }
+      pageEvents.push(events[index]);
+    }
+
+    cursor += events.length;
+    if (events.length < CLIP_FILTER_SCAN_BATCH) {
+      const scans = await attachClipsToEvents(organizationId, pageEvents);
+      return { scans, has_more: false, next_offset: cursor };
+    }
+  }
+}
 // ---------- Clip lookup (for stream route) ----------
 
 export interface ClipRow {
@@ -421,7 +491,7 @@ export interface ClipRow {
   clip_size_bytes: number | null;
   duration_seconds: number | null;
   source_files: unknown;
-  status: "pending" | "ready" | "failed";
+  status: "pending" | "ready" | "failed" | "evicted";
   error_message: string | null;
   cut_mode: "copy" | "reencode";
   generation_params: unknown;

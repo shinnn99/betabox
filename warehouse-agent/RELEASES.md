@@ -4,6 +4,35 @@ Ghi từ 0.8.6 trở đi. Mỗi mục nêu: sửa gì, vì sao, và người đi
 
 ---
 
+## 0.14.0 — 2026-10-05
+
+**Báo riêng dung lượng thư mục video, tách khỏi "đã dùng" của toàn ổ.**
+
+Trước bản này agent chỉ khai tổng ổ và phần còn trống. Hai con số đó trả lời
+được "ổ sắp đầy chưa" nhưng KHÔNG trả lời được "video của tôi chiếm bao
+nhiêu" — vì phần đã dùng gồm cả Windows và mọi phần mềm khác trên máy. Trang
+*Dung lượng lưu trữ* phía cloud cần đúng con số thứ hai.
+
+- **Đo riêng `RECORDING_DIR`**: duyệt cả cây thư mục và cộng **mọi file** bên
+  trong, không chỉ `.mp4` theo khuôn `camera/YYYY/MM/DD`. File tạm, file
+  backup, dữ liệu lạ nằm trong chính thư mục video cũng chiếm ổ nên phải có
+  trong số này. Không đi theo symlink/junction để tránh vòng lặp và tránh cộng
+  nhầm dữ liệu nằm ngoài thư mục.
+- **Nhịp đo tối đa mỗi giờ.** Duyệt cả cây tốn I/O hơn đọc dung lượng ổ, nên
+  kết quả được giữ lại giữa các lượt; vòng tự kiểm 5 phút không quét ổ. Hệ quả:
+  số trên trang có thể chậm so với thực tế tối đa khoảng 1 giờ.
+- **Thêm `disk.recording_bytes` vào bản tự khai.** Thư mục tồn tại nhưng trống
+  báo `0`; chưa đo được báo `null` — hai nghĩa khác nhau, cloud không gộp.
+- Phép đo này **chỉ để báo cáo**, không tham gia quyết định xoá. Ngưỡng cảnh
+  báo ổ đầy và luật dọn theo số ngày lưu giữ nguyên như 0.13.2.
+
+**Người đi cài cần biết:** không có bước thủ công nào, không cần chạy
+migration, cấu hình cũ giữ nguyên. Máy chạy bản cũ hơn vẫn ghi hình và vẫn báo
+cáo bình thường — chỉ riêng ô "Thư mục lưu video" trên trang *Dung lượng lưu
+trữ* hiện gạch ngang kèm lời nhắc cập nhật, cho tới khi máy đó lên 0.14.0.
+
+---
+
 ## 0.13.2 — 2026-09-30
 
 **Gộp bản sửa quét mã chậm (0.13.1) với bản sửa kẹt đổi tên file hàng đợi.**

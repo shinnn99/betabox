@@ -155,7 +155,7 @@ test("bản tự khai: đúng định dạng cloud đọc, không bịa số hà
       { cameraId: "cam-1", recording: true, lastSegmentAt: new Date("2026-09-26T08:00:00Z"), badFramesLastHour: 120 },
       { cameraId: "cam-2", recording: false, lastSegmentAt: null, badFramesLastHour: null },
     ],
-    disk: { freeBytes: 100, totalBytes: 1000, bytesPerRecordingHour: 10 },
+    disk: { freeBytes: 100, totalBytes: 1000, bytesPerRecordingHour: 10, recordingBytes: 321 },
     scansPending: 3,
     lastQrSuccessAt: null,
     configFingerprint: "abc",
@@ -166,7 +166,12 @@ test("bản tự khai: đúng định dạng cloud đọc, không bịa số hà
     { code: "cam-1", recording: true, last_segment_at: "2026-09-26T08:00:00.000Z", bad_frames_last_hour: 120 },
     { code: "cam-2", recording: false, last_segment_at: null, bad_frames_last_hour: null },
   ]);
-  assert.deepEqual(r.disk, { free_bytes: 100, total_bytes: 1000, bytes_per_day: 240 });
+  assert.deepEqual(r.disk, {
+    free_bytes: 100,
+    total_bytes: 1000,
+    bytes_per_day: 240,
+    recording_bytes: 321,
+  });
   assert.deepEqual(r.queues, { scans_pending: 3, clips_pending: null, uploads_pending: null });
   assert.deepEqual(r.capabilities, [...CAPABILITIES]);
   assert.ok((r.capabilities as string[]).includes("adaptive_clip_bitrate"));

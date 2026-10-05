@@ -27,6 +27,12 @@ export interface LedgerIncident {
   first_seen_at: string;
   last_seen_at: string;
   occurrence_count: number;
+  /**
+   * Tên kho sở hữu sự cố. `null` = sự cố cấp hệ thống (cron, VPS) không thuộc
+   * kho nào. Thiếu cột này thì hai kho có cùng `where_label` hiện ra y hệt
+   * nhau — trang Sự cố có cột này từ đầu, sổ nhúng thì chưa.
+   */
+  organization_name?: string | null;
 }
 
 export type LedgerView =
@@ -97,6 +103,7 @@ function LedgerBody({ ledger, lastBackgroundRun, now, checkLabels }: PanelProps)
         <table className="w-full text-sm">
           <thead className="bg-slate-50/50 text-xs text-slate-500">
             <tr>
+              <th className="text-left px-4 py-2 font-medium">Kho</th>
               <th className="text-left px-4 py-2 font-medium">Ở đâu — cái gì</th>
               <th className="text-left px-4 py-2 font-medium">Bắt đầu</th>
               <th className="text-left px-4 py-2 font-medium">Lần cuối thấy</th>
@@ -107,6 +114,13 @@ function LedgerBody({ ledger, lastBackgroundRun, now, checkLabels }: PanelProps)
           <tbody className="divide-y divide-slate-100">
             {ledger.open.map((i) => (
               <tr key={i.id} className={i.severity === "crit" ? "bg-red-50/40" : ""}>
+                <td className="px-4 py-3 align-top text-xs">
+                  {i.organization_name ? (
+                    <span className="text-slate-700">{i.organization_name}</span>
+                  ) : (
+                    <span className="text-slate-400">Hệ thống</span>
+                  )}
+                </td>
                 <td className="px-4 py-3 align-top">
                   <div className="flex items-start gap-2">
                     <span

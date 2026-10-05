@@ -22,7 +22,7 @@ export const SELF_REPORT_VERSION = 1;
  * Phiên bản agent mới nhất đã phát hành. Trang Đội agent đánh dấu máy nào
  * thấp hơn. Phát hành bản mới thì sửa ở đây — cùng lúc với RELEASES.md.
  */
-export const LATEST_AGENT_VERSION = "0.13.2";
+export const LATEST_AGENT_VERSION = "0.14.0";
 
 /**
  * Khả năng agent tự khai. Cloud bật tính năng theo KHẢ NĂNG, không theo so
@@ -72,6 +72,11 @@ export interface SelfReport {
     total_bytes: number;
     /** Tốc độ ghi đầy trung bình, byte / ngày. null = chưa đủ số liệu. */
     bytes_per_day: number | null;
+    /**
+     * Thư mục ghi hình chiếm bao nhiêu byte — KHÁC `total - free` (toàn ổ, gồm
+     * cả Windows và phần mềm khác). null = agent bản cũ, hoặc lượt này chưa đo.
+     */
+    recording_bytes: number | null;
   } | null;
   queues: {
     scans_pending: number | null;
@@ -133,7 +138,16 @@ export function parseSelfReport(raw: unknown): SelfReport | null {
     const free = num(d.free_bytes);
     const total = num(d.total_bytes);
     if (free !== null && total !== null && total > 0) {
-      disk = { free_bytes: Math.min(free, total), total_bytes: total, bytes_per_day: num(d.bytes_per_day) };
+      const rec = num(d.recording_bytes);
+      disk = {
+        free_bytes: Math.min(free, total),
+        total_bytes: total,
+        bytes_per_day: num(d.bytes_per_day),
+        // Chặn trên bằng dung lượng ổ: thư mục không thể lớn hơn chính cái ổ
+        // chứa nó. Số vượt trần là dấu hiệu đo sai, thà bó về trần còn hơn
+        // hiện một con số vô lý.
+        recording_bytes: rec === null ? null : Math.min(rec, total),
+      };
     }
   }
 

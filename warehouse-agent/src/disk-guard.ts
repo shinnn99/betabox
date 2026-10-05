@@ -69,6 +69,12 @@ export interface GuardStatus {
   recordingHoursRemaining: number | null;
   /** Dung lượng `_clips` chiếm (chỉ báo cáo, v1 không xoá). */
   clipsBytes: number | null;
+  /**
+   * Dung lượng toàn bộ thư mục RECORDING_DIR: segment, clip, file tạm và
+   * mọi dữ liệu khác thực sự đang chiếm chỗ bên trong thư mục này.
+   * null = chưa đo được; 0 = thư mục tồn tại và đang trống.
+   */
+  recordingBytes: number | null;
   measuredAtMs: number;
 }
 
@@ -150,6 +156,12 @@ export interface DiskGuardOptions {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Duyệt cả cây RECORDING_DIR tốn I/O hơn statfs, nên chỉ đo tối đa mỗi giờ.
+ * Số này chỉ để báo cáo riêng dung lượng thư mục video, không quyết định xoá.
+ */
+const RECORDING_SIZE_EVERY_MS = 60 * 60 * 1000;
 const GIB = 1024 ** 3;
 
 /**
@@ -393,6 +405,8 @@ export function inferSegmentSecondsFromNames(
 export class DiskGuard {
   private timer: NodeJS.Timeout | null = null;
   private ticking = false;
+  /** Phép đo cả cây RECORDING_DIR được giữ lại để không quét ổ mỗi 5 phút. */
+  private recordingBytesCache: { bytes: number; atMs: number } | null = null;
   private lastLevel: GuardLevel = "ok";
   private lastStatus: GuardStatus | null = null;
   private lastTickCompletedMs = Date.now();
@@ -624,8 +638,71 @@ export class DiskGuard {
       bytesPerRecordingHour: rate,
       recordingHoursRemaining: hours,
       clipsBytes,
+      recordingBytes: await this.measureRecordingBytes(),
       measuredAtMs: Date.now(),
     };
+  }
+
+  /**
+   * Đo dung lượng thực của TOÀN BỘ thư mục RECORDING_DIR.
+   *
+   * Không chỉ cộng .mp4 theo khuôn camera/YYYY/MM/DD: file tạm, file backup,
+   * quarantine hoặc dữ liệu lạ trong chính thư mục video cũng chiếm ổ và phải
+   * xuất hiện trong số này. Không đi theo symlink/junction để tránh vòng lặp và
+   * tránh cộng nhầm dữ liệu nằm ngoài RECORDING_DIR.
+   */
+  private async measureRecordingBytes(): Promise<number | null> {
+    const nowMs = Date.now();
+    if (
+      this.recordingBytesCache !== null &&
+      nowMs - this.recordingBytesCache.atMs < RECORDING_SIZE_EVERY_MS
+    ) {
+      return this.recordingBytesCache.bytes;
+    }
+
+    const root = this.deps.recordingRoot;
+    const pending = [root];
+    let total = 0;
+
+    while (pending.length > 0) {
+      const dir = pending.pop()!;
+      let entries: import("node:fs").Dirent[];
+      try {
+        entries = await withTimeout(
+          fs.readdir(dir, { withFileTypes: true }),
+          this.fsTimeoutMs,
+          "readdir recording size",
+        );
+      } catch {
+        // Gốc không đọc được = chưa có phép đo. Thư mục con biến mất giữa lúc
+        // cleanup chạy chỉ làm thiếu phần đó, không huỷ cả kết quả.
+        if (dir === root) return this.recordingBytesCache?.bytes ?? null;
+        continue;
+      }
+
+      for (const entry of entries) {
+        const abs = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          pending.push(abs);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        try {
+          const st = await withTimeout(
+            fs.stat(abs),
+            this.fsTimeoutMs,
+            "stat recording size",
+          );
+          total += st.size;
+        } catch {
+          // File vừa bị ffmpeg/cleanup đổi tên hoặc xoá: bỏ qua đúng file đó.
+        }
+      }
+    }
+
+    // Thư mục tồn tại nhưng trống là phép đo hợp lệ: 0 byte, không phải null.
+    this.recordingBytesCache = { bytes: total, atMs: nowMs };
+    return total;
   }
 
   /**

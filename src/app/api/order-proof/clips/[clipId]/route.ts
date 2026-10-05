@@ -68,9 +68,31 @@ function parseRange(
 }
 
 export async function GET(req: Request, { params }: RouteContext) {
+  // ĐO TRƯỚC KHI XOÁ (02/10/2026) — dòng duy nhất trả lời được "còn ai gọi
+  // route này không?".
+  //
+  // Grep repo đã sạch trên ba trục: đường dẫn nguyên văn 0 caller, URL ghép
+  // chuỗi 0 caller (hai chỗ động đều trỏ `/watch` và `/watch/retry`), script
+  // verify + middleware không nhắc tới. Nhưng đây là endpoint HTTP công khai
+  // nên caller thật có thể nằm NGOÀI repo: deep-link cũ trong email, bookmark,
+  // lịch sử browser — đúng thứ comment deprecated phía trên lo từ 03/07 và
+  // chưa ai đo.
+  //
+  // Đặt ở dòng đầu, TRƯỚC requirePermission: một lượt gọi bị 401/403 vẫn là
+  // một lượt gọi, và nếu log sau lớp quyền thì ca "có người dùng nhưng sai
+  // quyền" sẽ im lặng — đọc ra thành "không ai dùng".
+  //
+  // console.warn để remote-logger đẩy lên được. Im lặng 1-2 tuần thì xoá
+  // route có căn cứ; có dòng nào thì tìm nguồn gọi trước đã.
+  const { clipId } = await params;
+  console.warn(
+    `[deprecated-route] GET /api/order-proof/clips/${clipId} — ` +
+      `referer=${req.headers.get("referer") ?? "none"} ` +
+      `ua=${(req.headers.get("user-agent") ?? "none").slice(0, 80)}`,
+  );
+
   const ctx = await requirePermission("order_proof.view");
   if (isError(ctx)) return ctx;
-  const { clipId } = await params;
 
   const row = await getClipById(ctx.organizationId, clipId);
   if (!row) return NextResponse.json({ error: "not_found" }, { status: 404 });

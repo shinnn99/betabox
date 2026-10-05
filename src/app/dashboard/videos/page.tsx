@@ -29,6 +29,9 @@ import {
 } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import DateRangePicker from "@/components/ui/DateRangePicker";
+import ClipStatusFilterSelect, {
+  type ClipStatusFilter,
+} from "@/components/order-proof/ClipStatusFilterSelect";
 import { useToast } from "@/components/ui/Toast";
 import { apiFetch } from "@/lib/api-fetch";
 import {
@@ -61,7 +64,7 @@ const AGENT_OFFLINE_THRESHOLD_SECONDS = 30;
 
 interface ClipSummary {
   id: string;
-  status: "pending" | "ready" | "failed";
+  status: "pending" | "ready" | "failed" | "evicted";
   duration_seconds: number | null;
   target_duration_seconds: number | null;
   cut_duration_seconds: number | null;
@@ -208,6 +211,7 @@ export default function VideosPage() {
   const [waybillSearch, setWaybillSearch] = useState("");
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
+  const [clipStatus, setClipStatus] = useState<ClipStatusFilter>("any");
 
   const [rows, setRows] = useState<ScanRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -262,12 +266,13 @@ export default function VideosPage() {
       if (from) params.set("from", dayStart(from).toISOString());
       if (to) params.set("to", dayEnd(to).toISOString());
       if (waybillSearch.trim()) params.set("waybill_code", waybillSearch.trim());
+      if (clipStatus !== "any") params.set("clip_status", clipStatus);
       params.set("scan_status", "valid");
       params.set("limit", String(PAGE_LIMIT));
       params.set("offset", String(off));
       return params.toString();
     },
-    [from, to, waybillSearch],
+    [clipStatus, from, to, waybillSearch],
   );
 
   /**
@@ -303,12 +308,16 @@ export default function VideosPage() {
       }
       const incoming = (data.scans ?? []) as ScanRow[];
       const more = Boolean(data.has_more);
+      const rawNextOffset = Number(data.next_offset);
+      const nextOffset = Number.isFinite(rawNextOffset)
+        ? rawNextOffset
+        : off + incoming.length;
       if (mode === "fresh" || mode === "silent") {
         setRows(incoming);
-        setOffset(incoming.length);
+        setOffset(nextOffset);
       } else {
         setRows((prev) => [...prev, ...incoming]);
-        setOffset((prev) => prev + incoming.length);
+        setOffset(nextOffset);
       }
       setHasMore(more);
     },
@@ -319,7 +328,7 @@ export default function VideosPage() {
     setSelectedIds(new Set());
     void load("fresh");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [waybillSearch, from, to]);
+  }, [waybillSearch, from, to, clipStatus]);
 
   // Dọn id không còn trong list (bị lọc bởi silent refresh) để bulk
   // bar không đếm "ma". Ref-set để so nhanh.
@@ -485,6 +494,8 @@ export default function VideosPage() {
         <SearchBar
           waybillSearch={waybillSearch}
           setWaybillSearch={setWaybillSearch}
+          clipStatus={clipStatus}
+          setClipStatus={setClipStatus}
           from={from}
           to={to}
           onDateChange={(f, t) => {
@@ -631,6 +642,8 @@ export default function VideosPage() {
 function SearchBar(props: {
   waybillSearch: string;
   setWaybillSearch: (v: string) => void;
+  clipStatus: ClipStatusFilter;
+  setClipStatus: (value: ClipStatusFilter) => void;
   from: string;
   to: string;
   onDateChange: (from: string, to: string) => void;
@@ -640,8 +653,8 @@ function SearchBar(props: {
 }) {
   return (
     <div className="bg-white rounded-2xl border border-slate-100 p-3 lg:p-4 shadow-sm">
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1 min-w-0">
+      <div className="flex flex-nowrap items-center gap-2">
+        <div className="relative min-w-0 flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
           <input
             value={props.waybillSearch}
@@ -652,6 +665,11 @@ function SearchBar(props: {
             className="w-full h-9 pl-9 pr-3 rounded-xl border border-slate-200 text-sm font-mono uppercase focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
           />
         </div>
+
+        <ClipStatusFilterSelect
+          value={props.clipStatus}
+          onChange={props.setClipStatus}
+        />
 
         <DateRangePicker
           from={props.from}

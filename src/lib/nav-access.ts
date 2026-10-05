@@ -24,6 +24,9 @@ export const NAV_ACCESS: ReadonlyArray<readonly [string, readonly string[]]> = [
   // Máy trạm kho: ai xem được thiết bị đều xem được trạng thái máy trạm;
   // tạo / cấp secret / xoá chặn ngay ở nút (station_device.create).
   ["/dashboard/agents", ["station_device.view"]],
+  // Dung lượng lưu trữ: cùng quyền với Máy trạm kho — đây là câu hỏi về
+  // chính cái máy đó (chủ dự án chốt 02/10/2026).
+  ["/dashboard/storage", ["station_device.view"]],
   ["/dashboard/staff", ["staff.view"]],
   ["/dashboard/reports", ["report.view"]],
   ["/dashboard/users", ["user.view"]],

@@ -6,9 +6,12 @@
 # tới 6 ngày. Không gọi mạng — đọc mọi thứ từ file cache local do agent
 # ghi.
 #
-# Hai nhóm file, hai chính sách:
+# Ba nhóm file, ba chính sách:
 #   1. Hàng hoàn (retention-plan.json): danh sách cloud lập, hạn 7 ngày.
-#   2. Mọi file khác (retention-cache.json): hạn chung của tổ chức.
+#   2. Mọi segment khác (retention-cache.json): hạn chung của tổ chức.
+#   3. Clip đã cắt trong `_clips\` (-ClipRetentionDays, mặc định 7 ngày):
+#      phái sinh từ segment, cắt lại được — xoá theo tuổi file, KHÔNG cần
+#      hỏi cloud. Chỉ xoá khi hạn clip NGẮN HƠN hạn segment (xem dưới).
 #
 # Fail-loud ở nhóm 2: nếu retention cache thiếu / hỏng → script KHÔNG
 # chạy, ghi log rõ ràng. Lý do: mất dung lượng còn hơn mất bằng chứng.
@@ -23,13 +26,17 @@
 #   1. Bỏ qua file có LastWriteTime trong 5 phút gần nhất.
 #   2. Bỏ qua toàn bộ thư mục ngày hôm nay (dạng \yyyy\mm\dd).
 #
-# Loại trừ thư mục _clips/ (chốt CLIPS_SUBDIR ở recording.ts).
+# Vòng quét segment loại trừ thư mục _clips/ (chốt CLIPS_SUBDIR ở
+# recording.ts) — clip có vòng quét riêng ở nhóm 3, luật khác hẳn.
 #
 # Dùng: cleanup-segments.ps1 [-WhatIf] [-AgentDir <path>]
-#   -WhatIf     : chỉ IN RA danh sách sẽ xóa, không xóa thật (chạy lần đầu).
-#   -AgentDir   : đường dẫn thư mục agent (chứa .env, retention-cache.json,
-#                 retention-plan.json).
-#                 Mặc định: "C:\Program Files\BetacomAgent".
+#                            [-ClipRetentionDays <n>]
+#   -WhatIf            : chỉ IN RA danh sách sẽ xóa, không xóa thật (chạy
+#                        lần đầu).
+#   -AgentDir          : đường dẫn thư mục agent (chứa .env,
+#                        retention-cache.json, retention-plan.json).
+#                        Mặc định: "C:\Program Files\BetacomAgent".
+#   -ClipRetentionDays : hạn giữ clip trong _clips\. Mặc định 7.
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -41,7 +48,20 @@ param(
     # 7 ngày: bỏ qua mất mạng ngắn, bắt được ca "heartbeat chết mấy tuần".
     # Không dọn thì đĩa đầy dần — nhưng disk guard trong agent là lưới đỡ
     # cho đúng ca đó, còn xoá theo số sai thì không có lưới nào.
-    [int]$MaxCacheAgeDays = 7
+    [int]$MaxCacheAgeDays = 7,
+    # Hạn giữ clip bằng chứng đã cắt trong `_clips\` (mặc định 7 ngày).
+    #
+    # Vì sao ngắn hơn hạn segment nhiều: clip là SẢN PHẨM PHÁI SINH, cắt lại
+    # được từ segment gốc bất cứ lúc nào. Bucket cloud cũng chỉ giữ 72 giờ
+    # (BUCKET_TTL_HOURS) rồi xoá object và đánh `status='evicted'`; lúc user
+    # xem lại, `/watch` tự cắt lại từ segment. Tức ngay cả cloud cũng không
+    # coi clip là bản lưu dài hạn — segment mới là nguồn chân lý.
+    #
+    # KHÔNG kiểm "clip đã upload chưa" trước khi xoá: nghe an toàn nhưng sai.
+    # Số thật 02/10/2026 — 78 clip `evicted` (còn file local, `bucket_path`
+    # NULL) so với 31 clip `ready`. Luật "chỉ xoá khi có bucket_path" sẽ bỏ
+    # sót đúng phần lớn nhất mà vẫn tạo cảm giác đã dọn.
+    [int]$ClipRetentionDays = 7
 )
 
 $ErrorActionPreference = "Stop"
@@ -370,6 +390,75 @@ foreach ($camDir in $cameraDirs) {
             & $removeIfEmpty $y
         }
     }
+}
+
+# 6. Clip đã cắt trong `_clips\` — nhóm duy nhất KHÔNG hỏi cloud.
+#
+# Vì sao xoá được mà không cần biết clip đã upload chưa: clip là sản phẩm
+# phái sinh của segment. Mất clip mà còn segment thì `/watch` cắt lại được
+# (đường đó đã chạy sẵn cho clip `evicted` — xem ghi chú ở tham số
+# -ClipRetentionDays). Mất segment thì không gì cứu được.
+#
+# TỪ ĐÓ RA RÀNG BUỘC CỨNG: hạn clip phải NGẮN HƠN hạn segment. Nếu clip
+# sống dai hơn hoặc bằng segment thì có lúc clip quá hạn bị xoá trong khi
+# segment nguồn cũng đã bị xoá — lúc đó không còn đường cắt lại, và đó là
+# mất bằng chứng vĩnh viễn. Gặp cảnh đó thì KHÔNG xoá clip nào, ghi log để
+# người cấu hình thấy, chứ không tự ý chọn một con số khác.
+#
+# Chỉ xoá file `*.mp4` nằm TRỰC TIẾP trong `_clips\`. Rác tạm (`.tmp.mp4`,
+# `.bak.mp4`, `.concat.txt`, `.stale`) KHÔNG thuộc nhóm này: agent có vòng
+# dọn riêng lúc boot (`cleanupOrphanClipArtifacts`) và nó còn phải hỏi
+# backend xác nhận marker trước khi xử — script đứng ngoài, tránh hai nơi
+# cùng quyết một file.
+#
+# Thư mục `_clips\` KHÔNG BAO GIỜ bị dọn kể cả khi rỗng — cùng lý do với
+# thư mục camera ở nhóm 2.
+$clipsDeleted = 0
+$clipsBytes = 0L
+$clipsDir = Join-Path $recordingDir "_clips"
+
+if (-not (Test-Path $clipsDir -PathType Container)) {
+    Write-CleanupLog "INFO" "Không có thư mục _clips — bỏ qua bước xoá clip."
+} elseif ($ClipRetentionDays -lt 1 -or $ClipRetentionDays -gt 365) {
+    Write-CleanupLog "ERROR" "ClipRetentionDays không hợp lệ (value=$ClipRetentionDays). Phải là 1-365. KHÔNG xoá clip nào."
+} elseif ($ClipRetentionDays -ge $retentionDays) {
+    # Fail-loud, cùng chiều với nhóm 2: nghi ngờ thì giữ, và nói rõ vì sao.
+    Write-CleanupLog "ERROR" "Hạn clip ($ClipRetentionDays ngày) KHÔNG ngắn hơn hạn segment ($retentionDays ngày). Clip chỉ an toàn khi xoá nếu segment nguồn còn để cắt lại; cấu hình này có thể làm mất bằng chứng vĩnh viễn. KHÔNG xoá clip nào. Sửa: hạ -ClipRetentionDays xuống dưới $retentionDays, hoặc tăng retention_days của tổ chức trên dashboard."
+} else {
+    $clipCutoff = $now.AddDays(-$ClipRetentionDays)
+    Write-CleanupLog "INFO" "Clip: hạn $ClipRetentionDays ngày, cutoff=$($clipCutoff.ToString('yyyy-MM-dd HH:mm:ss')) (hạn segment $retentionDays ngày)"
+
+    $clipFiles = @(Get-ChildItem -Path $clipsDir -File -Filter "*.mp4" -ErrorAction SilentlyContinue) |
+        Where-Object {
+            # Rác tạm có chủ sở hữu khác (boot cleanup của agent) — không đụng.
+            if ($_.Name -like "*.tmp.mp4" -or $_.Name -like "*.bak.mp4") { return $false }
+            # Guard 1 giống hai nhóm trên: file vừa ghi có thể đang được cắt.
+            if ($_.LastWriteTime -gt $recentGuard) { return $false }
+            return $_.LastWriteTime -lt $clipCutoff
+        }
+
+    foreach ($file in $clipFiles) {
+        $sizeBytes = $file.Length
+        $allCandidates.Add([pscustomobject]@{
+            Camera  = "_clips"
+            Path    = $file.FullName
+            Day     = $file.LastWriteTime.ToString("yyyy-MM-dd")
+            AgeDays = [int]($now - $file.LastWriteTime).TotalDays
+            Bytes   = $sizeBytes
+        })
+        if ($PSCmdlet.ShouldProcess($file.FullName, "Delete clip (age=$([int]($now - $file.LastWriteTime).TotalDays)d size=$([math]::Round($sizeBytes/1MB,1))MB)")) {
+            try {
+                Remove-Item -Path $file.FullName -Force
+                $clipsDeleted++
+                $clipsBytes += $sizeBytes
+                $totalDeleted++
+                $totalBytes += $sizeBytes
+            } catch {
+                Write-CleanupLog "WARN" "Delete failed (clip): $($file.FullName) — $($_.Exception.Message)"
+            }
+        }
+    }
+    Write-CleanupLog "INFO" "Clip: xoá $clipsDeleted file, $([math]::Round($clipsBytes/1MB,1))MB"
 }
 
 # 7. Tổng kết — CẢ HAI chế độ đọc cùng $allCandidates.

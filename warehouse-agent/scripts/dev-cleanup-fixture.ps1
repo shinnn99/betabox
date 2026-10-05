@@ -1,4 +1,4 @@
-# Dựng cây giả để kiểm `cleanup-segments.ps1` — CHỈ DÙNG TRÊN MÁY DEV.
+﻿# Dựng cây giả để kiểm `cleanup-segments.ps1` — CHỈ DÙNG TRÊN MÁY DEV.
 #
 # Vì sao cần: cleanup-segments.ps1 chưa từng thi hành `Remove-Item` ở bất kỳ
 # đâu (Task Scheduler máy dev không có task, Đại Kim chưa có file nào quá
@@ -9,7 +9,9 @@
 #   <Root>/.env                     RECORDING_DIR=./recordings
 #   <Root>/retention-cache.json     (tuỳ -Cache)
 #   <Root>/recordings/<cam>/YYYY/MM/DD/*.mp4
-#   <Root>/recordings/_clips/*.mp4                     ← không được đụng
+#   <Root>/recordings/_clips/*.mp4                     ← nhóm 3: cũ thì XOÁ,
+#                                                        mới thì giữ
+#   <Root>/recordings/_clips/*.tmp.mp4 |*.bak.mp4      ← không được đụng
 #   <Root>/recordings/_clips/_quarantine/...           ← không được đụng
 #   <Root>/recordings/logs/*.mp4                       ← thư mục LẠ (không phải camera)
 #
@@ -71,13 +73,44 @@ $lockMiddle = $null
 $camB = Join-Path $rec "cam_b"
 $lockAlone = New-Seg $camB $now.AddDays(-45) ("cam_b_" + $now.AddDays(-45).ToString("yyyyMMdd") + "_000001.mp4")
 
-# --- _clips: chứng dương cho luật loại trừ (đủ cũ để LẼ RA bị chọn) ---
+# --- _clips: nhóm 3, có luật XOÁ RIÊNG (hạn clip, mặc định 7 ngày) ---
+#
+# Trước 02/10/2026 thư mục này là chứng dương cho luật LOẠI TRỪ — clip
+# không bao giờ bị xoá. Giả định đó đã đổi: clip là phái sinh của segment,
+# cắt lại được, nên có hạn riêng ngắn hơn hạn segment.
+#
+# Dựng đủ bốn loại để phân biệt được xoá-đúng với xoá-quá-tay:
+#   1. clip CŨ   (quá hạn clip)        → PHẢI xoá
+#   2. clip MỚI  (trong hạn clip)      → KHÔNG được xoá
+#   3. rác tạm .tmp.mp4 / .bak.mp4     → KHÔNG được xoá (boot cleanup của
+#      agent sở hữu, còn phải hỏi backend xác nhận marker)
+#   4. _quarantine\ (thư mục con)      → KHÔNG được xoá
 $clips = Join-Path $rec "_clips"
 New-Item -ItemType Directory -Path $clips -Force | Out-Null
+
+# 1. Clip cũ — quá mọi hạn clip hợp lý.
+$clipOld = $now.AddDays(-20)
 1..3 | ForEach-Object {
     $p = Join-Path $clips "abcdefab-cdef-4def-8def-00000000000$_.mp4"
     [System.IO.File]::WriteAllBytes($p, (New-Object byte[] (32KB)))
-    (Get-Item $p).LastWriteTime = $old1
+    (Get-Item $p).LastWriteTime = $clipOld
+}
+
+# 2. Clip mới — 2 ngày tuổi, dưới hạn mặc định 7 ngày.
+$clipFresh = $now.AddDays(-2)
+1..2 | ForEach-Object {
+    $p = Join-Path $clips "fade0000-cdef-4def-8def-00000000000$_.mp4"
+    [System.IO.File]::WriteAllBytes($p, (New-Object byte[] (32KB)))
+    (Get-Item $p).LastWriteTime = $clipFresh
+}
+
+# 3. Rác tạm đủ cũ để LẼ RA bị chọn nếu luật quét sai — chứng dương cho
+#    phần loại trừ còn lại của nhóm 3.
+@("deadbeef-cdef-4def-8def-000000000001.cmd1.tmp.mp4",
+  "deadbeef-cdef-4def-8def-000000000002.cmd2.bak.mp4") | ForEach-Object {
+    $p = Join-Path $clips $_
+    [System.IO.File]::WriteAllBytes($p, (New-Object byte[] (16KB)))
+    (Get-Item $p).LastWriteTime = $clipOld
 }
 
 if (-not $NoQuarantine) {
@@ -135,7 +168,11 @@ $manifest = [ordered]@{
     total_mp4       = $allMp4.Count
     lock_alone      = $lockAlone
     lock_middle     = $script:lockMiddle
-    protected_clips = (Get-ChildItem -Path $clips -Recurse -File -Filter *.mp4).Count
+    # Clip quá hạn → PHẢI xoá. Tách khỏi phần phải giữ để đối chiếu được.
+    clips_old       = (Get-ChildItem -Path $clips -File -Filter "abcdefab-*.mp4").Count
+    clips_fresh     = (Get-ChildItem -Path $clips -File -Filter "fade0000-*.mp4").Count
+    clips_tmp_bak   = (Get-ChildItem -Path $clips -File | Where-Object { $_.Name -like "*.tmp.mp4" -or $_.Name -like "*.bak.mp4" }).Count
+    clips_quarantine = (Get-ChildItem -Path $clips -Recurse -File -Filter *.mp4 -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like "*_quarantine*" }).Count
 }
 $manifest | ConvertTo-Json | Set-Content -Path (Join-Path $Root "fixture-manifest.json") -Encoding UTF8
 $manifest.GetEnumerator() | ForEach-Object { "{0,-16}= {1}" -f $_.Key, $_.Value }

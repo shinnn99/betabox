@@ -1,5 +1,6 @@
 import "server-only";
 import { cleanupExpiredClips, type CleanupError, type CleanupResult } from "@/lib/watch/cleanup";
+import { sweepOrphanObjects } from "@/lib/watch/orphan-objects";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   SYSTEM_JOB_CLEANUP_CLIPS,
@@ -56,6 +57,21 @@ export async function runCleanupClipsJob(
     throw err;
   }
 
+  // Lượt hai: dọn object MỒ CÔI — thứ lượt một không bao giờ nhìn thấy, vì
+  // lượt một đi từ bảng clip còn mồ côi theo định nghĩa là không có dòng clip
+  // nào (xem src/lib/watch/orphan-objects.ts).
+  //
+  // Chạy SAU lượt một và KHÔNG được làm hỏng nó: lượt một vừa set
+  // `bucket_path = null` cho clip quá hạn, nên nếu file xoá lỗi ở lượt một,
+  // lượt hai sẽ nhặt nốt ở vòng sau khi object đủ 24h tuổi. Lỗi ở đây chỉ ghi
+  // vào sổ, không ném — dọn rác hỏng không đáng làm hỏng lượt dọn chính.
+  let orphans: Awaited<ReturnType<typeof sweepOrphanObjects>> | null = null;
+  try {
+    orphans = await sweepOrphanObjects({ client: options.clipClient });
+  } catch (err) {
+    orphans = { ok: false, error: "scan_failed", message: errorMessage(err) };
+  }
+
   await recordSystemJob(
     {
       jobName: SYSTEM_JOB_CLEANUP_CLIPS,
@@ -64,17 +80,26 @@ export async function runCleanupClipsJob(
       // remove_errors giữ dạng ĐẾM, không giữ nội dung: mỗi phần tử là
       // thông điệp lỗi của storage, có thể kèm đường dẫn file chứa id org
       // và id clip. Chi tiết đầy đủ vẫn ra stderr/journalctl.
-      detail: result.ok
-        ? {
-            deleted: result.deleted,
-            cutoff_iso: result.cutoff_iso,
-            remove_errors: result.remove_errors?.length ?? 0,
-          }
-        : {
-            error: result.error,
-            message: truncateForDetail(result.message),
-            remove_errors: result.remove_errors?.length ?? 0,
-          },
+      detail: {
+        ...(result.ok
+          ? {
+              deleted: result.deleted,
+              cutoff_iso: result.cutoff_iso,
+              remove_errors: result.remove_errors?.length ?? 0,
+            }
+          : {
+              error: result.error,
+              message: truncateForDetail(result.message),
+              remove_errors: result.remove_errors?.length ?? 0,
+            }),
+        // Lượt mồ côi ghi riêng để đọc sổ phân biệt được "dọn hết hạn" với
+        // "dọn rác". `orphans_too_young` là nhịp sinh rác: số đó lớn dần qua
+        // các lượt nghĩa là lỗi ghi `bucket_path` đang tái diễn.
+        orphans_deleted: orphans?.ok ? orphans.deleted : null,
+        orphans_freed_bytes: orphans?.ok ? orphans.freedBytes : null,
+        orphans_too_young: orphans?.ok ? orphans.tooYoung : null,
+        orphans_error: orphans && !orphans.ok ? truncateForDetail(orphans.message) : null,
+      },
     },
     { client: options.jobClient },
   );
