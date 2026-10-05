@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --experimental-https --experimental-https-key ./certs/localhost-key.pem --experimental-https-cert ./certs/localhost.pem",
-    "prebuild": "node --experimental-strip-types scripts/build-changelog.mjs && node scripts/check-proof-clip-signed-url.mjs && node scripts/check-write-routes-pass-request.mjs && node scripts/check-client-writes-use-apifetch.mjs",
+    "prebuild": "node --experimental-strip-types scripts/build-changelog.mjs && node scripts/check-proof-clip-signed-url.mjs && node scripts/check-write-routes-pass-request.mjs && node scripts/check-client-writes-use-apifetch.mjs && node scripts/check-security-definer-grants.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

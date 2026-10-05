@@ -2268,3 +2268,45 @@ git rm --cached warehouse-agent/releases/BetacomAgentSetup-v0.12.1.exe
 ```
 
 Lệnh này chỉ bỏ theo dõi, KHÔNG xoá file trên đĩa. Sau đợt này tracked còn ~440 MB / 1 GB (hiện 361 MB + 213 MB của 0.14.0 − 155 MB của 0.12.1 lùi ra).
+
+### [SECDEF-CROSS-TENANT-REVOKE] - Bịt lỗ cross-tenant ở hàm SECURITY DEFINER + gate chặn tái diễn
+
+- **Trạng thái:** Migration + script gate ĐÃ VIẾT, test xanh, **CHƯA áp lên production** (chờ chủ dự án chốt — xem cuối mục).
+- **Phát hiện thế nào:** đang kiểm "3 migration đã có trên DB chưa" thì thấy ACL của `recording_daily_usage` còn `authenticated=X`, trong khi file migration không GRANT cho role đó.
+- **BẰNG CHỨNG ĐÃ CẮN (production, 05/10/2026) — không phải suy luận:**
+  ```
+  set local role authenticated;
+  select count(*), sum(segments) from public.recording_daily_usage('e3cb7cd1-…', 14);
+  → 13 ngày, 11.153 segment
+  ```
+  Một tài khoản bất kỳ, của BẤT KỲ kho nào, đọc được trọn số liệu ghi hình kho khác chỉ bằng cách đổi `p_organization_id`.
+- **Vì sao xuyên được:** `SECURITY DEFINER` làm RLS bảng gốc KHÔNG áp (RLS đang bật, 1 policy), + hàm ở schema `public` nên PostgREST expose ra `/rest/v1/rpc/...`. `anon` bị chặn, `authenticated` thì không.
+- **Vì sao có lỗ — là SÓT, không phải chủ ý.** Ba migration cùng đợt 02/10: `storage_usage_fn` CÓ `REVOKE ... FROM authenticated`, hai bản `recording_daily_usage` THIẾU đúng dòng đó (khối GRANT bản sau chép từ bản trước nên lỗi nhân đôi). `pg_default_acl` của schema `public` tự cấp EXECUTE cho `anon` + `authenticated` với mọi hàm mới — mặc định là MỞ, không revoke tường minh thì không có gì chặn.
+
+**Ba hàm phải vá — danh sách đi từ DB, KHÔNG từ việc đọc file.** Đọc file cho ra 51 ca; query DB chỉ ra 2 ca thật (phần còn lại là trigger function hoặc đã revoke ở migration khác). Rồi ca thứ ba lộ ra khi sửa script:
+
+| Hàm | Mức rò | Ghi chú |
+|---|---|---|
+| `recording_daily_usage(uuid,integer)` | **Theo lô** — 1 lệnh ra 13 ngày × 11.153 segment | Chỉ cần biết org_id |
+| `station_current_mode(uuid)` | **Nhỏ giọt** — 1 chuỗi `'outbound'`/mỗi lệnh | Phải biết trước station_id (uuid) |
+| `count_active_owners_app(uuid)` | **Production ĐÃ kín, repo thì hở** | Xem dưới |
+
+- **Ca `count_active_owners_app` là loại khác hẳn:** trên production ACL đã kín (`auth_exec` = false) nhưng TOÀN BỘ repo không có lệnh nào tạo ra trạng thái đó — tức có người revoke tay ngoài migration (cọc *Paste SQL Editor không track migration*). Production kín, **fresh clone thì hở**. Đã thêm REVOKE vào migration để repo khớp production; trên production lệnh này là no-op.
+- **Không làm hỏng tính năng nào:** đã grep đường gọi của cả ba hàm, tất cả chỉ đi qua admin client (service_role) — `storage-health.ts`, `station/return-scan.ts`, route `users/[id]`. Không có đường session client nào.
+- **Migration có guard tự chốt HAI VẾ** (`DO $$` cuối file): vế dương `authenticated`/`anon` phải mất quyền, vế âm `service_role` phải CÒN quyền. Thiếu vế âm thì một bản vá làm trắng trang vẫn "chạy thành công".
+
+**Script gate mới `scripts/check-security-definer-grants.mjs`** — đã gắn vào `prebuild` (gate thứ 5). Quá trình hiệu chỉnh đáng ghi vì bản nháp đầu gần như vô dụng:
+
+| Bản | Báo | Thực tế DB | Lỗi |
+|---|---|---|---|
+| nháp 1 | 51 | 2 | đếm cả trigger function; soi từng file riêng lẻ |
+| nháp 2 | 34 | 2 | chỉ nhận `FROM authenticated`, bỏ sót dạng gộp `FROM PUBLIC, anon, authenticated` và `EXECUTE format('REVOKE...` |
+| nháp 3 | 10 + **bỏ sót `station_current_mode`** | 2 | nhánh revoke-động không khớp tên hàm → một file sau che MỌI hàm trước |
+| nháp 4 | 1 | 2 | `CREATE OR REPLACE` không reset ACL — hàm revoke ở file cũ, sửa body ở file mới |
+| **cuối** | **3** (đúng tập cần vá) | 3 | — |
+
+- **Bài học ghi lại:** điểm mù ở nháp 3 (`station_current_mode` lọt) bắt được nhờ **đối chiếu DB**, không nhờ đọc lại code. Script xanh ở nháp 3 là xanh GIẢ. Một gate kêu oan 49 lần sẽ bị tắt, nên hiệu chỉnh tới khi khớp DB là điều kiện bắt buộc, không phải tinh chỉnh cho đẹp.
+- **Giới hạn đã biết của script (ghi thẳng trong file):** chỉ soi repo nên không bắt được hàm tạo/sửa tay qua SQL Editor; khớp theo TÊN không theo chữ ký; `DROP` rồi `CREATE` lại mà quên REVOKE thì cho qua (DROP mất ACL thật). Trục đó phải query DB, không grep repo.
+- **Kiểm thử:** cloud 875/875; 5 script prebuild đạt; script gate verify HAI NỬA (bỏ file vá ra → bắt đúng 3 hàm; có file vá → xanh).
+
+**CHƯA LÀM — cần chủ dự án chốt:** `supabase db push` lên production bị cơ chế an toàn chặn, lý do đúng: đây là migration do tôi tự soạn, trong khi lệnh "triển" được nói trước lúc file này tồn tại nên production chưa từng được nêu tên cho thay đổi này. Trạng thái migration list trước đó: mọi version cũ đều sync (local = remote), chỉ `20261005134612` pending — không có drift, không migration cũ nào bị tái chạy.
