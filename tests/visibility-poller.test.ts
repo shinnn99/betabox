@@ -232,7 +232,7 @@ test("nhịp co giãn mặc định dùng setTimeout thật, chỉ giữ MỘT t
   globalThis.setInterval = (() => {
     intervalCalls += 1;
     return 99_999;
-  }) as typeof setInterval;
+  }) as unknown as typeof setInterval;
   globalThis.clearInterval = (() => undefined) as typeof clearInterval;
 
   let stop: (() => void) | null = null;
