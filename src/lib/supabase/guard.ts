@@ -6,6 +6,12 @@ import { createAdminClient } from "./admin";
 import { verifyOrgContext } from "@/lib/platform/internal-headers";
 import { checkPlatformAdmin, type PlatformRole } from "@/lib/platform/admin-check";
 import { evaluateRenderOrg } from "./render-org-guard";
+import {
+  buildGrants,
+  hasGrant,
+  PermissionGrantCache,
+  permissionsForRole,
+} from "./permission-cache";
 import type { Role } from "@/lib/auth";
 
 const INTERNAL_ORG_CTX_HEADER = "x-internal-org-ctx";
@@ -424,20 +430,51 @@ export async function requirePlatformRole(
 }
 
 // ============================================================================
-// checkPermission — KHÔNG ĐỔI (query role_permission_matrix)
+// checkPermission — đệm 60 giây toàn ma trận
+//
+// Trước (đo 06/10/2026): mỗi lượt gọi API chạy MỘT truy vấn
+// `role_permission_matrix` riêng — 42.402 lượt/24h, đứng thứ 7 trong toàn bộ
+// lưu lượng PostgREST của project. Đây là bảng cấu hình gần như bất động: chỉ
+// đổi khi admin nền tảng bấm lưu ở trang phân quyền.
+//
+// Đệm theo tinh thần `template-store.ts` (cùng dạng: đọc nhiều, ghi hiếm):
+// tải TRỌN ma trận một lượt rồi trả lời trong RAM, thay vì một truy vấn cho
+// mỗi cặp (role, permission). Đổi quyền có hiệu lực chậm nhất 60 giây; đường
+// ghi (`PUT /api/platform/permissions`) gọi `invalidatePermissionCache()`: cùng
+// process có hiệu lực ngay; process khác chậm tối đa một TTL.
+//
+// FAIL-CLOSED: đọc hỏng thì KHÔNG đệm và KHÔNG coi là có quyền — trả false,
+// giống hệt hành vi cũ khi truy vấn lỗi (`data` undefined → `!!data` = false).
+// Không bao giờ đệm kết quả của một lượt đọc lỗi.
 // ============================================================================
+const permissionCache = new PermissionGrantCache();
+
+/** Gọi sau khi ghi ma trận để lần hỏi kế tiếp đọc lại từ DB. */
+export function invalidatePermissionCache(): void {
+  permissionCache.invalidate();
+}
+
+async function loadPermissionGrants(): Promise<Set<string> | null> {
+  return permissionCache.getOrLoad(async () => {
+    const admin = createAdminClient();
+    const { data, error } = await admin
+      .from("role_permission_matrix")
+      .select("role, permission_code");
+    // Đọc hỏng → trả null để caller fail-closed. KHÔNG ghi đệm, KHÔNG dùng
+    // đệm cũ đã hết hạn: quyền là cửa bảo vệ, thà chặn nhầm hơn mở nhầm.
+    if (error || !data) return null;
+
+    return buildGrants(
+      data as Array<{ role: string; permission_code: string }>,
+    );
+  });
+}
+
 async function checkPermission(
   role: Role,
   permission: string
 ): Promise<boolean> {
-  const admin = createAdminClient();
-  const { data } = await admin
-    .from("role_permission_matrix")
-    .select("permission_code")
-    .eq("role", role)
-    .eq("permission_code", permission)
-    .maybeSingle();
-  return !!data;
+  return hasGrant(await loadPermissionGrants(), role, permission);
 }
 
 /**
@@ -467,18 +504,16 @@ export async function getEffectivePermissions(): Promise<
   if (ctx.isPlatform) {
     return { role: ctx.role, isPlatform: true, permissions: "all" };
   }
-  const admin = createAdminClient();
-  const { data, error } = await admin
-    .from("role_permission_matrix")
-    .select("permission_code")
-    .eq("role", ctx.role);
-  if (error) {
+  // Cùng đệm với checkPermission — trang dashboard gọi đường này mỗi lần tải
+  // để ẩn/hiện menu, không cần một truy vấn riêng mỗi lượt.
+  const grants = await loadPermissionGrants();
+  if (!grants) {
     return NextResponse.json({ error: "permissions_unavailable" }, { status: 503 });
   }
   return {
     role: ctx.role,
     isPlatform: false,
-    permissions: (data ?? []).map((r) => r.permission_code as string).sort(),
+    permissions: permissionsForRole(grants, ctx.role),
   };
 }
 

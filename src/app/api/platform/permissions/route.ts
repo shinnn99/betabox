@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requirePlatformRole } from "@/lib/supabase/guard";
+import { requirePlatformRole, invalidatePermissionCache } from "@/lib/supabase/guard";
 import {
   ALWAYS_ON_PERMISSION_CODES,
   PERMISSION_DEFINITIONS,
@@ -148,6 +148,10 @@ export async function PUT(req: Request) {
       { status: 500 },
     );
   }
+
+  // Ma trận quyền được đệm 60 giây trong guard.ts — xoá ngay trên process
+  // hiện tại. Nếu sau này chạy nhiều process, process khác chậm tối đa một TTL.
+  invalidatePermissionCache();
 
   return NextResponse.json({ ok: true, added: added.length, removed: removed.length });
 }
