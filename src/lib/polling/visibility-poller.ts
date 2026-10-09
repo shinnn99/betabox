@@ -23,7 +23,15 @@ export interface VisibilityDoc {
 }
 
 export interface VisibilityPollingOptions {
-  intervalMs: number;
+  /**
+   * Nhịp cố định, HOẶC một hàm được hỏi lại trước mỗi lần hẹn giờ để lấy
+   * nhịp hiện hành (nhịp co giãn — xem `adaptive-interval.ts`).
+   *
+   * Dạng hàm dùng `setTimeout` lặp thay vì `setInterval`: nhịp đổi giữa
+   * chừng phải có hiệu lực ngay ở lần hẹn kế tiếp, mà `setInterval` thì
+   * không đổi chu kỳ được sau khi đã đặt.
+   */
+  intervalMs: number | (() => number);
   onTick: () => void;
   /** Tiêm được để test không cần DOM thật. */
   doc?: VisibilityDoc;
@@ -36,17 +44,50 @@ export function startVisibilityPolling(
   opts: VisibilityPollingOptions,
 ): () => void {
   const doc = opts.doc ?? (document as unknown as VisibilityDoc);
+  // Chốt loại timer TRƯỚC khi chọn scheduler mặc định. Nhịp cố định dùng
+  // setInterval; nhịp co giãn PHẢI dùng setTimeout one-shot rồi tự hẹn lại.
+  // Dùng setInterval ở nhánh co giãn sẽ khiến mỗi callback tạo thêm một
+  // interval mới, số timer tăng dần và cleanup chỉ huỷ được handle cuối.
+  const dynamic = typeof opts.intervalMs === "function";
   const schedule =
     opts.schedule ??
-    ((handler: () => void, ms: number) => setInterval(handler, ms));
+    (dynamic
+      ? ((handler: () => void, ms: number) => setTimeout(handler, ms))
+      : ((handler: () => void, ms: number) => setInterval(handler, ms)));
   const cancel =
-    opts.cancel ?? ((handle: unknown) => clearInterval(handle as never));
+    opts.cancel ??
+    (dynamic
+      ? ((handle: unknown) => clearTimeout(handle as never))
+      : ((handle: unknown) => clearInterval(handle as never)));
 
   const isVisible = () => doc.visibilityState === "visible";
 
-  const handle = schedule(() => {
-    if (isVisible()) opts.onTick();
-  }, opts.intervalMs);
+  // Nhịp cố định: giữ nguyên đường cũ (một `setInterval`, không đụng gì).
+  // Nhịp co giãn: tự hẹn lại sau mỗi lượt để nhịp mới có hiệu lực ngay.
+  const readInterval = (): number =>
+    typeof opts.intervalMs === "function" ? opts.intervalMs() : opts.intervalMs;
+
+  let handle: unknown;
+  let stopped = false;
+
+  if (dynamic) {
+    const armNext = () => {
+      if (stopped) return;
+      handle = schedule(() => {
+        if (stopped) return;
+        if (isVisible()) opts.onTick();
+        // Hẹn lại BẤT KỂ tab ẩn hay hiện: vòng hẹn giờ phải sống tiếp, nếu
+        // không thì tab ẩn một lần là nhịp chết hẳn và người dùng quay lại
+        // sẽ thấy màn hình đứng im vĩnh viễn. Tab ẩn chỉ bỏ lượt GỌI.
+        armNext();
+      }, readInterval());
+    };
+    armNext();
+  } else {
+    handle = schedule(() => {
+      if (isVisible()) opts.onTick();
+    }, readInterval());
+  }
 
   const onVisibilityChange = () => {
     if (isVisible()) opts.onTick();
@@ -54,6 +95,7 @@ export function startVisibilityPolling(
   doc.addEventListener("visibilitychange", onVisibilityChange);
 
   return () => {
+    stopped = true;
     cancel(handle);
     doc.removeEventListener("visibilitychange", onVisibilityChange);
   };
